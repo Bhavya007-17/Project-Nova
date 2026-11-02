@@ -1,0 +1,22 @@
+# Nova settings. Save the file and Nova picks the change up within a second.
+# If something here is wrong, Nova keeps the last good settings and tells you why.
+
+# Say this name to talk to Nova ("Nova, open Chrome").
+wake_name: Nova
+
+# Fallback chord: same hold / tap behaviour as the Copilot key.
+chord: ctrl+alt+n
+
+# Ways to start talking. Set any of them to false to turn it off.
+triggers:
+  copilot_key: true        # hold = push-to-talk, tap = listen until you stop
+  wake_name: true          # "Nova, ..."
+  always_listening: true   # plain commands like "open Chrome" with no name
+  chord: true              # the chord above
+
+# Local LLM runtime. Must be on this laptop.
+ollama:
+  url: http://127.0.0.1:11434
+
+logs:
+  transcripts: true        # false = logs keep timings but not what you said

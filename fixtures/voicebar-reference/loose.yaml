@@ -1,0 +1,395 @@
+# Stage 6 draft: list shown and user feedback incorporated before benchmarking.
+# Other assistant-authored suggested phrases remain editable to match your intent.
+- id: loose-command-001
+  text: computer, get my browser running
+  expected:
+  - action: open_app
+    app: Google Chrome
+- id: loose-command-002
+  text: computer, fire up calculator
+  expected:
+  - action: open_app
+    app: Calculator
+- id: loose-command-003
+  text: computer, spin up fusion
+  expected:
+  - action: open_app
+    app: Autodesk Fusion
+- id: loose-command-004
+  text: computer, get notepad going
+  expected:
+  - action: open_app
+    app: Notepad
+- id: loose-command-005
+  text: computer, let me have word open
+  expected:
+  - action: open_app
+    app: Word
+- id: loose-command-006
+  text: computer, get excel going and spread it across the whole screen
+  expected:
+  - action: open_app
+    app: Excel
+  - action: window
+    op: maximize
+    target: Excel
+- id: loose-command-007
+  text: computer, boot up code
+  expected:
+  - action: open_app
+    app: Visual Studio Code
+- id: loose-command-008
+  text: computer, get spotify started and make the sound louder
+  expected:
+  - action: open_app
+    app: Spotify
+  - action: volume
+    op: up
+- id: loose-command-009
+  text: computer, take me back to chrome
+  expected:
+  - action: switch_app
+    app: Google Chrome
+- id: loose-command-010
+  text: computer, bring calculator to the front
+  expected:
+  - action: switch_app
+    app: Calculator
+- id: loose-command-011
+  text: computer, put fusion in front of me
+  expected:
+  - action: switch_app
+    app: Autodesk Fusion
+- id: loose-command-012
+  text: computer, stop listening for commands until I wake you
+  expected:
+  - action: mode
+    op: sleep
+- id: loose-command-013
+  text: computer, start taking dictation from me
+  expected:
+  - action: mode
+    op: dictation_on
+- id: loose-command-014
+  text: computer, shut down notepad
+  expected:
+  - action: close_app
+    app: Notepad
+- id: loose-command-015
+  text: computer, get rid of calculator
+  expected:
+  - action: close_app
+    app: Calculator
+- id: loose-command-016
+  text: computer, be done with spotify
+  expected:
+  - action: close_app
+    app: Spotify
+- id: loose-command-017
+  text: computer, get rid of this window
+  expected:
+  - action: window
+    op: close
+    target: active
+- id: loose-command-018
+  text: computer, blow this window up
+  expected:
+  - action: window
+    op: maximize
+    target: active
+- id: loose-command-019
+  text: computer, make calculator fill the screen
+  expected:
+  - action: window
+    op: maximize
+    target: Calculator
+- id: loose-command-020
+  text: computer, tuck this window away
+  expected:
+  - action: window
+    op: minimize
+    target: active
+- id: loose-command-021
+  text: computer, hide notepad down on the taskbar
+  expected:
+  - action: window
+    op: minimize
+    target: Notepad
+- id: loose-command-022
+  text: computer, bring this window back to normal size
+  expected:
+  - action: window
+    op: restore
+    target: active
+- id: loose-command-023
+  text: computer, put calculator back to its normal size
+  expected:
+  - action: window
+    op: restore
+    target: Calculator
+- id: loose-command-024
+  text: computer, give this window the left half of the screen
+  expected:
+  - action: window
+    op: snap_left
+    target: active
+- id: loose-command-025
+  text: computer, give notepad the right half of the screen
+  expected:
+  - action: window
+    op: snap_right
+    target: Notepad
+- id: loose-command-026
+  text: computer, shift this window over to the next monitor
+  expected:
+  - action: window
+    op: move_monitor
+    target: active
+    monitor: next
+- id: loose-command-027
+  text: computer, relocate calculator onto the primary display
+  expected:
+  - action: window
+    op: move_monitor
+    target: Calculator
+    monitor: primary
+- id: loose-command-028
+  text: computer, shift notepad across to the previous monitor
+  expected:
+  - action: window
+    op: move_monitor
+    target: Notepad
+    monitor: prev
+- id: loose-command-029
+  text: computer, take me over to youtube
+  expected:
+  - action: open_url
+    url: https://www.youtube.com
+- id: loose-command-030
+  text: computer, bring up the github website for a moment
+  expected:
+  - action: open_url
+    url: https://github.com
+- id: loose-command-031
+  text: computer, let me see gmail
+  expected:
+  - action: open_url
+    url: https://mail.google.com
+- id: loose-command-032
+  text: computer, take me to google notes
+  expected:
+  - action: open_url
+    url: https://keep.google.com
+- id: loose-command-033
+  text: computer, give me a fresh browser tab
+  expected:
+  - action: tab
+    op: new
+- id: loose-command-034
+  text: computer, get rid of the current tab
+  expected:
+  - action: tab
+    op: close
+- id: loose-command-035
+  text: computer, step over to the next browser tab
+  expected:
+  - action: tab
+    op: next
+- id: loose-command-036
+  text: computer, step back one browser tab
+  expected:
+  - action: tab
+    op: prev
+- id: loose-command-037
+  text: computer, bring back the tab I just closed
+  expected:
+  - action: tab
+    op: reopen
+- id: loose-command-038
+  text: computer, close screen Google tab
+  expected:
+  - action: tab
+    op: close
+    site: google
+- id: loose-command-039
+  text: computer, take the page back once
+  expected:
+  - action: nav
+    op: back
+- id: loose-command-040
+  text: computer, take the page forward once
+  expected:
+  - action: nav
+    op: forward
+- id: loose-command-041
+  text: computer, load this page again
+  expected:
+  - action: nav
+    op: reload
+- id: loose-command-042
+  text: computer, look for mujoco contact models on youtube
+  expected:
+  - action: web_search
+    engine: youtube
+    query: mujoco contact models
+- id: loose-command-043
+  text: computer, find me MuJoCo Contact Models on google
+  expected:
+  - action: web_search
+    engine: google
+    query: MuJoCo Contact Models
+- id: loose-command-044
+  text: computer, hunt for ros2 joystick drivers on github
+  expected:
+  - action: web_search
+    engine: github
+    query: ros2 joystick drivers
+- id: loose-command-045
+  text: 'computer, put these words in: Hello, Bhavya!'
+  expected:
+  - action: type_text
+    text: Hello, Bhavya!
+    submit: false
+- id: loose-command-046
+  text: computer, enter the words "Torque = 12.5 Nm"
+  expected:
+  - action: type_text
+    text: Torque = 12.5 Nm
+    submit: false
+- id: loose-command-047
+  text: 'computer, jot this down: Contact model, version B.'
+  expected:
+  - action: type_text
+    text: Contact model, version B.
+    submit: false
+- id: loose-command-048
+  text: computer, fill in Hello, Bhavya! and press enter
+  expected:
+  - action: type_text
+    text: Hello, Bhavya!
+    submit: true
+- id: loose-command-049
+  text: computer, use control shift t on the keyboard
+  expected:
+  - action: press
+    keys: ctrl+shift+t
+- id: loose-command-050
+  text: computer, nudge the page downward a little
+  expected:
+  - action: scroll
+    dir: down
+    amount: small
+- id: loose-command-051
+  text: computer, move the page upward by one page
+  expected:
+  - action: scroll
+    dir: up
+    amount: page
+- id: loose-command-052
+  text: computer, take me all the way down this page
+  expected:
+  - action: scroll
+    dir: bottom
+- id: loose-command-053
+  text: computer, make the sound a little louder
+  expected:
+  - action: volume
+    op: up
+- id: loose-command-054
+  text: computer, take the sound down a notch
+  expected:
+  - action: volume
+    op: down
+- id: loose-command-055
+  text: computer, silence the speakers
+  expected:
+  - action: volume
+    op: mute
+- id: loose-command-056
+  text: computer, let the speakers make sound again
+  expected:
+  - action: volume
+    op: unmute
+- id: loose-command-057
+  text: computer, put the music on hold
+  expected:
+  - action: media
+    op: play_pause
+- id: loose-command-058
+  text: computer, advance to the next track
+  expected:
+  - action: media
+    op: next
+- id: loose-command-059
+  text: computer, go back one track
+  expected:
+  - action: media
+    op: prev
+- id: loose-command-060
+  text: computer, fire up notepad and make it fill the screen
+  expected:
+  - action: open_app
+    app: Notepad
+  - action: window
+    op: maximize
+    target: Notepad
+- id: loose-noncommand-001
+  text: computer, what is the weather like
+  expected: null
+- id: loose-noncommand-002
+  text: computer, never mind
+  expected: null
+- id: loose-noncommand-003
+  text: computer, that is not what I meant
+  expected: null
+- id: loose-noncommand-004
+  text: computer, I wonder why chrome keeps freezing
+  expected: null
+- id: loose-noncommand-005
+  text: computer, calculator is already open
+  expected: null
+- id: loose-noncommand-006
+  text: computer, don't open notepad
+  expected: null
+- id: loose-noncommand-007
+  text: computer, I was going to open fusion later
+  expected: null
+- id: loose-noncommand-008
+  text: computer, can you explain what maximize means
+  expected: null
+- id: loose-noncommand-009
+  text: computer, youtube has too many ads
+  expected: null
+- id: loose-noncommand-010
+  text: computer, I prefer quieter music
+  expected: null
+- id: loose-noncommand-011
+  text: computer, that's enough for today
+  expected: null
+- id: loose-noncommand-012
+  text: computer, I don't want another tab
+  expected: null
+- id: loose-noncommand-013
+  text: computer, should I close word before lunch
+  expected: null
+- id: loose-noncommand-014
+  text: computer, tell me a joke
+  expected: null
+- id: loose-noncommand-015
+  text: computer, how many monitors do I have
+  expected: null
+- id: loose-noncommand-016
+  text: computer, I'm talking about the browser, not asking you to open it
+  expected: null
+- id: loose-noncommand-017
+  text: computer, maybe I'll search for mujoco tomorrow
+  expected: null
+- id: loose-noncommand-018
+  text: computer, what did you hear
+  expected: null
+- id: loose-noncommand-019
+  text: computer, nothing needs changing
+  expected: null
+- id: loose-noncommand-020
+  text: computer, the next track is my favorite
+  expected: null

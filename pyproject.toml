@@ -1,0 +1,38 @@
+[project]
+name = "nova"
+version = "0.0.0"
+description = "Local voice layer for Windows: Dynamic-Island bar, hand-speed commands, dictation, handoff."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "nvidia-ml-py>=13.615",
+    "pyside6-essentials>=6.12,<6.13",
+    "pyyaml>=6.0.3",
+    "sounddevice>=0.5.6",
+]
+
+[project.scripts]
+nova = "nova.cli:main"
+
+[project.gui-scripts]
+novaw = "nova.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.11.21,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = ""
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2",
+    "pytest-cov>=7.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["nova"]
+# GUI shell is checked by the live demo, not unit tests (CLAUDE.md: no tests that open windows).
+omit = ["nova/tray.py", "nova/app.py", "nova/__main__.py"]

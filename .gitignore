@@ -1,0 +1,17 @@
+# Python / uv
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local-only data (SPEC §17)
+models/
+logs/
+data/
+fixtures/voicebar-recordings/
+
+# Chrome extension private key (stable id comes from the manifest "key")
+extension/*.pem
+*.pem
