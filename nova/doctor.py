@@ -26,6 +26,7 @@ from typing import Any
 
 from . import paths
 from .config import ConfigStore
+from .console import enable_vt
 from .keys import MOD_NOREPEAT, Chord, parse_chord
 
 
@@ -431,20 +432,20 @@ def check_recordings(recordings_dir: Path) -> Check:
     return Check("Recordings", True, f"{sessions} sessions, {audio} audio files")
 
 
+def check_vocab(path: Path) -> Check:
+    """Read-only: parses config/vocab.yaml without creating it."""
+    from .vocab import VocabError, parse_vocab
+
+    if not path.is_file():
+        return Check("Vocab", True, f"{path.name} not created yet (Nova writes the starter list on first use)")
+    try:
+        terms = parse_vocab(path.read_bytes().decode("utf-8-sig"))
+    except (OSError, UnicodeDecodeError, VocabError) as error:
+        return Check("Vocab", False, f"{path.name}: {error}", f"Fix {path}; until then Nova uses the last good names.")
+    return Check("Vocab", True, f"{len(terms)} names in {path.name}")
+
+
 # --- entry point -------------------------------------------------------------------
-
-
-def _enable_color() -> bool:
-    """ANSI colors only on a real console that accepts them (and not with NO_COLOR)."""
-    if "NO_COLOR" in os.environ or sys.stdout is None or not sys.stdout.isatty():
-        return False
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.GetStdHandle.restype = wintypes.HANDLE
-    handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
-    mode = wintypes.DWORD()
-    if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
-        return False
-    return bool(kernel32.SetConsoleMode(handle, mode.value | 0x0004))  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
 
 
 def main() -> int:
@@ -467,9 +468,10 @@ def main() -> int:
             ("Fallback chord", lambda: check_chord(settings.chord)),
             ("Models", lambda: check_models(paths.MODELS)),
             ("Recordings", lambda: check_recordings(paths.RECORDINGS)),
+            ("Vocab", lambda: check_vocab(paths.VOCAB)),
         ]
     )
-    print(render(checks, color=_enable_color()))
+    print(render(checks, color=enable_vt()))
     problems = sum(not check.ok for check in checks)
     print("\nAll good." if not problems else f"\n{problems} to fix (see the fix: lines).")
     return exit_code(checks)

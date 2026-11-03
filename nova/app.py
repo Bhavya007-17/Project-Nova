@@ -12,7 +12,11 @@ from ctypes import wintypes
 from . import __version__, paths
 from .bus import Bus
 from .config import ConfigStore
-from .log import setup_app_log
+from .events import ConfigChanged, MicChanged, PowerChanged, SpeechReady
+from .log import TraceLog, setup_app_log
+from .session import LockWatcher
+from .speech import standard_worker
+from .vocab import VocabFile
 
 MUTEX_NAME = "Local\\Nova.VoiceLayer"
 _ERROR_ACCESS_DENIED = 5
@@ -67,6 +71,23 @@ def run() -> int:
     store = ConfigStore(paths.SETTINGS, bus)
     store.load()
     stop_watching = store.watch()
+    trace = TraceLog(paths.LOGS, transcripts=store.settings.logs.transcripts)
+    # Ears (Stage 01): models load on the speech thread, so the tray shows up at once.
+    speech = standard_worker(bus, vocab=VocabFile(paths.VOCAB), trace=trace, device=store.settings.audio.device)
+
+    def on_config(event: ConfigChanged) -> None:
+        speech.set_device(event.settings.audio.device)
+        trace.transcripts = event.settings.logs.transcripts
+
+    unsubscribe = [
+        bus.subscribe(PowerChanged, lambda event: speech.set_enabled(event.on)),
+        bus.subscribe(ConfigChanged, on_config),
+        bus.subscribe(MicChanged, lambda e: _log.info("mic %s: %s (%s)", "open" if e.open else "closed", e.why, e.device)),
+        bus.subscribe(SpeechReady, lambda e: _log.log(logging.INFO if e.ok else logging.ERROR, "speech: %s", e.detail)),
+    ]
+    lock = LockWatcher(speech.set_locked)
+    lock.start()
+    speech.start()
     try:
         from .tray import run_tray
 
@@ -75,6 +96,11 @@ def run() -> int:
         _log.exception("Nova crashed")
         raise
     finally:
+        for stop in unsubscribe:
+            stop()
+        speech.close()
+        lock.close()
+        trace.close()
         stop_watching()
         _log.info("Nova stopped")
         close_log()

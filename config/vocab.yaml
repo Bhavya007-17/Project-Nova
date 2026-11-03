@@ -1,0 +1,20 @@
+# Names Nova should spell your way. After speech-to-text, words that sound and
+# look close to one of these are respelled ("crow labs" -> "CroLabs"). Only
+# strong matches change. App names from the Start menu are added on their own.
+# Save the file; Nova uses it from the next thing you say.
+terms:
+  - CroLabs
+  - HIVE
+  - ROS2
+  - MuJoCo
+  - Canvas
+  - Fusion
+  - Claude
+  - ChatGPT
+  - Notion
+  - Todoist
+  - Virginia Tech
+  # Professors (write them the way you want them spelled):
+  # - Professor Lastname
+  # Course codes:
+  # - ME 4524

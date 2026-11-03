@@ -19,7 +19,7 @@ from typing import Any
 APP_FILE = "nova.log"
 TRACE_FILE = "traces.jsonl"
 # Fields that hold what Bhavya said or typed; dropped when logs.transcripts is false.
-TRANSCRIPT_FIELDS = frozenset({"text", "transcript", "prompt"})
+TRANSCRIPT_FIELDS = frozenset({"text", "raw_text", "changes", "transcript", "prompt"})
 
 _FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 _installed: tuple[logging.Handler, ...] = ()

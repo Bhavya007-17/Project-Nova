@@ -296,3 +296,25 @@ def test_watch_picks_up_saves_in_background(tmp_path):
     assert store.settings.wake_name == "Nyx"
     assert got == [ConfigChanged(store.settings)]
     stop()  # idempotent
+
+
+# --- audio (Stage 01) ----------------------------------------------------------------
+
+
+def test_audio_device_defaults_to_windows_default():
+    assert Settings().audio.device == "default"
+
+
+def test_audio_device_can_name_a_mic():
+    assert load_text("audio:\n  device: Jabra\n").audio.device == "Jabra"
+
+
+@pytest.mark.parametrize("text", ["audio:\n  device: ''\n", "audio:\n  device: '  '\n"])
+def test_audio_device_must_not_be_empty(text):
+    with pytest.raises(ConfigError, match="audio.device"):
+        load_text(text)
+
+
+def test_audio_device_must_be_text():
+    with pytest.raises(ConfigError, match="audio.device must be text"):
+        load_text("audio:\n  device: 3\n")

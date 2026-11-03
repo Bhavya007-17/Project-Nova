@@ -18,7 +18,7 @@ def test_doctor_dispatch(monkeypatch):
 
 @pytest.mark.parametrize(
     ("argv", "stage"),
-    [(["listen"], "01"), (["say", "open chrome"], "04"), (["eval"], "05"), (["latency"], "11")],
+    [(["say", "open chrome"], "04"), (["eval"], "05"), (["latency"], "11")],
 )
 def test_stubs_name_their_stage(argv, stage, capsys):
     assert cli.main(argv) == 1
@@ -28,3 +28,23 @@ def test_stubs_name_their_stage(argv, stage, capsys):
 def test_say_needs_text():
     with pytest.raises(SystemExit):
         cli.main(["say"])
+
+
+def test_listen_dispatch(monkeypatch, tmp_path):
+    seen = {}
+    monkeypatch.setattr(
+        "nova.listen.main", lambda device=None, wavs=(), seconds=None: seen.update(device=device, wavs=wavs, seconds=seconds) or 0
+    )
+    assert cli.main(["listen"]) == 0
+    assert seen == {"device": None, "wavs": (), "seconds": None}
+    wav = tmp_path / "a.wav"
+    assert cli.main(["listen", "--device", "Jabra", "--wav", str(wav), "--seconds", "30"]) == 0
+    assert seen == {"device": "Jabra", "wavs": [wav], "seconds": 30.0}
+
+
+def test_bench_stt_dispatch(monkeypatch):
+    seen = []
+    monkeypatch.setattr("nova.stt.bench.run", lambda live=0: seen.append(live) or 0)
+    assert cli.main(["bench-stt"]) == 0
+    assert cli.main(["bench-stt", "--live", "5"]) == 0
+    assert seen == [0, 5]

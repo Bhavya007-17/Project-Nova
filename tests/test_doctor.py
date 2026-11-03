@@ -335,3 +335,15 @@ def test_settings_check(tmp_path):
     bad_path.write_text("wake_nme: x\n", encoding="utf-8")
     bad = doctor.check_settings(ConfigStore(bad_path))
     assert not bad.ok and "wake_nme" in bad.detail and bad.fix
+
+
+def test_vocab_check(tmp_path):
+    path = tmp_path / "vocab.yaml"
+    missing = doctor.check_vocab(path)
+    assert missing.ok and "not created" in missing.detail
+    assert not path.exists()  # doctor never writes
+    path.write_text("terms:\n  - CroLabs\n  - HIVE\n", encoding="utf-8")
+    assert doctor.check_vocab(path) == Check("Vocab", True, "2 names in vocab.yaml")
+    path.write_text("terms: CroLabs\n", encoding="utf-8")
+    broken = doctor.check_vocab(path)
+    assert not broken.ok and "list" in broken.detail and broken.fix

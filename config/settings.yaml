@@ -14,6 +14,11 @@ triggers:
   always_listening: true   # plain commands like "open Chrome" with no name
   chord: true              # the chord above
 
+# Microphone: "default" follows the Windows default input. Or part of a mic's
+# name to always use that one, e.g. "USB" or "Jabra".
+audio:
+  device: default
+
 # Local LLM runtime. Must be on this laptop.
 ollama:
   url: http://127.0.0.1:11434

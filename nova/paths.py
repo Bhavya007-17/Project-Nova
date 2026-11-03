@@ -5,6 +5,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG = ROOT / "config"
 SETTINGS = CONFIG / "settings.yaml"
+VOCAB = CONFIG / "vocab.yaml"
 DATA = ROOT / "data"
 LOGS = ROOT / "logs"
 MODELS = ROOT / "models"

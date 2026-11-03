@@ -47,6 +47,11 @@ class Ollama:
 
 
 @dataclass(frozen=True)
+class Audio:
+    device: str = "default"
+
+
+@dataclass(frozen=True)
 class Logs:
     transcripts: bool = True
 
@@ -56,6 +61,7 @@ class Settings:
     wake_name: str = "Nova"
     chord: str = "ctrl+alt+n"
     triggers: Triggers = field(default_factory=Triggers)
+    audio: Audio = field(default_factory=Audio)
     ollama: Ollama = field(default_factory=Ollama)
     logs: Logs = field(default_factory=Logs)
 
@@ -76,6 +82,11 @@ triggers:
   wake_name: true          # "Nova, ..."
   always_listening: true   # plain commands like "open Chrome" with no name
   chord: true              # the chord above
+
+# Microphone: "default" follows the Windows default input. Or part of a mic's
+# name to always use that one, e.g. "USB" or "Jabra".
+audio:
+  device: default
 
 # Local LLM runtime. Must be on this laptop.
 ollama:
@@ -183,6 +194,8 @@ def _check(settings: Settings) -> None:
     """Rules beyond types."""
     if not settings.wake_name.strip():
         raise ConfigError("wake_name must not be empty")
+    if not settings.audio.device.strip():
+        raise ConfigError('audio.device must not be empty (use "default" for the Windows default mic)')
     try:
         parse_chord(settings.chord)
     except ValueError as error:
