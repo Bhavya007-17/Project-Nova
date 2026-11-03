@@ -12,6 +12,7 @@ from nova.config import (
     Settings,
     build,
     load_text,
+    with_value,
 )
 from nova.events import ConfigChanged, ConfigInvalid
 
@@ -318,3 +319,64 @@ def test_audio_device_must_not_be_empty(text):
 def test_audio_device_must_be_text():
     with pytest.raises(ConfigError, match="audio.device must be text"):
         load_text("audio:\n  device: 3\n")
+
+
+# --- Stage 02: wake spellings, saving one value from the tray ---------------------------------------
+
+
+def test_wake_spellings_default_empty_and_parse_a_list():
+    assert Settings().wake_spellings == ()
+    assert load_text("wake_spellings: [Novah, no va]\n").wake_spellings == ("Novah", "no va")
+    assert load_text("wake_spellings:\n  - Novah\n").wake_spellings == ("Novah",)
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        ("wake_spellings: Novah\n", "list"),
+        ("wake_spellings: [Novah, 3]\n", "text"),
+        ("wake_spellings: ['  ']\n", "empty"),
+    ],
+)
+def test_bad_wake_spellings(text, message):
+    with pytest.raises(ConfigError, match=message):
+        load_text(text)
+
+
+def test_with_value_changes_only_that_value_and_keeps_comments():
+    text = DEFAULT_YAML
+    changed = with_value(text, "triggers.always_listening", False)
+    assert load_text(changed).triggers.always_listening is False
+    assert changed.replace("always_listening: false", "always_listening: true") == text
+    assert "# plain commands like" in changed
+
+
+def test_with_value_handles_flow_style_and_rejects_missing_keys():
+    flow = "triggers: {always_listening: true, chord: false}\n"
+    assert load_text(with_value(flow, "triggers.always_listening", False)).triggers.always_listening is False
+    with pytest.raises(ConfigError, match="always_listening"):
+        with_value("wake_name: Nova\n", "triggers.always_listening", False)
+
+
+def test_save_value_keeps_bom_and_line_endings(tmp_path):
+    path = tmp_path / "settings.yaml"
+    path.write_bytes(b"\xef\xbb\xbfwake_name: Nova\r\ntriggers:\r\n  always_listening: true\r\n")
+    bus = Bus()
+    seen = []
+    bus.subscribe(ConfigChanged, seen.append)
+    store = ConfigStore(path, bus)
+    store.load()
+    store.save_value("triggers.always_listening", False)
+    raw = path.read_bytes()
+    assert raw.startswith(b"\xef\xbb\xbf") and b"always_listening: false\r\n" in raw
+    assert store.settings.triggers.always_listening is False and seen[-1].settings == store.settings
+
+
+def test_save_value_refuses_a_broken_file(tmp_path):
+    path = tmp_path / "settings.yaml"
+    path.write_text("triggers: [oops\n", encoding="utf-8")
+    store = ConfigStore(path)
+    store.load()
+    with pytest.raises(ConfigError):
+        store.save_value("triggers.always_listening", False)
+    assert path.read_text(encoding="utf-8") == "triggers: [oops\n"

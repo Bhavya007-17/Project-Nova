@@ -20,6 +20,11 @@ def _parser() -> argparse.ArgumentParser:
     listen.add_argument("--device", help='mic to use (part of its name); default: audio.device in settings.yaml')
     listen.add_argument("--wav", nargs="+", type=Path, metavar="FILE", help="play 16 kHz WAV files through the live path instead")
     listen.add_argument("--seconds", type=float, metavar="N", help="stop after N seconds (then print the summary)")
+    listen.add_argument("--gate", action="store_true", help="also run the triggers: ACCEPTED / IGNORED per final")
+    keys = sub.add_parser("keys", help="keyboard checks: --probe logs what the Copilot key sends")
+    keys.add_argument("--probe", action="store_true", required=True, help="log raw key events (character keys hidden)")
+    keys.add_argument("--seconds", type=float, default=20.0, metavar="N", help="stop after N seconds (default 20; Esc stops early)")
+    keys.add_argument("--raw", action="store_true", help="swallow nothing (Copilot will open)")
     bench = sub.add_parser("bench-stt", help="speech-to-text accuracy (WER) and speed on the recordings")
     bench.add_argument("--live", type=int, default=0, metavar="N", help="also replay N recordings in real time through the live worker")
     sub.add_parser("say", help="run a command from text, no mic").add_argument("text")
@@ -50,7 +55,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if command == "listen":
         from . import listen
 
-        return listen.main(device=args.device, wavs=args.wav or (), seconds=args.seconds)
+        return listen.main(device=args.device, wavs=args.wav or (), seconds=args.seconds, gate=args.gate)
+    if command == "keys":
+        from . import keyprobe
+
+        return keyprobe.main(seconds=args.seconds, raw=args.raw)
     if command == "bench-stt":
         from .stt import bench
 

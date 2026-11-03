@@ -8,10 +8,13 @@ one publishes ``ConfigChanged`` when any value changed.
 
 from __future__ import annotations
 
+import codecs
 import dataclasses
 import difflib
 import ipaddress
+import json
 import logging
+import os
 import threading
 import typing
 import urllib.parse
@@ -59,6 +62,7 @@ class Logs:
 @dataclass(frozen=True)
 class Settings:
     wake_name: str = "Nova"
+    wake_spellings: tuple[str, ...] = ()  # other ways speech-to-text writes the name
     chord: str = "ctrl+alt+n"
     triggers: Triggers = field(default_factory=Triggers)
     audio: Audio = field(default_factory=Audio)
@@ -72,6 +76,8 @@ DEFAULT_YAML = """\
 
 # Say this name to talk to Nova ("Nova, open Chrome").
 wake_name: Nova
+# Other ways speech-to-text writes the name, if Nova misses it, e.g. [Novah, no va].
+wake_spellings: []
 
 # Fallback chord: same hold / tap behaviour as the Copilot key.
 chord: ctrl+alt+n
@@ -187,7 +193,44 @@ def _value(kind: Any, value: Any, path: str) -> Any:
         if not isinstance(value, str):
             raise ConfigError(f"{path} must be text, not {value!r}")
         return value
+    if typing.get_origin(kind) is tuple and typing.get_args(kind) == (str, Ellipsis):
+        if value is None:  # every line of the list commented out
+            return ()
+        if not isinstance(value, list):
+            raise ConfigError(f"{path} must be a list, like [one, two], not {value!r}")
+        items = []
+        for item in value:
+            if not isinstance(item, str):
+                raise ConfigError(f"{path} entries must be text, not {item!r}")
+            if not item.strip():
+                raise ConfigError(f"{path} entries must not be empty")
+            items.append(item.strip())
+        return tuple(items)
     raise TypeError(f"setting {path} has unsupported type {kind!r}")
+
+
+def with_value(text: str, dotted: str, value: bool | int | float | str) -> str:
+    """``text`` with one existing value replaced in place: comments and layout stay. Raises ConfigError."""
+    try:
+        node = yaml.compose(text, Loader=yaml.SafeLoader)
+    except yaml.YAMLError as error:
+        raise ConfigError(_yaml_message(error)) from error
+    for part in dotted.split("."):
+        child = None
+        if isinstance(node, yaml.MappingNode):
+            child = next((v for k, v in node.value if isinstance(k, yaml.ScalarNode) and k.value == part), None)
+        if child is None:
+            raise ConfigError(f"can't find {dotted} in settings.yaml (add `{part}:` back)")
+        node = child
+    if not isinstance(node, yaml.ScalarNode):
+        raise ConfigError(f"{dotted} in settings.yaml is not a single value")
+    if isinstance(value, bool):
+        literal = "true" if value else "false"
+    elif isinstance(value, (int, float)):
+        literal = repr(value)
+    else:
+        literal = json.dumps(value, ensure_ascii=False)  # a double-quoted string is valid YAML
+    return text[: node.start_mark.index] + literal + text[node.end_mark.index :]
 
 
 def _check(settings: Settings) -> None:
@@ -292,6 +335,28 @@ class ConfigStore:
                 thread.join(timeout=2)
 
         return stop_watching
+
+    def save_value(self, dotted: str, value: bool | int | float | str) -> Settings:
+        """Change one value in settings.yaml (the tray toggles), keeping comments. Raises ConfigError.
+
+        Refuses a file that doesn't parse, so a half-edited file is never overwritten.
+        """
+        with self._lock:
+            try:
+                raw = self.path.read_bytes()
+                text = raw.decode("utf-8-sig")
+            except (OSError, UnicodeDecodeError) as error:
+                raise ConfigError(f"{self.path.name}: cannot read it ({error})") from error
+            changed = with_value(text, dotted, value)
+            load_text(changed)
+            data = (codecs.BOM_UTF8 if raw.startswith(codecs.BOM_UTF8) else b"") + changed.encode("utf-8")
+            saving = self.path.with_name(self.path.name + ".saving")
+            try:
+                saving.write_bytes(data)
+                os.replace(saving, self.path)
+            except OSError as error:
+                raise ConfigError(f"{self.path.name}: cannot save it ({error.strerror or error})") from error
+        return self._read()
 
     def _stat(self) -> tuple[int, int]:
         stat = self.path.stat()

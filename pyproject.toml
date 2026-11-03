@@ -41,5 +41,8 @@ testpaths = ["tests"]
 source = ["nova"]
 # GUI shell and OS/model glue are checked by the live demo and `nova bench-stt`, not unit tests
 # (CLAUDE.md: no tests that open windows or the mic): tray, app wiring, the WTS lock window,
-# the Parakeet loader, console mode.
-omit = ["nova/tray.py", "nova/app.py", "nova/__main__.py", "nova/session.py", "nova/stt/parakeet.py", "nova/console.py"]
+# the Parakeet loader, console mode, the keyboard hook (Win32), the audio detectors (COM).
+omit = [
+    "nova/tray.py", "nova/app.py", "nova/__main__.py", "nova/session.py", "nova/stt/parakeet.py", "nova/console.py",
+    "nova/hook.py", "nova/detect.py",
+]

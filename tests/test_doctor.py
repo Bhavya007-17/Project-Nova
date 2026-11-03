@@ -347,3 +347,11 @@ def test_vocab_check(tmp_path):
     path.write_text("terms: CroLabs\n", encoding="utf-8")
     broken = doctor.check_vocab(path)
     assert not broken.ok and "list" in broken.detail and broken.fix
+
+
+def test_keyboard_hook_row():
+    from nova.doctor import check_keyboard_hook
+
+    assert check_keyboard_hook(lambda: None).ok
+    blocked = check_keyboard_hook(lambda: "can't watch the keyboard ([WinError 5] Access is denied)")
+    assert not blocked.ok and "Access is denied" in blocked.detail and "Nova" in blocked.fix

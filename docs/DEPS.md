@@ -13,6 +13,11 @@ One line each: what, version, why. Ask before adding anything over ~50 MB or a n
 - **rapidfuzz** 3.14 (~2 MB) — fuzzy spelling for the vocab fix-up; word-level Levenshtein for WER.
 - **jellyfish** 1.3 (~0.2 MB) — metaphone sound keys for the vocab fix-up ("crow labs" ≈ "CroLabs").
 
+## Windows APIs (ctypes, no new packages)
+- **WH_KEYBOARD_LL + raw input** (user32) — Copilot key / chord / Esc (`nova/hook.py`); raw input (RIDEV_INPUTSINK) counts keys so a hook Windows silently dropped is reinstalled.
+- **SendInput** (user32) — replays a swallowed Win/Alt release behind the unassigned key 0xE8 so Start / menu bars don't open; never inside the hook callback (measured 4-20 ms there).
+- **MMDevice API** (COM: IAudioSessionManager2, IAudioMeterInformation) — "another app is recording" and "speakers playing" for the gate (`nova/detect.py`). SPEC's ConsentStore `LastUsedTimeStop` stopped updating on this laptop on 2026-10-28, for every app.
+
 ## Dev
 - **pytest** 9.2 — unit tests for pure logic.
 - **pytest-cov** 7.1 — coverage (80 % target; GUI shell omitted, checked by live demo).

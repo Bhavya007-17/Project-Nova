@@ -323,3 +323,37 @@ def test_gate_always_checks_frames_louder_than_the_cap():
     for _ in range(200):
         gate.check(energy(-52), busy=False)  # fan at -52 dB: background + 15 dB would be -37 dB
     assert gate.check(energy(-44), busy=False)  # the -45 dB cap still lets soft speech through
+
+
+# --- push-to-talk hold (Stage 02) ---------------------------------------------------
+
+
+def test_held_key_suppresses_the_silence_endpoint():
+    f = Feed()
+    f.ep.held = True
+    f.speech(600)
+    assert f.silence(1500) == []  # pauses while holding the key never end the utterance
+    assert f.ep.active is not None
+    assert f.ep.final_range() is None  # no early decode while the key is down
+    f.ep.held = False  # a tap: back to normal endpointing, and this pause is already long enough
+    events = f.silence(32)
+    assert [type(e) for e in events] == [SpeechEnded] and events[0].reason == "silence"
+
+
+def test_held_key_still_has_the_30_s_cap():
+    f = Feed()
+    f.ep.held = True
+    f.speech(1000)
+    events = f.silence(30_000)
+    assert [e.reason for e in events if isinstance(e, SpeechEnded)] == ["cap"]
+
+
+def test_release_after_hold_ends_with_everything():
+    f = Feed()
+    f.ep.held = True
+    f.speech(500)
+    f.silence(900)
+    end = f.index * FRAME
+    f.ep.held = False
+    ended = f.ep.end_now()
+    assert ended is not None and ended.reason == "key" and ended.end == end

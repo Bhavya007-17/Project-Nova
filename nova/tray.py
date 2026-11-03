@@ -18,8 +18,8 @@ from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from . import paths
 from .bus import Bus
-from .config import ConfigStore
-from .events import ConfigChanged, ConfigInvalid, PowerChanged
+from .config import ConfigError, ConfigStore
+from .events import AlwaysListeningChanged, ConfigChanged, ConfigInvalid, PowerChanged
 
 _log = logging.getLogger(__name__)
 
@@ -68,6 +68,7 @@ class _Bridge(QObject):
 
     event = Signal(object)
     quit = Signal()
+    notice = Signal(str, str)  # title, text
 
 
 _HandlerRoutine = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)
@@ -105,6 +106,12 @@ class Tray(QObject):
         self._power = QAction("Nova is on", self._menu, checkable=True, checked=True)
         self._power.toggled.connect(self._set_power)
         self._menu.addAction(self._power)
+        self._always = QAction(
+            "Always listening", self._menu, checkable=True, checked=store.settings.triggers.always_listening
+        )
+        self._always.setToolTip("Plain commands like \"open Spotify\" without saying Nova")
+        self._always.toggled.connect(self._set_always)
+        self._menu.addAction(self._always)
         self._menu.addSeparator()
         self._add("Open settings", lambda: _open_in_background(self._store.path))
         self._add("Open logs", self._open_logs)
@@ -117,6 +124,9 @@ class Tray(QObject):
 
         self._bridge = _Bridge()
         self._bridge.event.connect(self._on_event)
+        self._bridge.notice.connect(
+            lambda title, text: self._icon.showMessage(title, text, QSystemTrayIcon.MessageIcon.Warning, 8000)
+        )
         self._unsubscribe = [
             bus.subscribe(ConfigChanged, self._bridge.event.emit),
             bus.subscribe(ConfigInvalid, self._bridge.event.emit),
@@ -137,6 +147,26 @@ class Tray(QObject):
         _log.info("power %s", "on" if on else "off")
         self._bus.publish(PowerChanged(on))
 
+    def _set_always(self, on: bool) -> None:
+        _log.info("always-listening %s (tray)", "on" if on else "off")
+        self._bus.publish(AlwaysListeningChanged(on))
+
+        def save() -> None:  # file I/O stays off the GUI thread
+            try:
+                self._store.save_value("triggers.always_listening", on)
+            except ConfigError as error:
+                _log.warning("couldn't save always-listening: %s", error)
+                state = "on" if on else "off"
+                self._bridge.notice.emit(
+                    "Nova settings", f"Always listening is {state} until Nova restarts; couldn't save it:\n{error}"
+                )
+
+        threading.Thread(target=save, name="nova-save-setting", daemon=True).start()
+
+    def notify(self, title: str, text: str) -> None:
+        """Show a tray message from any thread."""
+        self._bridge.notice.emit(title, text)
+
     def _open_logs(self) -> None:
         paths.LOGS.mkdir(parents=True, exist_ok=True)
         _open_in_background(paths.LOGS)
@@ -154,6 +184,11 @@ class Tray(QObject):
                 self._config_broken = False
                 self._icon.showMessage("Nova settings", "Settings fixed and applied.",
                                        QSystemTrayIcon.MessageIcon.Information, 3000)
+            always = event.settings.triggers.always_listening
+            if always != self._always.isChecked():
+                self._always.blockSignals(True)  # the file changed it: follow, without saving it back
+                self._always.setChecked(always)
+                self._always.blockSignals(False)
             _log.info("settings applied")
 
     def close(self) -> None:
@@ -162,7 +197,7 @@ class Tray(QObject):
         self._icon.hide()  # otherwise a ghost icon stays until the mouse passes over it
 
 
-def run_tray(bus: Bus, store: ConfigStore) -> int:
+def run_tray(bus: Bus, store: ConfigStore, notices: tuple[tuple[str, str], ...] = ()) -> int:
     app = QApplication.instance() or QApplication(["nova"])
     app.setApplicationName("Nova")
     app.setQuitOnLastWindowClosed(False)
@@ -171,6 +206,8 @@ def run_tray(bus: Bus, store: ConfigStore) -> int:
         return 1
     global _console_handler
     tray = Tray(app, bus, store)
+    for title, text in notices:
+        tray.notify(title, text)
     keepalive = None
     closed = threading.Event()
     stopper = _Bridge()

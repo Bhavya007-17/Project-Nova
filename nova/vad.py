@@ -122,6 +122,7 @@ class Endpointer:
         self._probs: list[float] = []
         self._next_id = 1
         self._draining = 0  # after a cap: samples of silence still needed before a new start (0 = not draining)
+        self.held = False  # push-to-talk key down: pauses never end the utterance (release does)
 
     @property
     def active(self) -> Utterance | None:
@@ -163,7 +164,7 @@ class Endpointer:
         else:
             utt.silence += len(frame)
         needed = self._short if utt.speech_end - utt.speech_start < self._long_after else self._long
-        if utt.silence >= needed:
+        if utt.silence >= needed and not self.held:
             return self._finish("silence")
         if self._max is not None and end - utt.start >= self._max:
             return self._finish("cap")
@@ -175,7 +176,7 @@ class Endpointer:
         Lets the worker start decoding during the pause, before the endpoint fires.
         """
         utt = self._utt
-        if utt is None or utt.silence < self.rules.tail_samples:
+        if utt is None or self.held or utt.silence < self.rules.tail_samples:
             return None
         return utt.start, utt.speech_end + self.rules.tail_samples
 

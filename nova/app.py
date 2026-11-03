@@ -13,9 +13,12 @@ from . import __version__, paths
 from .bus import Bus
 from .config import ConfigStore
 from .events import ConfigChanged, MicChanged, PowerChanged, SpeechReady
+from .hook import TriggerHook
+from .keys import TriggerKeys
 from .log import TraceLog, setup_app_log
 from .session import LockWatcher
 from .speech import standard_worker
+from .triggers import Triggers, load_start_menu_names, stub_brain
 from .vocab import VocabFile
 
 MUTEX_NAME = "Local\\Nova.VoiceLayer"
@@ -85,19 +88,31 @@ def run() -> int:
         bus.subscribe(MicChanged, lambda e: _log.info("mic %s: %s (%s)", "open" if e.open else "closed", e.why, e.device)),
         bus.subscribe(SpeechReady, lambda e: _log.log(logging.INFO if e.ok else logging.ERROR, "speech: %s", e.detail)),
     ]
+    # Triggers (Stage 02): the state machine thread, the keyboard hook, a stub brain until Stage 04.
+    keys = TriggerKeys()
+    triggers = Triggers(bus, speech, store.settings, keys=keys, trace=trace)
+    hook = TriggerHook(keys, triggers.key_event)
+    unsubscribe.append(stub_brain(bus))
+    triggers.start()
+    notices: list[tuple[str, str]] = []
+    if not hook.start():
+        notices.append(("Nova keys", f"The Copilot key and the chord won't work: {hook.error}. \"Nova ...\" still does."))
+    load_start_menu_names(triggers.set_names)
     lock = LockWatcher(speech.set_locked)
     lock.start()
     speech.start()
     try:
         from .tray import run_tray
 
-        return run_tray(bus, store)
+        return run_tray(bus, store, tuple(notices))
     except Exception:
         _log.exception("Nova crashed")
         raise
     finally:
         for stop in unsubscribe:
             stop()
+        hook.close()
+        triggers.close()
         speech.close()
         lock.close()
         trace.close()

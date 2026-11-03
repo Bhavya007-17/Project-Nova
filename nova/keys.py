@@ -1,8 +1,15 @@
-"""Keyboard chord parsing ("ctrl+alt+n") into RegisterHotKey modifiers + virtual-key code."""
+"""Keys, pure parts (SPEC §5): chord parsing, trigger recognition on the raw key stream, gestures.
+
+``TriggerKeys.on_key`` runs inside the low-level hook callback (``nova.hook``), so it
+only looks at a few integers and returns a ``Verdict``: swallow the key or not, keys
+to replay right after the callback, and maybe one ``TriggerEvent`` for the controller.
+``Gestures`` runs on the controller thread and turns trigger down/up events into
+press / release (tap or hold) / double-tap / cancel.
+"""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 # RegisterHotKey modifier flags (winuser.h).
 MOD_ALT = 0x0001
@@ -65,3 +72,259 @@ def parse_chord(text: object) -> Chord:
     vk, key_label = _key(keys[0])
     label = "+".join([name for flag, name in _MODIFIER_LABELS if modifiers & flag] + [key_label])
     return Chord(modifiers, vk, label)
+
+
+# --- raw keys -> trigger events (runs inside the hook callback) ---------------------------------------
+
+VK_SHIFT, VK_CONTROL, VK_MENU = 0x10, 0x11, 0x12  # generic codes (some injectors send these)
+VK_LSHIFT, VK_RSHIFT = 0xA0, 0xA1
+VK_LCONTROL, VK_RCONTROL = 0xA2, 0xA3
+VK_LMENU, VK_RMENU = 0xA4, 0xA5
+VK_LWIN, VK_RWIN = 0x5B, 0x5C
+VK_ESCAPE = 0x1B
+VK_F23 = 0x86  # the Copilot key sends LWin + LShift + F23
+VK_MASK = 0xE8  # unassigned: replayed before a Win/Alt release so Start / the menu bar don't open
+NOVA_MARK = 0x4E4F5641  # dwExtraInfo on every key Nova injects ("NOVA"); the hook ignores those
+
+_MODIFIER_FLAGS = {
+    VK_SHIFT: MOD_SHIFT, VK_LSHIFT: MOD_SHIFT, VK_RSHIFT: MOD_SHIFT,
+    VK_CONTROL: MOD_CONTROL, VK_LCONTROL: MOD_CONTROL, VK_RCONTROL: MOD_CONTROL,
+    VK_MENU: MOD_ALT, VK_LMENU: MOD_ALT, VK_RMENU: MOD_ALT,
+    VK_LWIN: MOD_WIN, VK_RWIN: MOD_WIN,
+}
+_COPILOT_MODIFIERS = MOD_WIN | MOD_SHIFT
+_MASKED_MODIFIERS = MOD_WIN | MOD_ALT  # released alone, these open Start / a menu bar
+
+
+@dataclass(frozen=True, slots=True)
+class Key:
+    """One event from the low-level hook. ``at`` = perf_counter when the hook saw it."""
+
+    vk: int
+    down: bool
+    at: float
+    scan: int = 0
+    flags: int = 0  # KBDLLHOOKSTRUCT.flags (0x10 = injected, 0x01 = extended)
+    time: int = 0  # the event's own GetTickCount stamp (ms)
+    extra: int = 0  # dwExtraInfo
+
+    @property
+    def injected(self) -> bool:
+        return bool(self.flags & 0x10)
+
+    @property
+    def ours(self) -> bool:
+        return self.extra == NOVA_MARK
+
+
+@dataclass(frozen=True, slots=True)
+class TriggerEvent:
+    source: str  # "copilot" | "chord" | "esc"
+    down: bool
+    at: float
+
+
+@dataclass(frozen=True, slots=True)
+class Verdict:
+    swallow: bool = False
+    replay: tuple[tuple[int, bool], ...] = ()  # (vk, down) to inject right after the callback returns
+    event: TriggerEvent | None = None
+
+
+PASS = Verdict()
+_SWALLOW = Verdict(swallow=True)
+
+
+@dataclass(frozen=True)
+class _Config:
+    chord: Chord | None
+    copilot: bool
+
+
+class TriggerKeys:
+    """Finds the Copilot key and the fallback chord in the raw key stream.
+
+    Owned by the hook thread. Other threads only replace whole values:
+    ``configure(...)`` swaps an immutable config, ``esc_armed`` is a bool.
+    Keys Nova injected itself are never looked at; other injected keys count
+    (some laptops synthesize the Copilot chord in a vendor driver).
+
+    Swallowing the trigger key leaves Windows seeing Win (or Alt) pressed and
+    released alone, which opens Start (or a menu bar). So the release of a Win /
+    Alt key that was down when a trigger fired is swallowed too and replayed as
+    mask key down, mask key up, release, after the callback returns. Injecting
+    inside the callback would cost 4-20 ms (SendInput runs every hook in the system).
+    """
+
+    def __init__(self, chord: Chord | None = None, copilot: bool = True) -> None:
+        self._config = _Config(chord, copilot)
+        self.esc_armed = False  # the controller arms Esc while a session can be cancelled
+        self._modifiers: frozenset[int] = frozenset()
+        self._masked: frozenset[int] = frozenset()  # Win / Alt keys whose release gets the mask
+        self._copilot_down = False
+        self._chord_down: int | None = None  # vk of the chord key while it is held
+        self._esc_down = False
+
+    def configure(self, chord: Chord | None, copilot: bool) -> None:
+        self._config = _Config(chord, copilot)
+
+    def _flags(self) -> int:
+        flags = 0
+        for vk in self._modifiers:
+            flags |= _MODIFIER_FLAGS[vk]
+        return flags
+
+    def on_key(self, key: Key) -> Verdict:
+        if key.ours:
+            return PASS
+        vk = key.vk
+        if vk in _MODIFIER_FLAGS:
+            if key.down:
+                self._modifiers = self._modifiers | {vk}
+                return PASS
+            self._modifiers = self._modifiers - {vk}
+            if vk in self._masked:
+                self._masked = self._masked - {vk}
+                return Verdict(swallow=True, replay=((VK_MASK, True), (VK_MASK, False), (vk, False)))
+            return PASS
+        config = self._config
+        if vk == VK_F23 and (config.copilot or self._copilot_down):
+            return self._copilot(key)
+        if self._chord_down == vk or (config.chord is not None and vk == config.chord.vk):
+            return self._chord(key, config.chord)
+        if vk == VK_ESCAPE:
+            return self._esc(key)
+        return PASS
+
+    def _copilot(self, key: Key) -> Verdict:
+        if key.down:
+            if self._copilot_down:
+                return _SWALLOW  # auto-repeat while held
+            if self._flags() & _COPILOT_MODIFIERS != _COPILOT_MODIFIERS:
+                return PASS  # a plain F23 from some other tool
+            self._copilot_down = True
+            self._mask_held_modifiers()
+            return Verdict(swallow=True, event=TriggerEvent("copilot", True, key.at))
+        if not self._copilot_down:
+            return PASS
+        self._copilot_down = False
+        return Verdict(swallow=True, event=TriggerEvent("copilot", False, key.at))
+
+    def _chord(self, key: Key, chord: Chord | None) -> Verdict:
+        if key.down:
+            if self._chord_down == key.vk:
+                return _SWALLOW
+            if chord is None or self._flags() != chord.modifiers:
+                return PASS
+            self._chord_down = key.vk
+            self._mask_held_modifiers()
+            return Verdict(swallow=True, event=TriggerEvent("chord", True, key.at))
+        if self._chord_down != key.vk:
+            return PASS
+        self._chord_down = None
+        return Verdict(swallow=True, event=TriggerEvent("chord", False, key.at))
+
+    def _mask_held_modifiers(self) -> None:
+        self._masked = self._masked | {vk for vk in self._modifiers if _MODIFIER_FLAGS[vk] & _MASKED_MODIFIERS}
+
+    def _esc(self, key: Key) -> Verdict:
+        if key.down:
+            if self._esc_down:
+                return _SWALLOW
+            if not self.esc_armed:
+                return PASS
+            self._esc_down = True
+            return Verdict(swallow=True, event=TriggerEvent("esc", True, key.at))
+        if not self._esc_down:
+            return PASS
+        self._esc_down = False
+        return _SWALLOW
+
+    def reset(self, at: float) -> list[TriggerEvent]:
+        """The hook was reinstalled and may have missed key-ups: release whatever was held."""
+        released = []
+        if self._copilot_down:
+            released.append(TriggerEvent("copilot", False, at))
+        if self._chord_down is not None:
+            released.append(TriggerEvent("chord", False, at))
+        self._modifiers = frozenset()
+        self._masked = frozenset()
+        self._copilot_down = False
+        self._chord_down = None
+        self._esc_down = False
+        return released
+
+    @property
+    def holding(self) -> bool:
+        """A trigger key is down right now (the hook should not be swapped under it)."""
+        return self._copilot_down or self._chord_down is not None
+
+
+# --- trigger events -> gestures (runs on the controller thread) ---------------------------------------
+
+HOLD_S = 0.25  # held longer than this = push-to-talk
+DOUBLE_TAP_S = 0.4  # second press this soon after a tap's release = double-tap
+
+
+@dataclass(frozen=True)
+class Press:
+    source: str
+    at: float
+
+
+@dataclass(frozen=True)
+class Release:
+    source: str
+    at: float
+    held: float  # seconds the key was down
+    hold: bool  # longer than HOLD_S: push-to-talk ends now
+
+
+@dataclass(frozen=True)
+class DoubleTap:
+    source: str
+    at: float
+
+
+@dataclass(frozen=True)
+class Cancel:
+    at: float
+
+
+Gesture = Press | Release | DoubleTap | Cancel
+
+
+@dataclass
+class Gestures:
+    """Trigger down/up -> Press / Release(tap or hold) / DoubleTap; Esc -> Cancel."""
+
+    _down: TriggerEvent | None = None
+    _last_tap: TriggerEvent | None = None  # release of the last tap, for double-tap
+    _double: bool = field(default=False)  # the key now down is the second tap of a double-tap
+
+    def feed(self, event: TriggerEvent) -> tuple[Gesture, ...]:
+        if event.source == "esc":
+            if not event.down:
+                return ()
+            self._last_tap = None
+            return (Cancel(event.at),)
+        if event.down:
+            if self._down is not None:
+                return ()  # another trigger is already down
+            self._down = event
+            last = self._last_tap
+            self._last_tap = None
+            if last is not None and last.source == event.source and event.at - last.at <= DOUBLE_TAP_S:
+                self._double = True
+                return (DoubleTap(event.source, event.at),)
+            self._double = False
+            return (Press(event.source, event.at),)
+        began = self._down
+        if began is None or began.source != event.source:
+            return ()
+        self._down = None
+        held = event.at - began.at
+        hold = held > HOLD_S
+        self._last_tap = event if not hold and not self._double else None
+        self._double = False
+        return (Release(event.source, event.at, held, hold),)

@@ -96,3 +96,92 @@ class FinalTranscript:
     final_ms: float  # speech end -> text ready
     audio_ms: float
     early: bool = False  # decoding started in the pause, before the endpoint fired
+
+
+# --- triggers and states (Stage 02). ``at`` = time.perf_counter() seconds. ---
+
+
+@dataclass(frozen=True)
+class StateChanged:
+    """Every state-machine transition (SPEC §5); drives the island."""
+
+    old: str
+    new: str
+    why: str
+    trigger: str | None  # copilot | chord | wake | named
+    at: float
+
+
+@dataclass(frozen=True)
+class PreloadHint:
+    """A command may be coming: warm the LLM (Stage 05). reason: key | wake | speech."""
+
+    reason: str
+    at: float
+
+
+@dataclass(frozen=True)
+class Gated:
+    """The gate's verdict on a final. Accepted (and not wake_only) = a command for the brain."""
+
+    utterance: int
+    accepted: bool
+    via: str  # accepted: key | wake | follow-up | always; ignored: the reason
+    text: str  # what to act on (wake name stripped)
+    heard: str
+    why: str
+    safe_only: bool  # always-listening: only safe actions may run
+    wake_only: bool  # only the name: Nova is listening for the command
+    at: float
+
+
+@dataclass(frozen=True)
+class CommandFinished:
+    """The brain / executor finished the last accepted command (Stage 02: a stub)."""
+
+    ok: bool
+    detail: str = ""
+
+
+@dataclass(frozen=True)
+class DictationChanged:
+    """Locked dictation on (double-tap) or off (tap / Esc). Stage 07 types it."""
+
+    on: bool
+    why: str
+    at: float
+
+
+@dataclass(frozen=True)
+class DictatedText:
+    utterance: int
+    text: str
+    at: float
+
+
+@dataclass(frozen=True)
+class AnswerHeard:
+    """What he said while Nova asked (Confirm / Clarify)."""
+
+    utterance: int
+    text: str
+    at: float
+
+
+@dataclass(frozen=True)
+class SessionCancelled:
+    why: str  # Esc | superseded | no answer | timed out
+    at: float
+
+
+@dataclass(frozen=True)
+class PassthroughStopped:
+    why: str
+    at: float
+
+
+@dataclass(frozen=True)
+class AlwaysListeningChanged:
+    """Tray toggle (also saved to settings.yaml when possible)."""
+
+    on: bool

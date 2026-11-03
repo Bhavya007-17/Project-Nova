@@ -227,3 +227,38 @@ def test_back_to_back_utterances_each_get_a_final(make):
         h.source.feed(speech_ms=500, silence_ms=350)
     finals = [h.next(FinalTranscript) for _ in range(3)]
     assert [f.utterance for f in finals] == [1, 2, 3]
+
+
+def test_held_key_bridges_pauses_until_release(make):
+    h = make(FakeStt())
+    h.worker.set_held(True)
+    h.source.feed(silence_ms=300)
+    h.source.feed(speech_ms=500, silence_ms=900)  # a pause that would end an utterance
+    h.source.feed(speech_ms=500)
+    h.next(SpeechStarted)
+    assert not [e for e in h.collect(0.3) if isinstance(e, SpeechEnded)]
+    h.worker.set_held(False)
+    h.worker.end_now()
+    ended = h.next(SpeechEnded)
+    assert ended.reason == "key" and len(ended.pcm) >= 1900 * 16  # both halves, one utterance
+    assert h.next(FinalTranscript).reason == "key"
+
+
+def test_cancel_drops_the_utterance_without_text(make):
+    h = make(FakeStt())
+    h.source.feed(silence_ms=300)
+    h.source.feed(speech_ms=700)
+    h.next(SpeechStarted)
+    h.worker.cancel()
+    assert h.next(SpeechEnded).reason == "cancel"
+    assert not [e for e in h.collect(0.4) if isinstance(e, FinalTranscript)]
+    h.source.feed(speech_ms=500, silence_ms=400)  # listening goes on
+    assert h.next(FinalTranscript).text
+
+
+def test_attentive_runs_vad_on_every_frame(make):
+    h = make(FakeStt())
+    h.worker.set_attentive(True)
+    h.source.feed(silence_ms=1000)
+    time.sleep(0.3)
+    assert h.worker.vad_frames == h.worker.frames  # the energy gate never skips while a session waits for speech

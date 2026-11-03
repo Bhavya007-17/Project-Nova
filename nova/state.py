@@ -1,0 +1,477 @@
+"""Nova's state machine (SPEC §5). Pure: ``step(machine, input) -> Step(new machine, effects)``.
+
+The controller (``nova.triggers``) feeds it key gestures (``nova.keys``), speech events,
+finals with the gate's environment, timer ticks and results from the brain; it
+publishes every ``Transition`` on the bus and carries out the other effects (end or
+drop the utterance, preload the LLM, hand a command over...). Level outputs - key
+held, a session waiting for speech, Esc armed - are read with ``outputs()``.
+
+States: Off · Idle · Listening · Thinking · Acting · Confirm · Clarify · Teaching ·
+Dictating · Passthrough · Done · Error.
+"""
+
+from __future__ import annotations
+
+import enum
+from dataclasses import dataclass, replace
+
+from .gate import Addressing, Decision, Env, decide
+from .keys import Cancel, DoubleTap, Press, Release
+
+
+class State(enum.Enum):
+    OFF = "off"
+    IDLE = "idle"
+    LISTENING = "listening"
+    THINKING = "thinking"
+    ACTING = "acting"
+    CONFIRM = "confirm"
+    CLARIFY = "clarify"
+    TEACHING = "teaching"
+    DICTATING = "dictating"
+    PASSTHROUGH = "passthrough"
+    DONE = "done"
+    ERROR = "error"
+
+
+FOLLOW_UP_S = 8.0  # after a command ran, commands don't need the name (SPEC §5)
+DONE_S = 1.5  # Done shows this long (SPEC §6)
+ERROR_S = 5.0
+TAP_WAIT_S = 6.0  # tapped, then said nothing
+WAKE_WAIT_S = 8.0  # "Nova" alone: wait this long for the command
+HEARD_WAIT_S = 10.0  # speech ended but no final (or no answer from the brain)
+CONFIRM_S = 15.0  # SPEC §6: 15 s without an answer = cancel
+CLARIFY_S = 20.0
+CLAIM_S = 1.0  # speech that started at most this long before a key press belongs to the key session
+
+_BUSY = frozenset({State.THINKING, State.ACTING})
+_ASKING = frozenset({State.CONFIRM, State.CLARIFY})
+_CANCELLABLE = frozenset({State.LISTENING, State.THINKING, State.ACTING, State.CONFIRM, State.CLARIFY, State.TEACHING})
+_ESC = _CANCELLABLE | {State.DICTATING}
+_KEY_STARTS = frozenset({State.IDLE, State.DONE, State.ERROR}) | _BUSY | _ASKING
+_PROGRESS = {  # brain-driven moves (Stage 04+)
+    State.THINKING: {State.ACTING, State.CONFIRM, State.CLARIFY, State.PASSTHROUGH, State.TEACHING, State.DICTATING},
+    State.ACTING: {State.THINKING, State.CONFIRM, State.CLARIFY, State.PASSTHROUGH, State.DICTATING},
+    State.CONFIRM: {State.ACTING, State.THINKING, State.IDLE},
+    State.CLARIFY: {State.ACTING, State.THINKING, State.IDLE},
+    State.PASSTHROUGH: {State.IDLE},
+    State.TEACHING: {State.IDLE, State.THINKING},
+    State.DICTATING: {State.IDLE},
+}
+_PROGRESS_DEADLINE = {State.CONFIRM: CONFIRM_S, State.CLARIFY: CLARIFY_S}
+
+
+# --- inputs (Press / Release / DoubleTap / Cancel come from nova.keys) --------------------------------
+
+
+@dataclass(frozen=True)
+class Power:
+    on: bool
+    at: float
+
+
+@dataclass(frozen=True)
+class SpeechStart:
+    utterance: int
+    at: float
+
+
+@dataclass(frozen=True)
+class SpeechEnd:
+    utterance: int
+    reason: str  # silence | key | cap | cancel
+    at: float
+
+
+@dataclass(frozen=True)
+class WakeHeard:
+    """The live words of this utterance start with the wake name (display + preload only)."""
+
+    utterance: int
+    at: float
+
+
+@dataclass(frozen=True)
+class Heard:
+    """A final transcript, with what the gate needs to judge it."""
+
+    utterance: int
+    text: str
+    at: float
+    env: Env
+
+
+@dataclass(frozen=True)
+class Tick:
+    at: float
+
+
+@dataclass(frozen=True)
+class Done:
+    """The command ran (ok) or failed; detail = short island text."""
+
+    ok: bool
+    at: float
+    detail: str = ""
+
+
+@dataclass(frozen=True)
+class Progress:
+    """The brain moved on: Acting / Confirm / Clarify / Passthrough / Teaching / Dictating / back to Idle."""
+
+    state: State
+    at: float
+    why: str = ""
+
+
+@dataclass(frozen=True)
+class Sleep:
+    on: bool
+    at: float
+
+
+# --- effects -------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Transition:
+    old: State
+    new: State
+    why: str
+    trigger: str | None = None  # copilot | chord | wake | named (the session that caused it)
+
+
+@dataclass(frozen=True)
+class EndUtterance:
+    """Finish the utterance now (key release / tap to finish)."""
+
+
+@dataclass(frozen=True)
+class DropUtterance:
+    """Throw the utterance away: no text follows."""
+
+
+@dataclass(frozen=True)
+class Preload:
+    reason: str  # key | wake | speech
+
+
+@dataclass(frozen=True)
+class Command:
+    decision: Decision
+    utterance: int
+
+
+@dataclass(frozen=True)
+class Ignored:
+    decision: Decision
+    utterance: int
+
+
+@dataclass(frozen=True)
+class Woke:
+    """He said only the name: listening for the command."""
+
+    decision: Decision
+    utterance: int
+
+
+@dataclass(frozen=True)
+class Answer:
+    """A final while Nova asks (Confirm / Clarify): for the brain to read as the answer."""
+
+    text: str
+    utterance: int
+
+
+@dataclass(frozen=True)
+class Dictated:
+    """A final while dictating (Stage 07 types it)."""
+
+    text: str
+    utterance: int
+
+
+@dataclass(frozen=True)
+class Dictation:
+    on: bool
+    why: str
+
+
+@dataclass(frozen=True)
+class Cancelled:
+    why: str  # Esc | superseded | no answer | timed out
+
+
+@dataclass(frozen=True)
+class PassthroughEnded:
+    why: str
+
+
+Effect = (
+    Transition | EndUtterance | DropUtterance | Preload | Command | Ignored | Woke | Answer | Dictated | Dictation
+    | Cancelled | PassthroughEnded
+)
+
+
+# --- the machine ----------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Session:
+    """A listening session: who opened it and which utterance it claimed."""
+
+    trigger: str  # copilot | chord (keys) · wake ("Nova" alone: the next utterance) · named (live words said Nova)
+    utterance: int | None = None
+    held: bool = False  # its key is down
+    finishing: bool = False  # a tap asked to finish: that press's release does nothing
+
+
+@dataclass(frozen=True)
+class Machine:
+    state: State = State.IDLE
+    session: Session | None = None
+    speaking: tuple[int, float] | None = None  # VAD utterance in progress: (id, started at)
+    deadline: float | None = None  # when the current state times out
+    follow_up_until: float = 0.0
+    asleep: bool = False
+
+
+@dataclass(frozen=True)
+class Step:
+    machine: Machine
+    effects: tuple[Effect, ...] = ()
+
+
+@dataclass(frozen=True)
+class Outputs:
+    held: bool  # push-to-talk key down: speech must bridge pauses
+    attentive: bool  # a session waits for speech: run the VAD on every frame
+    esc: bool  # Esc cancels: the hook swallows it
+
+
+def outputs(m: Machine) -> Outputs:
+    held = m.state is State.LISTENING and m.session is not None and m.session.held
+    return Outputs(held, m.state in (State.LISTENING, State.DICTATING), m.state in _ESC)
+
+
+def next_deadline(m: Machine) -> float | None:
+    times = [t for t in (m.deadline, m.follow_up_until or None) if t is not None]
+    return min(times) if times else None
+
+
+def _go(m: Machine, state: State, why: str, *effects: Effect, **changes) -> Step:
+    new = replace(m, state=state, **changes)
+    if state is m.state:
+        return Step(new, effects)
+    trigger = (changes["session"] if "session" in changes else m.session)
+    transition = Transition(m.state, state, why, trigger.trigger if trigger is not None else None)
+    return Step(new, (transition, *effects))
+
+
+def _idle(m: Machine, why: str, *effects: Effect) -> Step:
+    return _go(m, State.IDLE, why, *effects, session=None, deadline=None)
+
+
+def _mine(m: Machine, utterance: int) -> bool:
+    return m.session is not None and m.session.utterance == utterance
+
+
+def _speaking_mine(m: Machine) -> bool:
+    return m.session is not None and m.speaking is not None and m.speaking[0] == m.session.utterance
+
+
+def addressing(m: Machine, utterance: int, now: float) -> Addressing:
+    """What the gate should know about this utterance."""
+    session = m.session if _mine(m, utterance) else None
+    named = session is not None and session.trigger == "named"  # the text itself must carry the name
+    return Addressing(
+        session=None if session is None or named else session.trigger,
+        follow_up=now < m.follow_up_until,
+        passthrough=m.state is State.PASSTHROUGH,
+        asleep=m.asleep,
+        busy=(m.state in _BUSY or m.state is State.LISTENING) and session is None,
+    )
+
+
+def step(m: Machine, event: object) -> Step:
+    if isinstance(event, Power):
+        return _power(m, event)
+    if m.state is State.OFF:
+        return Step(m)
+    handler = _HANDLERS.get(type(event))
+    if handler is None:
+        raise TypeError(f"not a state-machine input: {event!r}")
+    return handler(m, event)
+
+
+def _power(m: Machine, e: Power) -> Step:
+    if e.on and m.state is State.OFF:
+        return _go(Machine(state=State.OFF, asleep=m.asleep), State.IDLE, "Nova is on")
+    if not e.on and m.state is not State.OFF:
+        return _go(m, State.OFF, "Nova is off", session=None, speaking=None, deadline=None, follow_up_until=0.0)
+    return Step(m)
+
+
+def _press(m: Machine, e: Press) -> Step:
+    state, session = m.state, m.session
+    if state is State.DICTATING:
+        return _idle(m, "dictation stopped", Dictation(False, "tap"))
+    if state is State.PASSTHROUGH:
+        return _idle(m, "voice mode ended", PassthroughEnded("tap"))
+    if state is State.TEACHING:
+        return Step(m)  # Stage 08 decides what a tap means while teaching
+    if state is State.LISTENING and session is not None:
+        if _speaking_mine(m):
+            return Step(replace(m, session=replace(session, held=False, finishing=True)), (EndUtterance(),))
+        if session.trigger in ("copilot", "chord"):
+            return _idle(m, "finished: nothing heard")
+        # A wake session: the key takes over.
+    if state is State.LISTENING or state in _KEY_STARTS:
+        effects: list[Effect] = [Preload("key")]
+        if state in _BUSY or state in _ASKING:
+            effects.append(Cancelled("superseded"))
+        claim = None
+        if m.speaking is not None:
+            utterance, started = m.speaking
+            if e.at - started <= CLAIM_S:
+                claim = utterance  # he started talking a beat before pressing
+            else:
+                effects.append(DropUtterance())  # someone was already talking: start clean
+        why = "Copilot key" if e.source == "copilot" else "chord"
+        return _go(m, State.LISTENING, why, *effects, session=Session(e.source, claim, held=True), deadline=None)
+    return Step(m)
+
+
+def _release(m: Machine, e: Release) -> Step:
+    session = m.session
+    if m.state is not State.LISTENING or session is None or session.trigger != e.source or not session.held:
+        return Step(m)
+    released = replace(session, held=False)
+    if e.hold:  # push-to-talk: the release is the end of speech
+        if _speaking_mine(m):
+            return Step(replace(m, session=released), (EndUtterance(),))
+        return _idle(m, "released: nothing heard")
+    # A tap: listen until he stops.
+    deadline = None if session.utterance is not None else e.at + TAP_WAIT_S
+    return Step(replace(m, session=released, deadline=deadline))
+
+
+def _double(m: Machine, e: DoubleTap) -> Step:
+    return _go(m, State.DICTATING, "double-tap: dictation", DropUtterance(), Dictation(True, "double-tap"),
+               session=None, deadline=None)
+
+
+def _cancel(m: Machine, e: Cancel) -> Step:
+    drop = (DropUtterance(),) if _speaking_mine(m) else ()
+    if m.state is State.DICTATING:
+        return _idle(m, "dictation stopped", *drop, Dictation(False, "Esc"))
+    if m.state in _CANCELLABLE:
+        return _idle(m, "cancelled", *drop, Cancelled("Esc"))
+    return Step(m)
+
+
+def _speech_start(m: Machine, e: SpeechStart) -> Step:
+    m = replace(m, speaking=(e.utterance, e.at))
+    session = m.session
+    if m.state is State.LISTENING and session is not None and session.utterance is None:
+        return Step(replace(m, session=replace(session, utterance=e.utterance), deadline=None), (Preload("speech"),))
+    return Step(m)
+
+
+def _speech_end(m: Machine, e: SpeechEnd) -> Step:
+    if m.speaking is not None and m.speaking[0] == e.utterance:
+        m = replace(m, speaking=None)
+    if m.state is not State.LISTENING or not _mine(m, e.utterance):
+        return Step(m)
+    if e.reason == "cancel":
+        return _idle(m, "speech dropped")
+    return _go(m, State.THINKING, "heard you", deadline=e.at + HEARD_WAIT_S,
+               session=replace(m.session, held=False))
+
+
+def _wake_heard(m: Machine, e: WakeHeard) -> Step:
+    if m.state in (State.IDLE, State.DONE, State.ERROR) and m.session is None:
+        return _go(m, State.LISTENING, "heard the name", Preload("wake"), session=Session("named", e.utterance),
+                   deadline=None)
+    if _mine(m, e.utterance):
+        return Step(m)
+    return Step(m, (Preload("wake"),))
+
+
+def _heard(m: Machine, e: Heard) -> Step:
+    if m.state is State.DICTATING:
+        return Step(m, (Dictated(e.text, e.utterance),))
+    if m.state in _ASKING:
+        return Step(m, (Answer(e.text, e.utterance),))
+    mine = _mine(m, e.utterance)
+    decision = decide(e.text, addressing(m, e.utterance, e.at), e.env)
+    if not decision.accepted:
+        if mine:
+            return _idle(m, decision.why, Ignored(decision, e.utterance))
+        return Step(m, (Ignored(decision, e.utterance),))
+    if decision.wake_only:
+        return _go(m, State.LISTENING, "listening for the command", Preload("wake"), Woke(decision, e.utterance),
+                   session=Session("wake"), deadline=e.at + WAKE_WAIT_S)
+    command = Command(decision, e.utterance)
+    if m.state is State.PASSTHROUGH:
+        return Step(m, (command,))  # "Nova, ..." during voice mode runs; voice mode goes on
+    superseded = (Cancelled("superseded"),) if m.state in _BUSY and not mine else ()
+    return _go(m, State.THINKING, decision.why, *superseded, command, session=None, deadline=e.at + HEARD_WAIT_S)
+
+
+def _tick(m: Machine, e: Tick) -> Step:
+    if m.follow_up_until and e.at >= m.follow_up_until:
+        m = replace(m, follow_up_until=0.0)
+    if m.deadline is None or e.at < m.deadline:
+        return Step(m)
+    if m.state in _ASKING:
+        return _idle(m, "no answer", Cancelled("no answer"))
+    if m.state in _BUSY:
+        return _idle(m, "timed out", Cancelled("timed out"))
+    reasons = {State.DONE: "done", State.ERROR: "error shown", State.LISTENING: "nothing heard"}
+    return _idle(m, reasons.get(m.state, "timed out"))
+
+
+def _done(m: Machine, e: Done) -> Step:
+    if m.state not in _BUSY and m.state not in _ASKING:
+        return Step(m)
+    state, wait = (State.DONE, DONE_S) if e.ok else (State.ERROR, ERROR_S)
+    why = e.detail or ("done" if e.ok else "failed")
+    return _go(m, state, why, session=None, deadline=e.at + wait, follow_up_until=e.at + FOLLOW_UP_S)
+
+
+def _progress(m: Machine, e: Progress) -> Step:
+    if e.state not in _PROGRESS.get(m.state, ()):
+        return Step(m)
+    if e.state is State.IDLE:
+        effects: tuple[Effect, ...] = ()
+        if m.state is State.PASSTHROUGH:
+            effects = (PassthroughEnded(e.why or "voice mode closed"),)
+        elif m.state is State.DICTATING:
+            effects = (Dictation(False, e.why or "stopped"),)
+        return _idle(m, e.why or "done", *effects)
+    wait = _PROGRESS_DEADLINE.get(e.state)
+    effects = (Dictation(True, e.why or "plan"),) if e.state is State.DICTATING else ()
+    return _go(m, e.state, e.why or e.state.value, *effects, session=None,
+               deadline=e.at + wait if wait is not None else None)
+
+
+def _sleep(m: Machine, e: Sleep) -> Step:
+    return Step(replace(m, asleep=e.on))
+
+
+_HANDLERS = {
+    Press: _press,
+    Release: _release,
+    DoubleTap: _double,
+    Cancel: _cancel,
+    SpeechStart: _speech_start,
+    SpeechEnd: _speech_end,
+    WakeHeard: _wake_heard,
+    Heard: _heard,
+    Tick: _tick,
+    Done: _done,
+    Progress: _progress,
+    Sleep: _sleep,
+}

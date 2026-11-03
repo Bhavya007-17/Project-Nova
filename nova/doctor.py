@@ -382,6 +382,27 @@ def check_chord(text: str, is_free: Callable[[Chord], bool] = hotkey_free) -> Ch
     )
 
 
+def try_keyboard_hook() -> str | None:
+    """Install the low-level keyboard hook for a moment. None = fine, else what Windows said."""
+    from .hook import KeyHook
+
+    hook = KeyHook(lambda key: False, name="doctor-keys")
+    try:
+        return None if hook.start(timeout=3.0) else (hook.error or "no answer from the hook thread")
+    finally:
+        hook.close()
+
+
+def check_keyboard_hook(attempt: Callable[[], str | None] = try_keyboard_hook) -> Check:
+    error = attempt()
+    if error is None:
+        return Check("Keyboard hook", True, "Copilot key and chord can be caught (WH_KEYBOARD_LL)")
+    return Check(
+        "Keyboard hook", False, error,
+        'Something blocks low-level keyboard hooks (security software?). "Nova ..." still works without it.',
+    )
+
+
 REQUIRED_MODELS = (
     "parakeet/encoder-model.int8.onnx",
     "parakeet/decoder_joint-model.int8.onnx",
@@ -466,6 +487,7 @@ def main() -> int:
             ("Chrome", check_chrome),
             ("Desktop apps", check_apps),
             ("Fallback chord", lambda: check_chord(settings.chord)),
+            ("Keyboard hook", check_keyboard_hook),
             ("Models", lambda: check_models(paths.MODELS)),
             ("Recordings", lambda: check_recordings(paths.RECORDINGS)),
             ("Vocab", lambda: check_vocab(paths.VOCAB)),

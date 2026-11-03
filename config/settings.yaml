@@ -3,6 +3,8 @@
 
 # Say this name to talk to Nova ("Nova, open Chrome").
 wake_name: Nova
+# Other ways speech-to-text writes the name, if Nova misses it, e.g. [Novah, no va].
+wake_spellings: []
 
 # Fallback chord: same hold / tap behaviour as the Copilot key.
 chord: ctrl+alt+n

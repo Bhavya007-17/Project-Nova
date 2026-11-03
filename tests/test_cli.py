@@ -32,14 +32,27 @@ def test_say_needs_text():
 
 def test_listen_dispatch(monkeypatch, tmp_path):
     seen = {}
-    monkeypatch.setattr(
-        "nova.listen.main", lambda device=None, wavs=(), seconds=None: seen.update(device=device, wavs=wavs, seconds=seconds) or 0
-    )
+
+    def fake(device=None, wavs=(), seconds=None, gate=False):
+        seen.update(device=device, wavs=wavs, seconds=seconds, gate=gate)
+        return 0
+
+    monkeypatch.setattr("nova.listen.main", fake)
     assert cli.main(["listen"]) == 0
-    assert seen == {"device": None, "wavs": (), "seconds": None}
+    assert seen == {"device": None, "wavs": (), "seconds": None, "gate": False}
     wav = tmp_path / "a.wav"
-    assert cli.main(["listen", "--device", "Jabra", "--wav", str(wav), "--seconds", "30"]) == 0
-    assert seen == {"device": "Jabra", "wavs": [wav], "seconds": 30.0}
+    assert cli.main(["listen", "--device", "Jabra", "--wav", str(wav), "--seconds", "30", "--gate"]) == 0
+    assert seen == {"device": "Jabra", "wavs": [wav], "seconds": 30.0, "gate": True}
+
+
+def test_keys_probe_dispatch(monkeypatch):
+    seen = []
+    monkeypatch.setattr("nova.keyprobe.main", lambda seconds=20.0, raw=False: seen.append((seconds, raw)) or 0)
+    assert cli.main(["keys", "--probe"]) == 0
+    assert cli.main(["keys", "--probe", "--seconds", "5", "--raw"]) == 0
+    assert seen == [(20.0, False), (5.0, True)]
+    with pytest.raises(SystemExit):
+        cli.main(["keys"])  # --probe is the only thing it does
 
 
 def test_bench_stt_dispatch(monkeypatch):

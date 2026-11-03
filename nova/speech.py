@@ -212,6 +212,9 @@ class SpeechWorker:
         self._device = device
         self._device_changed = False
         self._end_requested = False
+        self._cancel_requested = False
+        self._held = False
+        self._attentive = False
         self._idle = True
         self._stopping = threading.Event()
         self._thread = threading.Thread(target=self._run, name="nova-speech", daemon=True)
@@ -259,6 +262,21 @@ class SpeechWorker:
         self._end_requested = True
         self._wake.set()
 
+    def cancel(self) -> None:
+        """Esc / double-tap: drop the current utterance; no text follows (SpeechEnded reason "cancel")."""
+        self._cancel_requested = True
+        self._wake.set()
+
+    def set_held(self, held: bool) -> None:
+        """Push-to-talk key down: pauses don't end the utterance; ``end_now`` on release does."""
+        self._held = bool(held)
+        self._wake.set()
+
+    def set_attentive(self, on: bool) -> None:
+        """A session is waiting for speech: run Silero on every frame and wake per block."""
+        self._attentive = bool(on)
+        self._wake.set()
+
     @property
     def idle(self) -> bool:
         """Nobody talking and no final pending (updated by the worker every loop)."""
@@ -300,13 +318,20 @@ class SpeechWorker:
 
     def _step(self) -> None:
         self._sync_source(time.perf_counter())
+        if self._held:
+            self._ep.held = True  # a press takes effect before this audio is read...
         if self._source.is_open:
             self._read_audio()
+        if self._cancel_requested:
+            self._cancel_requested = False
+            self._end_requested = False
+            self._cancel_utterance()
         if self._end_requested:
             self._end_requested = False
             ended = self._ep.end_now()
             if ended is not None:
                 self._on_vad_event(ended)
+        self._ep.held = self._held  # ...a release after it, so the release (not a pause) ends the utterance
         self._take_results()
         self._idle = (
             self._ep.active is None
@@ -425,7 +450,7 @@ class SpeechWorker:
             if energy > 0.0:
                 self._heard_sound = True
             self.frames += 1
-            if self._gate.check(energy, busy=self._ep.listening):
+            if self._gate.check(energy, busy=self._ep.listening or self._attentive):
                 self.vad_frames += 1
                 p = vad.probability(frame)
             else:
@@ -436,7 +461,7 @@ class SpeechWorker:
                 self._on_vad_event(event)
             self._schedule()
         # Wake per block once speech may be starting (endpoints stay exact); in batches otherwise.
-        ring.wake_at = self._pos + FRAME * (1 if self._ep.listening else IDLE_BATCH)
+        ring.wake_at = self._pos + FRAME * (1 if self._ep.listening or self._attentive else IDLE_BATCH)
 
     def _on_vad_event(self, event: SpeechStarted | SpeechEnded) -> None:
         if isinstance(event, SpeechStarted):

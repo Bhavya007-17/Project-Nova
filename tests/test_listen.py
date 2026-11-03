@@ -69,3 +69,42 @@ def test_summary_percentiles():
         screen.final(final("x", final_ms=ms))
     summary = screen.summary()
     assert summary.startswith("5 finals") and "p50 340 ms" in summary and "stt p50 170 ms" in summary
+
+
+# --- `nova listen --gate` ------------------------------------------------------------------------------
+
+from nova.events import Gated, StateChanged  # noqa: E402
+from nova.listen import GateView  # noqa: E402
+
+
+def gated(utterance, accepted, via, text, heard=None, why="", safe_only=False, wake_only=False):
+    return Gated(utterance, accepted, via, text, heard if heard is not None else text, why, safe_only, wake_only, 0.0)
+
+
+def test_gate_lines_show_verdict_text_and_timing():
+    out = io.StringIO()
+    view = GateView(Screen(vt=False, out=out))
+    view.final(FinalTranscript(1, "Nova, open Chrome.", "Nova, open Chrome.", "silence", 170.0, 310.0, 1500.0))
+    view.gated(gated(1, True, "wake", "open Chrome.", heard="Nova, open Chrome.", why="starts with Nova"))
+    view.final(FinalTranscript(2, "did you close the door", "did you close the door", "silence", 1.0, 1.0, 1.0))
+    view.gated(gated(2, False, "not-command", "did you close the door", why="doesn't start like a command"))
+    view.gated(gated(3, True, "always", "open spotify", why="open Spotify", safe_only=True))
+    view.gated(gated(4, True, "wake", "", heard="Nova.", wake_only=True))
+    lines = out.getvalue().splitlines()
+    assert lines[0].startswith("ACCEPTED  wake      open Chrome.") and "said: Nova, open Chrome." in lines[0]
+    assert "310 ms after you stopped" in lines[0]
+    assert lines[1] == "IGNORED   doesn't start like a command: did you close the door"
+    assert lines[2].startswith("ACCEPTED  always    open spotify (safe actions only)")
+    assert lines[3].startswith("WAKE")
+    assert view.summary() == "gate: 3 accepted (wake 1, always 1, name only 1), 1 ignored (not-command 1)"
+
+
+def test_state_lines_name_the_trigger():
+    out = io.StringIO()
+    view = GateView(Screen(vt=False, out=out))
+    view.state(StateChanged("idle", "listening", "Copilot key", "copilot", 0.0))
+    view.state(StateChanged("listening", "thinking", "heard you", "copilot", 0.0))
+    assert out.getvalue().splitlines() == [
+        "[idle -> listening (Copilot key): Copilot key]",
+        "[listening -> thinking: heard you]",
+    ]
