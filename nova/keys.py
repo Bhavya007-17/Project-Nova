@@ -82,6 +82,7 @@ VK_LCONTROL, VK_RCONTROL = 0xA2, 0xA3
 VK_LMENU, VK_RMENU = 0xA4, 0xA5
 VK_LWIN, VK_RWIN = 0x5B, 0x5C
 VK_ESCAPE = 0x1B
+VK_RETURN = 0x0D  # also the numpad Enter
 VK_F23 = 0x86  # the Copilot key sends LWin + LShift + F23
 VK_MASK = 0xE8  # unassigned: replayed before a Win/Alt release so Start / the menu bar don't open
 NOVA_MARK = 0x4E4F5641  # dwExtraInfo on every key Nova injects ("NOVA"); the hook ignores those
@@ -94,6 +95,11 @@ _MODIFIER_FLAGS = {
 }
 _COPILOT_MODIFIERS = MOD_WIN | MOD_SHIFT
 _MASKED_MODIFIERS = MOD_WIN | MOD_ALT  # released alone, these open Start / a menu bar
+# Keys that answer the island while it asks (it never takes focus, so the hook reads them).
+_ANSWER_KEYS = {
+    "confirm": {VK_RETURN: "enter"},
+    "clarify": {**{0x31 + i: str(i + 1) for i in range(4)}, **{0x61 + i: str(i + 1) for i in range(4)}},  # 1-4, numpad 1-4
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,9 +125,10 @@ class Key:
 
 @dataclass(frozen=True, slots=True)
 class TriggerEvent:
-    source: str  # "copilot" | "chord" | "esc"
+    source: str  # "copilot" | "chord" | "esc" | "answer" | "pin" (Ctrl + Copilot)
     down: bool
     at: float
+    key: str = ""  # answer: "enter" (Confirm) or "1".."4" (Clarify)
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,7 +152,9 @@ class TriggerKeys:
     """Finds the Copilot key and the fallback chord in the raw key stream.
 
     Owned by the hook thread. Other threads only replace whole values:
-    ``configure(...)`` swaps an immutable config, ``esc_armed`` is a bool.
+    ``configure(...)`` swaps an immutable config, ``esc_armed`` is a bool, ``asking``
+    is "confirm" / "clarify" / None (the island is asking: Enter / 1-4 answer it,
+    with no modifier held, so Ctrl+1 and friends still reach his app).
     Keys Nova injected itself are never looked at; other injected keys count
     (some laptops synthesize the Copilot chord in a vendor driver).
 
@@ -159,11 +168,14 @@ class TriggerKeys:
     def __init__(self, chord: Chord | None = None, copilot: bool = True) -> None:
         self._config = _Config(chord, copilot)
         self.esc_armed = False  # the controller arms Esc while a session can be cancelled
+        self.asking: str | None = None  # the controller arms answer keys while the island asks
         self._modifiers: frozenset[int] = frozenset()
         self._masked: frozenset[int] = frozenset()  # Win / Alt keys whose release gets the mask
         self._copilot_down = False
+        self._pin_down = False  # Ctrl + Copilot is held (pin / unpin the island)
         self._chord_down: int | None = None  # vk of the chord key while it is held
         self._esc_down = False
+        self._answer_down: int | None = None  # vk of a swallowed answer key while it is held
 
     def configure(self, chord: Chord | None, copilot: bool) -> None:
         self._config = _Config(chord, copilot)
@@ -188,23 +200,34 @@ class TriggerKeys:
                 return Verdict(swallow=True, replay=((VK_MASK, True), (VK_MASK, False), (vk, False)))
             return PASS
         config = self._config
-        if vk == VK_F23 and (config.copilot or self._copilot_down):
+        if vk == VK_F23 and (config.copilot or self._copilot_down or self._pin_down):
             return self._copilot(key)
         if self._chord_down == vk or (config.chord is not None and vk == config.chord.vk):
-            return self._chord(key, config.chord)
+            verdict = self._chord(key, config.chord)
+            if verdict is not PASS:
+                return verdict  # (a chord key pressed without its modifiers may still answer the island)
         if vk == VK_ESCAPE:
             return self._esc(key)
+        if self._answer_down == vk or self.asking is not None:
+            return self._answer(key)
         return PASS
 
     def _copilot(self, key: Key) -> Verdict:
         if key.down:
-            if self._copilot_down:
+            if self._copilot_down or self._pin_down:
                 return _SWALLOW  # auto-repeat while held
-            if self._flags() & _COPILOT_MODIFIERS != _COPILOT_MODIFIERS:
+            flags = self._flags()
+            if flags & _COPILOT_MODIFIERS != _COPILOT_MODIFIERS:
                 return PASS  # a plain F23 from some other tool
-            self._copilot_down = True
             self._mask_held_modifiers()
+            if flags & MOD_CONTROL:  # Ctrl + Copilot: keep the island on screen, or stop
+                self._pin_down = True
+                return Verdict(swallow=True, event=TriggerEvent("pin", True, key.at))
+            self._copilot_down = True
             return Verdict(swallow=True, event=TriggerEvent("copilot", True, key.at))
+        if self._pin_down:
+            self._pin_down = False
+            return _SWALLOW
         if not self._copilot_down:
             return PASS
         self._copilot_down = False
@@ -240,6 +263,20 @@ class TriggerKeys:
         self._esc_down = False
         return _SWALLOW
 
+    def _answer(self, key: Key) -> Verdict:
+        if not key.down:
+            if self._answer_down != key.vk:
+                return PASS
+            self._answer_down = None
+            return _SWALLOW  # its press was swallowed: so is the release, even if no longer asking
+        if self._answer_down == key.vk:
+            return _SWALLOW  # auto-repeat while held
+        name = _ANSWER_KEYS.get(self.asking or "", {}).get(key.vk)
+        if name is None or self._flags():
+            return PASS
+        self._answer_down = key.vk
+        return Verdict(swallow=True, event=TriggerEvent("answer", True, key.at, name))
+
     def reset(self, at: float) -> list[TriggerEvent]:
         """The hook was reinstalled and may have missed key-ups: release whatever was held."""
         released = []
@@ -250,14 +287,16 @@ class TriggerKeys:
         self._modifiers = frozenset()
         self._masked = frozenset()
         self._copilot_down = False
+        self._pin_down = False
         self._chord_down = None
         self._esc_down = False
+        self._answer_down = None
         return released
 
     @property
     def holding(self) -> bool:
         """A trigger key is down right now (the hook should not be swapped under it)."""
-        return self._copilot_down or self._chord_down is not None
+        return self._copilot_down or self._pin_down or self._chord_down is not None
 
 
 # --- trigger events -> gestures (runs on the controller thread) ---------------------------------------
@@ -289,6 +328,7 @@ class DoubleTap:
 @dataclass(frozen=True)
 class Cancel:
     at: float
+    why: str = "Esc"  # Esc | No (the island's No button)
 
 
 Gesture = Press | Release | DoubleTap | Cancel
@@ -303,6 +343,8 @@ class Gestures:
     _double: bool = field(default=False)  # the key now down is the second tap of a double-tap
 
     def feed(self, event: TriggerEvent) -> tuple[Gesture, ...]:
+        if event.source in ("answer", "pin"):
+            return ()  # not gestures: the controller handles these itself
         if event.source == "esc":
             if not event.down:
                 return ()

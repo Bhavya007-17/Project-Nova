@@ -200,7 +200,7 @@ class Dictation:
 
 @dataclass(frozen=True)
 class Cancelled:
-    why: str  # Esc | superseded | no answer | timed out
+    why: str  # Esc | No (island button) | superseded | no answer | timed out
 
 
 @dataclass(frozen=True)
@@ -248,11 +248,13 @@ class Outputs:
     held: bool  # push-to-talk key down: speech must bridge pauses
     attentive: bool  # a session waits for speech: run the VAD on every frame
     esc: bool  # Esc cancels: the hook swallows it
+    asking: str | None = None  # confirm | clarify: the hook reads Enter / 1-4 as answers
 
 
 def outputs(m: Machine) -> Outputs:
     held = m.state is State.LISTENING and m.session is not None and m.session.held
-    return Outputs(held, m.state in (State.LISTENING, State.DICTATING), m.state in _ESC)
+    asking = m.state.value if m.state in _ASKING else None
+    return Outputs(held, m.state in (State.LISTENING, State.DICTATING), m.state in _ESC, asking)
 
 
 def next_deadline(m: Machine) -> float | None:
@@ -365,9 +367,9 @@ def _double(m: Machine, e: DoubleTap) -> Step:
 def _cancel(m: Machine, e: Cancel) -> Step:
     drop = (DropUtterance(),) if _speaking_mine(m) else ()
     if m.state is State.DICTATING:
-        return _idle(m, "dictation stopped", *drop, Dictation(False, "Esc"))
+        return _idle(m, "dictation stopped", *drop, Dictation(False, e.why))
     if m.state in _CANCELLABLE:
-        return _idle(m, "cancelled", *drop, Cancelled("Esc"))
+        return _idle(m, "cancelled", *drop, Cancelled(e.why))
     return Step(m)
 
 

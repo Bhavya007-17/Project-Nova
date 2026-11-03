@@ -27,14 +27,17 @@ from .config import Settings
 from .events import (
     AlwaysListeningChanged,
     AnswerHeard,
+    BrainProgress,
     CommandFinished,
     ConfigChanged,
     DictatedText,
     DictationChanged,
     FinalTranscript,
     Gated,
+    IslandAction,
     PartialTranscript,
     PassthroughStopped,
+    PinToggled,
     PowerChanged,
     PreloadHint,
     SessionCancelled,
@@ -43,7 +46,7 @@ from .events import (
     StateChanged,
 )
 from .gate import Env, StubResolver, WakeName, strip_wake
-from .keys import Gestures, TriggerEvent, TriggerKeys, parse_chord
+from .keys import Cancel, Gestures, TriggerEvent, TriggerKeys, parse_chord
 from .log import TraceLog
 from .state import (
     Answer,
@@ -60,6 +63,7 @@ from .state import (
     PassthroughEnded,
     Power,
     Preload,
+    Progress,
     SpeechEnd,
     SpeechStart,
     State,
@@ -100,8 +104,9 @@ class _Names:
 _STOP = object()
 _SUBSCRIBED = (
     SpeechStarted, SpeechEnded, PartialTranscript, FinalTranscript, PowerChanged, ConfigChanged,
-    AlwaysListeningChanged, CommandFinished,
+    AlwaysListeningChanged, CommandFinished, BrainProgress, IslandAction,
 )
+_STATES = {state.value: state for state in State}
 
 
 def _audio_detector() -> Detector:
@@ -215,6 +220,13 @@ class Triggers:
 
     def _handle(self, item: object, now: float) -> None:
         if isinstance(item, TriggerEvent):
+            if item.source == "answer":
+                self._answer_key(item, now)
+                return
+            if item.source == "pin":
+                if item.down:
+                    self._bus.publish(PinToggled(now))
+                return
             for gesture in self._gestures.feed(item):
                 self._feed(gesture, now)
         elif isinstance(item, SpeechStarted):
@@ -240,8 +252,25 @@ class Triggers:
             self._always = item.on
         elif isinstance(item, CommandFinished):
             self._feed(Done(item.ok, now, item.detail), now)
+        elif isinstance(item, BrainProgress):
+            state = _STATES.get(item.state)
+            if state is None:
+                _log.warning("brain asked for an unknown state %r", item.state)
+            else:
+                self._feed(Progress(state, now, item.why), now)
+        elif isinstance(item, IslandAction):
+            if item.what == "no" and outputs(self._machine).asking:
+                self._feed(Cancel(now, "No"), now)  # the island's No = Esc; Yes / a choice is the brain's
         elif isinstance(item, _Names):
             self._resolver = self._resolver.with_names(item.names)
+
+    def _answer_key(self, event: TriggerEvent, now: float) -> None:
+        """Enter / 1-4 from the hook while the island asks: the same as clicking it."""
+        asking = outputs(self._machine).asking
+        if asking == "confirm" and event.key == "enter":
+            self._bus.publish(IslandAction("yes", now, via="key"))
+        elif asking == "clarify" and event.key.isdigit():
+            self._bus.publish(IslandAction("choice", now, index=int(event.key) - 1, via="key"))
 
     def _apply_settings(self, settings: Settings, first: bool) -> None:
         triggers = settings.triggers
@@ -316,6 +345,8 @@ class Triggers:
             self._speech.set_attentive(after.attentive)
         if self._keys is not None and after.esc != before.esc:
             self._keys.esc_armed = after.esc
+        if self._keys is not None and after.asking != before.asking:
+            self._keys.asking = after.asking
 
     def _effect(self, effect: object, now: float) -> None:
         bus = self._bus
@@ -352,11 +383,12 @@ class Triggers:
 
 
 def stub_brain(bus: Bus) -> Callable[[], None]:
-    """Stage 02 has no actions yet: every accepted command "runs" at once, opening the follow-up window."""
+    """No actions yet (Stage 04): every accepted command "runs" at once, opening the follow-up window.
+    The island shows ✓ + the command it would act on."""
 
     def on_gated(event: Gated) -> None:
         if event.accepted and not event.wake_only:
-            bus.publish(CommandFinished(True, "accepted (actions arrive in Stage 04)"))
+            bus.publish(CommandFinished(True, event.text))
 
     return bus.subscribe(Gated, on_gated)
 

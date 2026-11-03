@@ -197,6 +197,18 @@ class Tray(QObject):
         self._icon.hide()  # otherwise a ghost icon stays until the mouse passes over it
 
 
+def _start_island(bus: Bus, tray: Tray, always: bool):
+    """The Dynamic-Island bar (Stage 03). If it can't start, Nova still listens and acts."""
+    try:
+        from .island.window import Island
+
+        return Island(bus, always=always)
+    except Exception:  # noqa: BLE001
+        _log.exception("the island failed to start")
+        tray.notify("Nova island", "The island couldn't start; Nova still works. Details in logs/nova.log.")
+        return None
+
+
 def run_tray(bus: Bus, store: ConfigStore, notices: tuple[tuple[str, str], ...] = ()) -> int:
     app = QApplication.instance() or QApplication(["nova"])
     app.setApplicationName("Nova")
@@ -206,6 +218,7 @@ def run_tray(bus: Bus, store: ConfigStore, notices: tuple[tuple[str, str], ...] 
         return 1
     global _console_handler
     tray = Tray(app, bus, store)
+    island = _start_island(bus, tray, store.settings.triggers.always_listening)
     for title, text in notices:
         tray.notify(title, text)
     keepalive = None
@@ -227,5 +240,7 @@ def run_tray(bus: Bus, store: ConfigStore, notices: tuple[tuple[str, str], ...] 
     finally:
         if keepalive is not None:
             keepalive.stop()
+        if island is not None:
+            island.close()
         tray.close()
         closed.set()

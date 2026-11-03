@@ -10,13 +10,18 @@ from nova.bus import Bus
 from nova.config import Settings, Triggers as TriggerSettings
 from nova.events import (
     AlwaysListeningChanged,
+    BrainProgress,
+    CommandFinished,
     ConfigChanged,
     DictationChanged,
     FinalTranscript,
     Gated,
+    IslandAction,
     PartialTranscript,
+    PinToggled,
     PowerChanged,
     PreloadHint,
+    SessionCancelled,
     SpeechEnded,
     SpeechStarted,
     StateChanged,
@@ -188,7 +193,10 @@ def test_tray_toggle_holds_until_the_file_changes_that_setting(rig):
 def test_stub_brain_finishes_commands_and_opens_the_follow_up_window(rig):
     r = rig()
     stub_brain(r.bus)
+    finished = []
+    r.bus.subscribe(CommandFinished, finished.append)
     assert r.say("Nova, open Chrome").accepted
+    assert [f.detail for f in finished] == ["open Chrome"]  # the island shows ✓ + the command
     assert r.next(StateChanged, where=lambda e: e.new == "done")
     assert r.say("now close Spotify").via == "follow-up"
 
@@ -207,3 +215,57 @@ def test_names_arrive_later(rig):
     assert r.say("open spotify").via == "unresolved"
     r.triggers.set_names(["Spotify"])
     assert r.say("open spotify").accepted
+
+
+def asking(r, kind):
+    assert r.say("Nova, do the thing").accepted
+    r.bus.publish(BrainProgress(kind))
+    r.next(StateChanged, where=lambda e: e.new == kind)
+    deadline = time.monotonic() + 1.0
+    while r.keys.asking != kind and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert r.keys.asking == kind
+
+
+def test_enter_confirms_through_the_hook_while_the_island_asks(rig):
+    r = rig()
+    asking(r, "confirm")
+    r.triggers.key_event(TriggerEvent("answer", True, time.perf_counter(), "enter"))
+    action = r.next(IslandAction)
+    assert (action.what, action.via) == ("yes", "key")
+
+
+def test_number_key_picks_a_choice(rig):
+    r = rig()
+    asking(r, "clarify")
+    r.triggers.key_event(TriggerEvent("answer", True, time.perf_counter(), "2"))
+    action = r.next(IslandAction)
+    assert (action.what, action.index) == ("choice", 1)
+
+
+def test_no_click_cancels_and_disarms(rig):
+    r = rig()
+    asking(r, "confirm")
+    r.bus.publish(IslandAction("no", time.perf_counter()))
+    assert r.next(StateChanged, where=lambda e: e.new == "idle")
+    assert r.next(SessionCancelled).why == "No"
+    deadline = time.monotonic() + 1.0
+    while r.keys.asking is not None and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert r.keys.asking is None and not r.keys.esc_armed
+
+
+def test_brain_progress_to_an_unknown_state_is_ignored(rig):
+    r = rig()
+    assert r.say("Nova, do the thing").accepted
+    r.bus.publish(BrainProgress("dancing"))
+    r.bus.publish(BrainProgress("acting"))
+    assert r.next(StateChanged, where=lambda e: e.new != "thinking").new == "acting"
+
+
+def test_ctrl_copilot_toggles_the_pin_and_leaves_the_state_alone(rig):
+    r = rig()
+    r.triggers.key_event(TriggerEvent("pin", True, time.perf_counter()))
+    assert isinstance(r.next(PinToggled), PinToggled)
+    r.triggers.key_event(TriggerEvent("pin", False, time.perf_counter()))
+    assert r.triggers.machine.state.value == "idle"

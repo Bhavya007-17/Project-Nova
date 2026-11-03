@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from nova.bus import Bus
-from nova.events import FinalTranscript, MicChanged, PartialTranscript, SpeechEnded, SpeechReady, SpeechStarted
+from nova.events import FinalTranscript, MicChanged, MicLevel, PartialTranscript, SpeechEnded, SpeechReady, SpeechStarted
 from nova.speech import SpeechWorker
 from nova.vad import FRAME
 
@@ -262,3 +262,19 @@ def test_attentive_runs_vad_on_every_frame(make):
     h.source.feed(silence_ms=1000)
     time.sleep(0.3)
     assert h.worker.vad_frames == h.worker.frames  # the energy gate never skips while a session waits for speech
+
+
+def test_mic_level_flows_only_while_a_session_listens(make):
+    h = make(FakeStt())
+    h.source.feed(speech_ms=300, silence_ms=100)
+    assert not [e for e in h.collect(0.3) if isinstance(e, MicLevel)]  # nobody asked: the island is hidden
+    h.worker.set_attentive(True)
+    time.sleep(0.05)
+    h.source.feed(speech_ms=300)
+    levels = [e.level for e in h.collect(0.3) if isinstance(e, MicLevel)]
+    assert levels and max(levels) > 0.9  # loud fake speech: a full waveform
+    h.worker.set_attentive(False)
+    time.sleep(0.05)
+    h.collect(0.1)
+    h.source.feed(speech_ms=300)
+    assert not [e for e in h.collect(0.3) if isinstance(e, MicLevel)]

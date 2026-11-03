@@ -74,9 +74,10 @@ All triggers are on by default; each can be toggled in settings.
 - Passthrough (Claude/ChatGPT voice mode active): Nova ignores speech except "Nova…" and the Copilot key.
 
 ## 6. The Island (UI)
-- **Tech:** PySide6 QML. Frameless, transparent, always-on-top, tool window (no taskbar button). Excluded from screen capture (`SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)`). Click-through when collapsed; interactive only while showing buttons. Never takes keyboard focus except for Confirm/Clarify. Shown top-center on the monitor under the mouse; DPI-aware (200 %).
+- **Tech:** PySide6 QML. Frameless, transparent, always-on-top, tool window (no taskbar button). Excluded from screen capture (`SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)`). Click-through when collapsed; interactive only while showing buttons (or pinned). Never takes keyboard focus — Windows' foreground lock refuses it anyway; while it asks, the keyboard hook reads Enter / 1–4 (Esc cancels). Shown top-center on the monitor under the mouse; DPI-aware (200 %).
 - **Look:** true-black pill (#000), white text (Segoe UI Variable), radius = height/2, spring morphing between sizes like the iPhone Dynamic Island. Prefer render-thread Animators for smoothness. One accent per state: listening blue, confirm amber, error red, dictating orange, done green.
 - **Sizes:** Hidden (or a 1-px glow when always-listening is on) → Compact (~360×44: waveform + live words) → Expanded (up to ~560×160: steps, results, buttons) → Chips (small pills beside it for background jobs).
+- **Pinned:** Ctrl + Copilot keeps the island on screen between commands as a small status pill (dot: blue = always-listening on, grey = off); Ctrl + Copilot again unpins. Drag the pill to move the island — later drops appear there too; double-click = back to top-center. Neither the pin nor the spot survives a restart. Off hides it.
 - **Per state:**
   - Listening: waveform from mic level + live words (partials fade, finals settle).
   - Thinking: small animated orb (cheap shader or gradient).

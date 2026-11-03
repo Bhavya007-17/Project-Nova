@@ -3,7 +3,7 @@ import wave
 import numpy as np
 import pytest
 
-from nova.audio import Ring, mme_match, read_wav
+from nova.audio import Ring, level_of, mme_match, read_wav
 
 
 def test_ring_reads_back_by_absolute_position():
@@ -83,3 +83,11 @@ def test_ring_wakes_the_reader_only_when_it_has_enough():
     assert not wake.is_set()
     ring.write(np.zeros(4, dtype=np.float32), at=0.0)
     assert wake.is_set()
+
+
+def test_level_of_maps_minus_60_to_minus_12_dbfs_onto_0_to_1():
+    assert level_of(0.0) == 0.0 and level_of(-1.0) == 0.0
+    assert level_of(10 ** -7) == 0.0  # -70 dB: flat
+    assert level_of(10 ** -3.6) == pytest.approx(0.5)  # -36 dB
+    assert level_of(10 ** -1.2) == pytest.approx(1.0)
+    assert level_of(1.0) == 1.0  # clipping: full, not more

@@ -25,6 +25,11 @@ def _parser() -> argparse.ArgumentParser:
     keys.add_argument("--probe", action="store_true", required=True, help="log raw key events (character keys hidden)")
     keys.add_argument("--seconds", type=float, default=20.0, metavar="N", help="stop after N seconds (default 20; Esc stops early)")
     keys.add_argument("--raw", action="store_true", help="swallow nothing (Copilot will open)")
+    island = sub.add_parser("island", help="the Dynamic-Island bar: --demo cycles every state with fake data")
+    island.add_argument("--demo", action="store_true", required=True, help="play fake events (no mic, no keys)")
+    from .island.demo import NAMES  # no Qt at import
+
+    island.add_argument("scene", nargs="?", choices=NAMES, metavar="SCENE", help="loop one scene: " + ", ".join(NAMES))
     bench = sub.add_parser("bench-stt", help="speech-to-text accuracy (WER) and speed on the recordings")
     bench.add_argument("--live", type=int, default=0, metavar="N", help="also replay N recordings in real time through the live worker")
     sub.add_parser("say", help="run a command from text, no mic").add_argument("text")
@@ -60,6 +65,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         from . import keyprobe
 
         return keyprobe.main(seconds=args.seconds, raw=args.raw)
+    if command == "island":
+        from .island import demo
+
+        return demo.main(args.scene)
     if command == "bench-stt":
         from .stt import bench
 

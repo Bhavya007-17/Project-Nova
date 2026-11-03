@@ -300,6 +300,17 @@ def test_confirm_takes_answers_and_times_out():
     assert run.state is State.IDLE and run.has(Cancelled)[0].why == "no answer"
 
 
+def test_asking_arms_the_answer_keys_and_no_cancels_like_esc():
+    run = Run()(heard(1, "Nova, submit it", 1.0))
+    assert outputs(run.m).asking is None
+    run(Progress(State.CONFIRM, 1.4))
+    assert outputs(run.m).asking == "confirm" and outputs(run.m).esc
+    run(Cancel(2.0, "No"))
+    assert run.state is State.IDLE and run.has(Cancelled)[0].why == "No"
+    run = Run()(heard(1, "Nova, open chrome", 1.0), Progress(State.CLARIFY, 1.4))
+    assert outputs(run.m).asking == "clarify"
+
+
 def test_progress_only_moves_along_allowed_paths():
     run = Run()(Progress(State.ACTING, 1.0))
     assert run.state is State.IDLE  # nothing to act on

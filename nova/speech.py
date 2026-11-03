@@ -27,9 +27,9 @@ from typing import Protocol
 import numpy as np
 
 from . import paths
-from .audio import BLOCK, SAMPLE_RATE, Mic, MicError, Ring
+from .audio import BLOCK, SAMPLE_RATE, Mic, MicError, Ring, level_of
 from .bus import Bus
-from .events import FinalTranscript, MicChanged, PartialTranscript, SpeechEnded, SpeechReady, SpeechStarted
+from .events import FinalTranscript, MicChanged, MicLevel, PartialTranscript, SpeechEnded, SpeechReady, SpeechStarted
 from .log import TraceLog
 from .stt.base import Transcriber
 from .vad import FRAME, EndpointRules, Endpointer, EnergyGate, Silero
@@ -439,6 +439,7 @@ class SpeechWorker:
             self._pos = ring.end
         vad = self._vad
         assert vad is not None
+        loudest = -1.0  # for the island's waveform, while a session listens
         while ring.end - self._pos >= FRAME:
             pos = self._pos
             frame = ring.read(pos, pos + FRAME)
@@ -447,6 +448,7 @@ class SpeechWorker:
                 return
             self._pos = pos + FRAME
             energy = float(np.dot(frame, frame)) / FRAME
+            loudest = max(loudest, energy)
             if energy > 0.0:
                 self._heard_sound = True
             self.frames += 1
@@ -460,6 +462,8 @@ class SpeechWorker:
             if event is not None:
                 self._on_vad_event(event)
             self._schedule()
+        if self._attentive and loudest >= 0.0:
+            self._bus.publish(MicLevel(level_of(loudest)))
         # Wake per block once speech may be starting (endpoints stay exact); in batches otherwise.
         ring.wake_at = self._pos + FRAME * (1 if self._ep.listening or self._attentive else IDLE_BATCH)
 

@@ -137,10 +137,84 @@ class Gated:
 
 @dataclass(frozen=True)
 class CommandFinished:
-    """The brain / executor finished the last accepted command (Stage 02: a stub)."""
+    """The brain / executor finished the last accepted command (Stage 02: a stub).
+
+    detail = the island's short result ("Opened HW 5 – Thermo"); skill = a learned skill ran (⚡).
+    """
 
     ok: bool
     detail: str = ""
+    skill: bool = False
+
+
+@dataclass(frozen=True)
+class BrainProgress:
+    """The brain moved on: acting / confirm / clarify / passthrough / teaching / dictating / idle.
+
+    The controller feeds it to the state machine, which ignores moves it doesn't allow.
+    why = island text where a state has one (passthrough: "Claude voice").
+    """
+
+    state: str
+    why: str = ""
+
+
+# --- the island (Stage 03): what the brain shows, and what he does in it. ---
+
+
+@dataclass(frozen=True)
+class MicLevel:
+    """Mic loudness 0..1 for the island's waveform, ~30x a second while a session listens."""
+
+    level: float
+
+
+@dataclass(frozen=True)
+class StepsChanged:
+    """Acting: the plan's steps for the island's step line ("Chrome → Canvas → Today"); active = running step."""
+
+    steps: tuple[str, ...]
+    active: int = 0
+
+
+@dataclass(frozen=True)
+class Asking:
+    """Published right before Confirm / Clarify: the exact action ("Submit 'HW 5' on Canvas?"),
+    or a question with up to 4 choices ("the second one" / a click / a number key picks one)."""
+
+    kind: str  # confirm | clarify
+    question: str
+    choices: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class JobChip:
+    """A background job's chip beside the island (Stage 09). status: working | done | failed | gone (removes it)."""
+
+    id: str
+    text: str  # "Claude · HW 5"
+    status: str = "working"
+
+
+@dataclass(frozen=True)
+class PinToggled:
+    """Ctrl + Copilot: keep the island on screen as a small status pill, or stop."""
+
+    at: float
+
+
+@dataclass(frozen=True)
+class IslandAction:
+    """He answered in the island without speaking (the island never takes focus; keys come from the hook).
+
+    what: yes | no | choice (index = 0-based) | retry | show-me | chip (chip = its id). via: click | key.
+    """
+
+    what: str
+    at: float
+    index: int = -1
+    chip: str = ""
+    via: str = "click"
 
 
 @dataclass(frozen=True)
@@ -170,7 +244,7 @@ class AnswerHeard:
 
 @dataclass(frozen=True)
 class SessionCancelled:
-    why: str  # Esc | superseded | no answer | timed out
+    why: str  # Esc | No (island button) | superseded | no answer | timed out
     at: float
 
 

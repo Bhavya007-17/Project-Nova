@@ -29,6 +29,18 @@ STALL_S = 1.5  # no audio for this long while open = the device went away
 POLL_DEFAULT_S = 2.0  # how often to check whether the Windows default input changed
 
 
+LEVEL_FLOOR_DB = -60.0  # the island's waveform: this quiet = flat...
+LEVEL_FULL_DB = -12.0  # ...this loud = full height (speech here runs about -35 to -10 dBFS)
+
+
+def level_of(energy: float) -> float:
+    """Mean-square frame energy -> 0..1 for the island's waveform (linear in dB)."""
+    if energy <= 0.0:
+        return 0.0
+    db = 10.0 * float(np.log10(energy))
+    return min(1.0, max(0.0, (db - LEVEL_FLOOR_DB) / (LEVEL_FULL_DB - LEVEL_FLOOR_DB)))
+
+
 class MicError(RuntimeError):
     """The mic can't be opened. The message is shown as-is."""
 
