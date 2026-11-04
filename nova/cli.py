@@ -8,7 +8,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 # Subcommands that later stages fill in.
-_COMING = {"say": "04", "eval": "05", "latency": "11"}
+_COMING = {"eval": "05"}
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -32,9 +32,11 @@ def _parser() -> argparse.ArgumentParser:
     island.add_argument("scene", nargs="?", choices=NAMES, metavar="SCENE", help="loop one scene: " + ", ".join(NAMES))
     bench = sub.add_parser("bench-stt", help="speech-to-text accuracy (WER) and speed on the recordings")
     bench.add_argument("--live", type=int, default=0, metavar="N", help="also replay N recordings in real time through the live worker")
-    sub.add_parser("say", help="run a command from text, no mic").add_argument("text")
+    say = sub.add_parser("say", help="run a command from text, no mic (the whole brain + real actions)")
+    say.add_argument("text")
+    say.add_argument("--dry", action="store_true", help="only show the plan; do nothing")
     sub.add_parser("eval", help="score the intent eval")
-    sub.add_parser("latency", help="p50/p95 per path from the logs")
+    sub.add_parser("latency", help="p50/p95 per command type from the logs")
     return parser
 
 
@@ -73,5 +75,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         from .stt import bench
 
         return bench.run(live=args.live)
+    if command == "say":
+        from . import say
+
+        return say.main(args.text, dry=args.dry)
+    if command == "latency":
+        from . import latency
+
+        return latency.main()
     print(f"`nova {command}` arrives in Stage {_COMING[command]}.")
     return 1

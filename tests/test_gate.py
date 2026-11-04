@@ -2,6 +2,9 @@
 
 import pytest
 
+from catalog_fixture import CATALOG
+
+from nova.brain.tier0 import Tier0Resolver
 from nova.gate import Addressing, Env, StubResolver, WakeName, command_words, decide, strip_wake
 
 APPS = ["Google Chrome", "Spotify", "Notepad", "Calculator", "Autodesk Fusion", "Claude", "Word", "Excel",
@@ -9,6 +12,13 @@ APPS = ["Google Chrome", "Spotify", "Notepad", "Calculator", "Autodesk Fusion", 
 RESOLVER = StubResolver(APPS)
 WAKE = WakeName.of("Nova", ["Noah va"])
 IDLE = Addressing()
+# The always-listening lists run through the Stage 02 stub and through strict Tier 0 + a catalog like this laptop's.
+RESOLVERS = {"stub": RESOLVER, "tier0": Tier0Resolver(CATALOG)}
+
+
+@pytest.fixture(params=sorted(RESOLVERS))
+def resolver(request):
+    return RESOLVERS[request.param]
 
 
 def env(**kw):
@@ -140,8 +150,8 @@ def test_follow_up_works_with_always_listening_off():
         "search for apartments",
     ],
 )
-def test_chatter_is_ignored(heard):
-    assert not judge(heard).accepted
+def test_chatter_is_ignored(heard, resolver):
+    assert not judge(heard, resolver=resolver).accepted
 
 
 @pytest.mark.parametrize(
@@ -181,8 +191,8 @@ def test_chatter_is_ignored(heard):
         "open chrome",
     ],
 )
-def test_safe_commands_are_accepted_without_the_name(heard):
-    decision = judge(heard)
+def test_safe_commands_are_accepted_without_the_name(heard, resolver):
+    decision = judge(heard, resolver=resolver)
     assert decision.accepted and decision.via == "always" and decision.safe_only, decision
 
 
@@ -202,10 +212,10 @@ def test_safe_commands_are_accepted_without_the_name(heard):
         "click the first link",
     ],
 )
-def test_risky_commands_need_the_name_or_the_key(heard):
-    decision = judge(heard)
+def test_risky_commands_need_the_name_or_the_key(heard, resolver):
+    decision = judge(heard, resolver=resolver)
     assert not decision.accepted and decision.via == "needs-name", decision
-    assert judge(f"Nova, {heard}").accepted
+    assert judge(f"Nova, {heard}", resolver=resolver).accepted
 
 
 def test_always_listening_off_ignores_plain_commands():

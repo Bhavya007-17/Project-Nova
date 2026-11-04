@@ -300,10 +300,13 @@ def main(device: str | None = None, wavs: Sequence[Path] = (), seconds: float | 
 
 
 def _start_gate(bus: Bus, worker: SpeechWorker, settings, trace: TraceLog, screen: Screen, view: GateView, *, keys: bool):
-    """Stage 02 parts: controller + stub brain (+ the keyboard hook on the live mic)."""
+    """Stage 02 parts: controller + stub brain (no actions; + the keyboard hook on the live mic). Always-listening
+    resolves with strict Tier 0 against the app catalog, like the tray app."""
     from .hook import TriggerHook
     from .keys import TriggerKeys, parse_chord
-    from .triggers import Triggers, load_start_menu_names, stub_brain
+    from .actions.catalog import CatalogStore
+    from .brain.tier0 import Tier0Resolver
+    from .triggers import Triggers, stub_brain
 
     for kind, handler in (
         (Gated, view.gated), (StateChanged, view.state), (PreloadHint, view.preload),
@@ -327,11 +330,13 @@ def _start_gate(bus: Bus, worker: SpeechWorker, settings, trace: TraceLog, scree
             screen.line(f"keys: {hook.error}")
             hook = None
 
-    def names_loaded(names: list[str]) -> None:
-        triggers.set_names(names)
-        screen.line(_dim_status(screen._vt, f"[{len(names)} Start-menu apps known to always-listening]"))
+    def catalog_loaded(catalog) -> None:
+        triggers.set_resolver(Tier0Resolver(catalog))
+        screen.line(_dim_status(screen._vt, f"[{len(catalog.apps)} Start-menu apps known to always-listening]"))
 
-    load_start_menu_names(names_loaded)
+    catalogs = CatalogStore(paths.CATALOG_CACHE, paths.ALIASES)
+    catalogs.subscribe(catalog_loaded)
+    catalogs.start()
     triggers.start()
     return triggers, hook
 

@@ -41,6 +41,7 @@ from .events import (
     PowerChanged,
     PreloadHint,
     SessionCancelled,
+    SleepRequested,
     SpeechEnded,
     SpeechStarted,
     StateChanged,
@@ -64,6 +65,7 @@ from .state import (
     Power,
     Preload,
     Progress,
+    Sleep,
     SpeechEnd,
     SpeechStart,
     State,
@@ -101,10 +103,15 @@ class _Names:
     names: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class _Resolver:
+    resolver: object
+
+
 _STOP = object()
 _SUBSCRIBED = (
     SpeechStarted, SpeechEnded, PartialTranscript, FinalTranscript, PowerChanged, ConfigChanged,
-    AlwaysListeningChanged, CommandFinished, BrainProgress, IslandAction,
+    AlwaysListeningChanged, CommandFinished, BrainProgress, IslandAction, SleepRequested,
 )
 _STATES = {state.value: state for state in State}
 
@@ -171,6 +178,10 @@ class Triggers:
     def set_names(self, names: Iterable[str]) -> None:
         """Known app names (Start menu) for the always-listening stub resolver."""
         self._queue.put(_Names(tuple(names)))
+
+    def set_resolver(self, resolver: object) -> None:
+        """The always-listening resolver (Stage 04: strict Tier 0 against the app catalog)."""
+        self._queue.put(_Resolver(resolver))
 
     @property
     def machine(self) -> Machine:
@@ -263,6 +274,10 @@ class Triggers:
                 self._feed(Cancel(now, "No"), now)  # the island's No = Esc; Yes / a choice is the brain's
         elif isinstance(item, _Names):
             self._resolver = self._resolver.with_names(item.names)
+        elif isinstance(item, _Resolver):
+            self._resolver = item.resolver
+        elif isinstance(item, SleepRequested):
+            self._feed(Sleep(item.on, now), now)
 
     def _answer_key(self, event: TriggerEvent, now: float) -> None:
         """Enter / 1-4 from the hook while the island asks: the same as clicking it."""
@@ -383,30 +398,11 @@ class Triggers:
 
 
 def stub_brain(bus: Bus) -> Callable[[], None]:
-    """No actions yet (Stage 04): every accepted command "runs" at once, opening the follow-up window.
-    The island shows ✓ + the command it would act on."""
+    """No actions (`nova listen --gate`): every accepted command "runs" at once, opening the follow-up window.
+    The island shows ✓ + the command it would act on. The tray app runs the real brain (``nova.brain.brain``)."""
 
     def on_gated(event: Gated) -> None:
         if event.accepted and not event.wake_only:
             bus.publish(CommandFinished(True, event.text))
 
     return bus.subscribe(Gated, on_gated)
-
-
-def load_start_menu_names(deliver: Callable[[list[str]], None]) -> threading.Thread:
-    """List Start-menu app names in the background (PowerShell takes ~1-2 s) and hand them over."""
-
-    def work() -> None:
-        try:
-            from .doctor import start_apps
-
-            rows = start_apps()
-            if isinstance(rows, dict):
-                rows = [rows]
-            deliver([str(row["Name"]) for row in rows if isinstance(row, dict) and row.get("Name")])
-        except Exception:  # noqa: BLE001
-            _log.warning("couldn't list Start-menu apps; always-listening knows only built-in site names", exc_info=True)
-
-    thread = threading.Thread(target=work, name="nova-start-apps", daemon=True)
-    thread.start()
-    return thread

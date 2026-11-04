@@ -16,13 +16,20 @@ def test_doctor_dispatch(monkeypatch):
     assert cli.main(["doctor"]) == 1
 
 
-@pytest.mark.parametrize(
-    ("argv", "stage"),
-    [(["say", "open chrome"], "04"), (["eval"], "05"), (["latency"], "11")],
-)
+@pytest.mark.parametrize(("argv", "stage"), [(["eval"], "05")])
 def test_stubs_name_their_stage(argv, stage, capsys):
     assert cli.main(argv) == 1
     assert f"Stage {stage}" in capsys.readouterr().out
+
+
+def test_say_and_latency_dispatch(monkeypatch):
+    seen = []
+    monkeypatch.setattr("nova.say.main", lambda text, dry=False: seen.append((text, dry)) or 0)
+    monkeypatch.setattr("nova.latency.main", lambda: seen.append("latency") or 0)
+    assert cli.main(["say", "open chrome"]) == 0
+    assert cli.main(["say", "--dry", "new tab"]) == 0
+    assert cli.main(["latency"]) == 0
+    assert seen == [("open chrome", False), ("new tab", True), "latency"]
 
 
 def test_say_needs_text():

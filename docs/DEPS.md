@@ -19,6 +19,14 @@ One line each: what, version, why. Ask before adding anything over ~50 MB or a n
 - **SetWindowDisplayAffinity** (user32, WDA_EXCLUDEFROMCAPTURE) — screenshots and screen shares never show the island (`NOVA_CAPTURABLE=1` turns it off for layout checks). **DwmSetWindowAttribute** (DWMWA_TRANSITIONS_FORCEDISABLED) — no Windows fade on top of the island's own drop-down. Click-through (WS_EX_LAYERED | WS_EX_TRANSPARENT), no-activate and the input region (SetWindowRgn) come through Qt window flags / `setMask`.
 - **Fonts** (built into Windows 11) — Segoe UI Variable (text), Segoe Fluent Icons (✓ ✗ ⚡ ⚠ mic).
 - **MMDevice API** (COM: IAudioSessionManager2, IAudioMeterInformation) — "another app is recording" and "speakers playing" for the gate (`nova/detect.py`). SPEC's ConsentStore `LastUsedTimeStop` stopped updating on this laptop on 2026-10-28, for every app.
+- **Start-menu catalog** (PowerShell `Shell.Application` AppsFolder: name, AUMID, shortcut target) — the app list (`nova/actions/catalog.py`), ~1 s, below-normal priority, at start and every 10 min; cached in `data/catalog.json`.
+- **Window identity** (`GetApplicationUserModelId`, `SHGetPropertyStoreForWindow` → `System.AppUserModel.ID`, `QueryFullProcessImageNameW`) — which app a window belongs to, never by its title (Chrome: window AUMID; Claude / ChatGPT / Notepad: process AUMID; Fusion: same folder as its shortcut).
+- **IApplicationActivationManager** (COM) — launches packaged apps (Claude, ChatGPT, Calculator…); other apps via `explorer shell:AppsFolder\<AUMID>`.
+- **SetForegroundWindow** escalation — plain first; then Nova becomes the last input source (SendInput of the unassigned key 0xE8) and tries again; then `AttachThreadInput`. Each command's trace says which one worked.
+- **SetWindowPos + DWMWA_EXTENDED_FRAME_BOUNDS** (dwmapi) — snaps and layouts land edge to edge (invisible resize borders compensated); per-monitor DPI aware (`SetThreadDpiAwarenessContext`), `GetDpiForMonitor` for moving between monitors.
+- **SendInput** Unicode / key chords (marked with NOVA_MARK so Nova's own hook lets them through) and a **clipboard borrow** (all formats saved and put back ~300 ms after Ctrl+V; kept out of Win+V history) for text over 20 characters.
+- **UI Automation** (COM `CUIAutomation`, on its own thread with a deadline) — the focused control's type and `IsPassword` before typing (SPEC §14). Chrome answers "pane" to its first question while it builds its tree, so Nova asks twice.
+- **IAudioEndpointVolume / IAudioMeterInformation** (COM) — exact volume (read back) and "is anything playing" before pause / play; media keys via SendInput.
 
 ## Dev
 - **pytest** 9.2 — unit tests for pure logic.

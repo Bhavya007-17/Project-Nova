@@ -259,3 +259,10 @@ class AlwaysListeningChanged:
     """Tray toggle (also saved to settings.yaml when possible)."""
 
     on: bool
+
+
+@dataclass(frozen=True)
+class SleepRequested:
+    """ "stop listening" / "wake up": only the name or the key count while asleep (SPEC §5)."""
+
+    on: bool

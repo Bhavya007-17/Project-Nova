@@ -1,0 +1,20 @@
+# Short names for apps and sites. Left: what you say. Right: a Start-menu app name or a web address.
+# Save the file; Nova uses it from the next command.
+canvas: https://canvas.vt.edu
+fusion: Autodesk Fusion
+chrome: Google Chrome
+claude: Claude
+chatgpt: ChatGPT
+docs: https://docs.google.com
+google docs: https://docs.google.com
+gmail: https://mail.google.com
+google drive: https://drive.google.com
+google calendar: https://calendar.google.com
+youtube: https://www.youtube.com
+github: https://github.com
+vs code: Visual Studio Code
+vscode: Visual Studio Code
+teams: Microsoft Teams
+edge: Microsoft Edge
+explorer: File Explorer
+files: File Explorer
