@@ -302,3 +302,55 @@ def test_same_sound_opens_without_asking():
     assert one("Open cloud.") == step("open_app", app="Claude")  # "cloud" = "Claude" by sound, nothing else close
     plan = parse("close cloud", CATALOG, running=RUNNING)
     assert plan.kind == "clarify"  # closing still asks
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("I need a new tab", step("tab", op="new")),
+        ("get me a new tab", step("tab", op="new")),
+        ("give me a new window", step("press", keys="ctrl+n")),
+        ("give me full screen", step("window", op="fullscreen", target="active")),
+    ],
+)
+def test_an_open_verb_before_a_fixed_command(text, expected):
+    assert one(text) == expected
+
+
+@pytest.mark.parametrize("text", ["write me a poem about robots", "write an essay on the french revolution",
+                                  "write up a summary of this page", "write some notes for the meeting"])
+def test_writing_something_new_is_left_to_tier_1(text):
+    assert parse(text, CATALOG, running=RUNNING) is None  # work for Claude, not typing
+
+
+@pytest.mark.parametrize(("text", "op"), [("go back a tab", "prev"), ("back one tab", "prev"), ("go forward a tab", "next")])
+def test_tabs_back_and_forward(text, op):
+    assert one(text) == step("tab", op=op)
+
+
+def test_weak_sound_alike_questions_are_marked_as_guesses():
+    guess = parse("I need a new dab", CATALOG)
+    assert guess.kind == "clarify" and guess.guess  # "dab" ~ YouTube: Tier 1 may know it's a tab
+    familiar = parse("close Claire", CATALOG, running=RUNNING)
+    assert familiar.kind == "clarify" and not familiar.guess  # Claude is open: a real mishearing to ask about
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("show me the desktop", step("press", keys="win+d")),
+        ("go to sleep for a bit", step("listening", op="sleep")),
+        ("take me to the bottom of the page", step("scroll", dir="bottom")),
+        ("go to the top of this page", step("scroll", dir="top")),
+        ("get rid of fusion for now", step("close_app", app="Autodesk Fusion")),
+        ("search the web for ros2 humble install guide",
+         step("web_search", query="ros2 humble install guide", engine="google")),
+    ],
+)
+def test_more_everyday_phrasings(text, expected):
+    assert one(text) == expected
+
+
+def test_talk_about_a_site_is_not_a_search():
+    assert parse("youtube recommended me the weirdest video", CATALOG) is None
+    assert one("youtube how to tie a tie") == step("web_search", query="how to tie a tie", engine="youtube")

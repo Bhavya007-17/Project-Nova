@@ -134,3 +134,12 @@ def test_running_apps_are_familiar_for_sound_alikes():
     assert CATALOG.resolve("not bad").matches == ()  # not an alias, not running: no guess
     offered = [m.target.name for m in CATALOG.resolve("not bad", familiar=frozenset({"Notepad"})).matches]
     assert offered[:1] == ["Notepad"]
+
+
+def test_version_numbers_are_optional():
+    rows = [{"Name": n, "AppID": n} for n in ("SOLIDWORKS 2025", "SOLIDWORKS Rx 2025", "MATLAB R2025a",
+                                              "Python 3.12 (64-bit)", "Python 3.11 (64-bit)")]
+    catalog = Catalog(apps_from_rows(rows))
+    assert catalog.resolve("solidworks").best.target.name == "SOLIDWORKS 2025"
+    assert catalog.resolve("matlab").best.target.name == "MATLAB R2025a"
+    assert catalog.resolve("python").best is None  # which one? ask

@@ -318,6 +318,12 @@ def test_progress_only_moves_along_allowed_paths():
     assert run.state is State.ERROR and run.has(Transition)[0].why == "Chrome didn't open"
 
 
+def test_thinking_can_go_quietly_back_to_idle():
+    run = Run()(heard(1, "Nova, open the thing", 1.0), Progress(State.IDLE, 1.6, "not a command"))
+    assert run.state is State.IDLE and run.has(Transition)[-1].why == "not a command"
+    assert not run.has(Done)
+
+
 def test_sleep_ignores_everything_but_the_name():
     run = Run()(Sleep(True, 1.0), heard(1, "open spotify", 2.0))
     assert run.has(Ignored)[0].decision.via == "asleep"

@@ -213,6 +213,9 @@ class Catalog:
             if len(words) >= 2 and words[0] in _VENDORS:
                 short = words[1:]
                 names.append(_Name(short, "".join(short), target, "short"))
+            plain = _without_version(words)
+            if plain != words:  # "SOLIDWORKS 2025" -> "solidworks", "MATLAB R2025a" -> "matlab"
+                names.append(_Name(plain, "".join(plain), target, "short"))
         for phrase, value in (aliases or {}).items():
             words = words_of(phrase)
             if not words:
@@ -246,6 +249,11 @@ class Catalog:
         for n in self._names:
             seen.setdefault(n.target.name if n.how != "alias" else " ".join(n.words), None)
         return tuple(seen)
+
+    @property
+    def aliases(self) -> tuple[tuple[str, Target], ...]:
+        """The short names from aliases.yaml whose app is installed: ("canvas", site), ("fusion", Autodesk Fusion)."""
+        return tuple((" ".join(n.words), n.target) for n in self._names if n.how == "alias")
 
     def app(self, name: str) -> App | None:
         return self._by_name.get(name.casefold())
@@ -331,6 +339,17 @@ class Catalog:
                 return None  # a folder several apps share (Chrome's): don't guess
         owners = self._by_stem.get(key_of(stem), [])
         return owners[0] if len(owners) == 1 else None
+
+
+_VERSIONISH = re.compile(r"\d+|r?\d{4}[a-z]?|r\d|v\d+|x\d+|bit")
+
+
+def _without_version(words: tuple[str, ...]) -> tuple[str, ...]:
+    """The name without trailing version / build words ("python 3 12 64 bit" -> "python"); never empty."""
+    end = len(words)
+    while end > 1 and _VERSIONISH.fullmatch(words[end - 1]):
+        end -= 1
+    return words[:end]
 
 
 def _contains(name: tuple[str, ...], part: tuple[str, ...]) -> bool:

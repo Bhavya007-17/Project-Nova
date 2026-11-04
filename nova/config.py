@@ -15,6 +15,7 @@ import ipaddress
 import json
 import logging
 import os
+import re
 import threading
 import typing
 import urllib.parse
@@ -60,6 +61,19 @@ class Logs:
 
 
 @dataclass(frozen=True)
+class Llm:
+    """Tier 1 (SPEC §7.4, §15). Models picked by `nova bench-llm`."""
+
+    gpu_model: str = "qwen3.5:4b"
+    cpu_model: str = "qwen3.5:2b-q4_K_M"
+    device: str = "auto"  # auto | gpu | cpu
+    keep_alive: str = "10m"  # unload after this long unused
+    headroom_gb: float = 1.0  # the GPU needs the model + this much free VRAM, else the CPU model runs
+    timeout_s: float = 8.0
+    simulate_free_vram_gb: float | None = None  # testing: pretend only this much VRAM is free
+
+
+@dataclass(frozen=True)
 class Settings:
     wake_name: str = "Nova"
     wake_spellings: tuple[str, ...] = ()  # other ways speech-to-text writes the name
@@ -67,6 +81,7 @@ class Settings:
     triggers: Triggers = field(default_factory=Triggers)
     audio: Audio = field(default_factory=Audio)
     ollama: Ollama = field(default_factory=Ollama)
+    llm: Llm = field(default_factory=Llm)
     logs: Logs = field(default_factory=Logs)
 
 
@@ -97,6 +112,16 @@ audio:
 # Local LLM runtime. Must be on this laptop.
 ollama:
   url: http://127.0.0.1:11434
+
+# Local LLM for loose phrasing (Tier 1). `nova bench-llm` measured these on this laptop.
+llm:
+  gpu_model: qwen3.5:4b          # on the RTX when it has room
+  cpu_model: qwen3.5:2b-q4_K_M   # when the GPU is busy (Fusion) or device is cpu
+  device: auto             # auto | gpu | cpu
+  keep_alive: 10m          # unload the model after this long unused
+  headroom_gb: 1.0         # GPU only if the model + this much VRAM is free
+  timeout_s: 8.0
+  # simulate_free_vram_gb: 0.5   # testing: pretend only this much VRAM is free
 
 logs:
   transcripts: true        # false = logs keep timings but not what you said
@@ -189,6 +214,8 @@ def _value(kind: Any, value: Any, path: str) -> Any:
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ConfigError(f"{path} must be a number, not {value!r}")
         return float(value)
+    if kind == float | None:
+        return None if value is None else _value(float, value, path)
     if kind is str:
         if not isinstance(value, str):
             raise ConfigError(f"{path} must be text, not {value!r}")
@@ -244,6 +271,31 @@ def _check(settings: Settings) -> None:
     except ValueError as error:
         raise ConfigError(f"chord: {error}") from error
     _check_local_url(settings.ollama.url, "ollama.url")
+    _check_llm(settings.llm)
+
+
+_DURATION = re.compile(r"-1|0|(\d+h)?(\d+m)?(\d+s)?")
+
+
+def _check_llm(llm: Llm) -> None:
+    from .brain.llm import is_cloud
+
+    for key in ("gpu_model", "cpu_model"):
+        name = getattr(llm, key).strip()
+        if not name:
+            raise ConfigError(f"llm.{key} must not be empty (an Ollama model, e.g. qwen3.5:2b-q4_K_M)")
+        if is_cloud(name):
+            raise ConfigError(f"llm.{key}: {name} is a cloud model (runs off this laptop); use a local one")
+    if llm.device not in ("auto", "gpu", "cpu"):
+        raise ConfigError(f"llm.device must be auto, gpu or cpu, not {llm.device!r}")
+    if not llm.keep_alive or not _DURATION.fullmatch(llm.keep_alive):
+        raise ConfigError(f"llm.keep_alive must look like 10m, 30s, 1h or 0, not {llm.keep_alive!r}")
+    if llm.headroom_gb < 0:
+        raise ConfigError("llm.headroom_gb must be 0 or more")
+    if not 1.0 <= llm.timeout_s <= 60.0:
+        raise ConfigError("llm.timeout_s must be between 1 and 60 seconds")
+    if llm.simulate_free_vram_gb is not None and llm.simulate_free_vram_gb < 0:
+        raise ConfigError("llm.simulate_free_vram_gb must be 0 or more (or left out)")
 
 
 def _check_local_url(url: str, path: str) -> None:

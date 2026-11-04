@@ -96,3 +96,49 @@ def test_clarify_answers():
     index, seen = ask("choose", "Open which one?", choices, answers=[AnswerHeard(1, "nope", 1.0)])
     assert index is None and seen[-1] == BrainProgress("idle", "Cancelled")
     assert Asking("clarify", "Open which one?", choices) in seen
+
+
+def test_open_question_takes_whatever_he_says():
+    answer, seen = ask("answer", "What should I open?", answers=[AnswerHeard(1, "the calculator", 1.0)])
+    assert answer == "the calculator"
+    assert seen[:2] == [Asking("clarify", "What should I open?"), BrainProgress("clarify")]
+    answer, seen = ask("answer", "What should I open?", answers=[AnswerHeard(1, "never mind", 1.0)])
+    assert answer is None and seen[-1] == BrainProgress("idle", "Cancelled")
+
+
+def run_with(text, *answers, via="key"):
+    from test_router import FakeTier1
+
+    from nova.brain.router import Router
+
+    events = []
+    hands = FakeHands()
+    executor = Executor(hands, FakeAsker())
+    result, record = handle(Command(text, utterance=3, via=via, at=0.0), CATALOG, executor,
+                            router=Router(FakeTier1(*answers)), publish=events.append, snap=lambda catalog: EMPTY)
+    return result, record, events, hands
+
+
+def test_tier_1_plans_run_and_are_traced():
+    result, record, events, hands = run_with(
+        "can you get canvas up for me",
+        {"kind": "act", "steps": [{"action": "open_app", "app": "Canvas"}], "confidence": 0.95})
+    assert hands.ran == [step("open_url", url="https://canvas.vt.edu")]
+    assert record["tier"] == "1" and record["llm_ms"] == 500.0 and record["plan_kind"] == "act"
+
+
+def test_handoff_shows_what_it_would_do():
+    _, record, events, hands = run_with(
+        "write a cover letter for bosch",
+        {"kind": "handoff", "steps": [], "confidence": 0.9,
+         "handoff": {"to": "claude", "mode": "text", "prompt": "write a cover letter for bosch"}})
+    assert hands.ran == [] and record["type"] == "handoff" and record["ok"]
+    assert events == [CommandFinished(True, "Would hand off to Claude: “write a cover letter for bosch”")]
+
+
+def test_not_a_command_in_the_follow_up_window_stays_quiet():
+    ignore = {"kind": "ignore", "steps": [], "confidence": 0.9}
+    _, _, events, _ = run_with("that page took forever to load", ignore, via="follow-up")
+    assert events == [BrainProgress("idle", "not a command")]
+    _, _, events, _ = run_with("that page took forever to load", ignore, via="key")
+    assert events == [CommandFinished(False, "That didn't sound like a command for me.")]

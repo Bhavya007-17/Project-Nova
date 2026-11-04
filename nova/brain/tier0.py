@@ -128,7 +128,8 @@ _POLITE = sorted(
     key=len, reverse=True,
 )
 _TRAILING = sorted(
-    [("please",), ("for", "me"), ("now",), ("right", "now"), ("thanks",), ("thank", "you"), ("real", "quick"),
+    [("please",), ("for", "me"), ("for", "now"), ("for", "a", "bit"), ("for", "a", "while"), ("now",),
+     ("right", "now"), ("thanks",), ("thank", "you"), ("real", "quick"),
      ("really", "quick"), ("quickly",), ("asap",), ("if", "you", "can"), ("will", "you"), ("would", "you"),
      ("okay",), ("ok",), ("yeah",), ("but",), ("and",), ("so",), ("or",), ("um",), ("uh",)],
     key=len, reverse=True,
@@ -247,6 +248,8 @@ _TEMPLATES: list[tuple[re.Pattern[str], Callable[[re.Match], Step]]] = [
         (r"close (?:the |this |that |current |the current )?tab", lambda m: step("tab", op="close")),
         (r"(?:go to |switch to |move to )?(?:the )?next tab|switch tabs?", lambda m: step("tab", op="next")),
         (r"(?:go to |switch to |move to )?(?:the )?(?:previous|last|prior) tab", lambda m: step("tab", op="prev")),
+        (r"(?:go )?back (?:a|one) tab|(?:go )?(?:a|one) tab back", lambda m: step("tab", op="prev")),
+        (r"(?:go )?forward (?:a|one) tab|(?:go )?(?:a|one) tab (?:forward|over)", lambda m: step("tab", op="next")),
         (r"(?:reopen|re open)(?: the| that| my)?(?: last)?(?: closed| close)? tab"
          r"|(?:restore|bring back|undo close|undo closed|open)(?: the| that| my)?(?: last)? (?:closed|close) tab",
          lambda m: step("tab", op="reopen")),
@@ -263,6 +266,9 @@ _TEMPLATES: list[tuple[re.Pattern[str], Callable[[re.Match], Step]]] = [
         (r"scroll(?: (?P<dir>up|down|left|right))?" + _AMOUNT,
          lambda m: step("scroll", dir=m["dir"] or "down", amount=_scroll_amount(m))),
         (r"page (?P<dir>up|down)", lambda m: step("scroll", dir=m["dir"], amount="page")),
+        (r"(?:go|take me|bring me|jump|skip|head)(?: all the way)?(?: back)?(?: up| down)? to the "
+         r"(?P<edge>top|bottom|end|start|beginning) of (?:the|this) page",
+         lambda m: step("scroll", dir=_EDGE[m["edge"]])),
         # volume
         (r"(?:set |change |put |turn )?(?:the )?(?:volume|sound)(?: level)?(?: (?:to|at))? (?P<n>\d{1,3})(?: percent)?",
          lambda m: step("volume", op="set", level=int(m["n"]))),
@@ -293,7 +299,8 @@ _TEMPLATES: list[tuple[re.Pattern[str], Callable[[re.Match], Step]]] = [
         (r"(?:start|begin|turn on)(?: (?:the|a))? dictation|start dictating|dictation on",
          lambda m: step("dictation", op="start")),
         (r"(?:stop|end|turn off)(?: the)? dictation|stop dictating|dictation off", lambda m: step("dictation", op="stop")),
-        (r"stop listening(?: (?:for now|for a bit|for a while))?|go to sleep|sleep|take a break",
+        (r"(?:stop listening|go to sleep|sleep|take a break)(?: (?:for now|for a bit|for a while|for a minute"
+         r"|for a few minutes|for the night))?",
          lambda m: step("listening", op="sleep")),
         (r"wake up|start listening|resume listening|listen again", lambda m: step("listening", op="wake")),
         # everyday shortcuts
@@ -304,7 +311,7 @@ _TEMPLATES: list[tuple[re.Pattern[str], Callable[[re.Match], Step]]] = [
         (r"cut(?: (?:that|this|it|the text))?", lambda m: step("press", keys="ctrl+x")),
         (r"select (?:all|everything)(?: (?:the )?text)?", lambda m: step("press", keys="ctrl+a")),
         (r"save(?: (?:it|this|that|the file|my work|the document))?", lambda m: step("press", keys="ctrl+s")),
-        (r"show (?:the |my )?desktop|(?:minimize|minimise|hide) (?:everything|all(?: (?:the )?windows)?)",
+        (r"show (?:me )?(?:the |my )?desktop|(?:minimize|minimise|hide) (?:everything|all(?: (?:the )?windows)?)",
          lambda m: step("press", keys="win+d")),
         (r"zoom in", lambda m: step("press", keys="ctrl+=")),
         (r"zoom out", lambda m: step("press", keys="ctrl+-")),
@@ -645,6 +652,11 @@ def _clause(words: tuple[str, ...], st: _State) -> list[object] | Ask | None:
             return [step("press", keys=keys)] if keys else None
         if family in ("type", "search", "click"):
             return None  # handled with the original text (see parse)
+        if family == "open" and rest:
+            fixed = _template(rest[1:] if rest[0] in ("a", "the", "some") and _template(rest) is None else rest)
+            if fixed is not None:  # "I need a new tab", "give me full screen"
+                st.family = None
+                return [fixed]
         made = _target_items(family, rest, st)
         if made is not None:
             st.family = family
@@ -842,6 +854,8 @@ def parse(text: str, catalog: Catalog, *, strict: bool = False, running: Iterabl
             start_tok = clause.first + lead + verb[1]
             if start_tok > clause.last:
                 return None
+            if words[0] == "write" and len(words) > verb[1] and words[verb[1]] in _NEW_WORK:
+                return None  # "write me a poem": work for Claude, not typing (Tier 1 decides)
             begin, end, i = _payload(text, toks, start_tok, clauses, i, st)
             made = _payload_step(verb[0], text, toks, begin, end, st)
             if made is None:
@@ -884,14 +898,17 @@ def parse(text: str, catalog: Catalog, *, strict: bool = False, running: Iterabl
     if asks:
         if strict or len(asks) > 1:
             return None
-        return _clarify(items, asks[0][0], asks[0][1])
+        if len(clauses) > 1 and _weak(asks[0][1], st.running):
+            return None  # "open the clock, I need a timer": the second clause is talk, not a name to ask about
+        return _clarify(items, asks[0][0], asks[0][1], st.running)
     plan = _plan(items, st.confidence)
     if plan is not None and guessed:
-        said = _describe(plan)
+        said = describe(plan)
         return Plan("clarify", question=f"{said}?", choices=(said,), options=(plan,), confidence=0.5)
     return plan
 
 
+_NEW_WORK = frozenset({"me", "us", "him", "her", "them", "a", "an", "some", "up", "my"})
 _GUESS_FAMILIES = frozenset({"open", "switch", "close", "maximize", "minimize", "restore", "center", "place", "type",
                              "press"})  # free-text verbs other than "type" would turn any mishearing into a question
 _GUESSABLE = tuple(sorted({p[0] for p, family in _VERBS if len(p) == 1 and family in _GUESS_FAMILIES}))
@@ -910,12 +927,23 @@ def _guess_verb(words: tuple[str, ...], st: _State) -> str | None:
         family = _verb((verb,))[0]
         if family == "type":  # the rest is free text: it always parses
             return verb
-        if _clause((verb, *words[1:]), _State(st.catalog, st.strict, running=st.running)) is not None:
-            return verb
+        made = _clause((verb, *words[1:]), _State(st.catalog, st.strict, running=st.running))
+        if made is None or (isinstance(made, Ask) and not _familiar(made, st.running)):
+            continue  # a guessed verb + a sound-alike of something not even open is two guesses: Tier 1 decides
+        return verb
     return None
 
 
-def _describe(plan: Plan) -> str:
+def _familiar(ask: Ask, running: frozenset[str]) -> bool:
+    return all(m.target.name in running for m in ask.matches)
+
+
+def _weak(ask: Ask, running: frozenset[str]) -> bool:
+    """Only sound-alikes of things that aren't open ("timer" ~ Teams / Drive)."""
+    return all(m.how == "sound" and m.target.name not in running for m in ask.matches)
+
+
+def describe(plan: Plan) -> str:
     """One line for a yes / no question: "Close Notepad", "Type “hello world”"."""
     s = plan.steps[0]
     a = s.args
@@ -933,7 +961,7 @@ def _describe(plan: Plan) -> str:
         case "web_search":
             said = f"Search for “{a['query']}”"
         case "open_url":
-            said = f"Open {a['url'].split('//', 1)[-1]}"
+            said = f"Open {a['url'].split('//', 1)[-1].removeprefix('www.').rstrip('/')}"
         case "window":
             target = a.get("target", ACTIVE)
             said = f"{_FAMILY_VERB.get(a['op'], a['op'].replace('_', ' ').capitalize())}" + (
@@ -965,6 +993,10 @@ def _payload_step(kind: str, text: str, toks: Sequence[Tok], begin: int, end: in
     inner = [t for t in toks if begin <= t.start and t.end <= end and t.word]
     words = [t.word for t in inner]
     engine = "google"
+    for lead in (["the", "web", "for"], ["the", "internet", "for"], ["online", "for"], ["the", "web"]):
+        if words[: len(lead)] == lead and len(words) > len(lead):  # "search the web for X"
+            inner, words = inner[len(lead) - (lead[-1] == "for") :], words[len(lead) - (lead[-1] == "for") :]
+            break
     if words[:1] == ["for"]:  # "search for X"
         inner, words = inner[1:], words[1:]
     head = _engine_at(words, at_end=False)
@@ -994,7 +1026,7 @@ def _plan(items: list[object], confidence: float) -> Plan | None:
         return None
 
 
-def _clarify(items: list[object], at: int, ask: Ask) -> Plan | None:
+def _clarify(items: list[object], at: int, ask: Ask, running: frozenset[str] = frozenset()) -> Plan | None:
     options: list[Plan] = []
     choices: list[str] = []
     for match in ask.matches:
@@ -1005,12 +1037,21 @@ def _clarify(items: list[object], at: int, ask: Ask) -> Plan | None:
     if not options:
         return None
     question = f"{ask.verb} {choices[0]}?" if len(choices) == 1 else f"{ask.verb} which one?"
+    # Only sound-alikes or partial names of things that aren't open: a guess ("new dab" ~ YouTube, "wikipedia" ~
+    # ChatGPT). The router lets Tier 1 try first and asks this only if Tier 1 doesn't act.
+    guess = all(m.how in ("sound", "words") and m.target.name not in running for m in ask.matches)
     return Plan("clarify", question=question, choices=tuple(choices), options=tuple(options),
-                confidence=max(m.score for m in ask.matches) / 100.0)
+                confidence=max(m.score for m in ask.matches) / 100.0, guess=guess)
+
+
+_STATEMENT = frozenset({"is", "was", "has", "had", "keeps", "kept", "just", "always", "never", "can", "cant", "wont",
+                        "does", "did", "says", "said"})
 
 
 def _engine_search(words: tuple[str, ...]) -> bool:
-    return len(words) > 1 and words[0] in _ENGINE_VERBS
+    """ "youtube how to tie a tie" searches; "youtube recommended me ..." / "google is down" is talk."""
+    return (len(words) > 1 and words[0] in _ENGINE_VERBS and words[1] not in _STATEMENT
+            and not (words[1].endswith("ed") and len(words[1]) > 4))
 
 
 # --- always-listening: the gate's resolver ------------------------------------------------------------------------

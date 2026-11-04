@@ -355,3 +355,18 @@ def test_keyboard_hook_row():
     assert check_keyboard_hook(lambda: None).ok
     blocked = check_keyboard_hook(lambda: "can't watch the keyboard ([WinError 5] Access is denied)")
     assert not blocked.ok and "Access is denied" in blocked.detail and "Nova" in blocked.fix
+
+
+def test_llm_models_pulled():
+    tags = {"models": [{"name": "qwen3.5:4b"}, {"name": "qwen3.5:2b-q4_K_M"}]}
+    ok = doctor.check_llm("http://127.0.0.1:11434", "qwen3.5:4b", "qwen3.5:2b-q4_K_M", fetch=lambda url, t: tags)
+    assert ok.ok and "GPU qwen3.5:4b" in ok.detail
+    missing = doctor.check_llm("http://127.0.0.1:11434", "gemma4:e2b", "qwen3.5:2b-q4_K_M", fetch=lambda url, t: tags)
+    assert not missing.ok and "gemma4:e2b" in missing.detail and "ollama pull gemma4:e2b" in missing.fix
+
+
+def test_llm_check_without_ollama():
+    def fetch(url, timeout):
+        raise urllib.error.URLError("refused")
+
+    assert not doctor.check_llm("http://127.0.0.1:11434", "a:1b", "a:1b", fetch=fetch).ok

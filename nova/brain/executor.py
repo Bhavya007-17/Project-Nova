@@ -69,6 +69,10 @@ class Executor:
         self._clock = clock
         self._cancel = threading.Event()
 
+    @property
+    def asker(self) -> Asker:
+        return self._asker
+
     def cancel(self) -> None:
         """Any thread: stop before the next step."""
         self._cancel.set()

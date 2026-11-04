@@ -49,4 +49,6 @@ omit = [
     "nova/hook.py", "nova/detect.py", "nova/island/window.py",
     "nova/actions/native.py", "nova/actions/apps.py", "nova/actions/input.py", "nova/actions/uia.py",
     "nova/actions/system.py", "nova/actions/context.py", "nova/actions/hands.py", "nova/say.py",
+    # `nova bench-llm`: drives real Ollama servers (checked by running it; its pick logic is tiny)
+    "nova/bench_llm.py",
 ]

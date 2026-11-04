@@ -321,9 +321,13 @@ class Triggers:
                 notes.pop(next(iter(notes)))
         self._feed(SpeechStart(utterance, event.at), now)
         m = self._machine
-        could_act = (self._always and not m.asleep) or now < m.follow_up_until
-        if m.state in (State.IDLE, State.DONE, State.ERROR) and m.session is None and could_act:
-            self._bus.publish(PreloadHint("speech", now))
+        if m.state in (State.IDLE, State.DONE, State.ERROR) and m.session is None:
+            # A follow-up may need the LLM; always-listening only acts on what Tier 0 resolves, so "always" is a
+            # hint the LLM ignores (room chatter must not keep a model loaded).
+            if now < m.follow_up_until:
+                self._bus.publish(PreloadHint("follow-up", now))
+            elif self._always and not m.asleep:
+                self._bus.publish(PreloadHint("always", now))
 
     def _sample(self, now: float) -> None:
         if self._talking is None or self._detector is None or now < self._next_sample:

@@ -93,6 +93,7 @@ class Plan:
     confidence: float = 1.0
     say: str = ""
     handoff: Mapping[str, Any] | None = None
+    guess: bool = False  # clarify from weak sound-alikes / partial names: Tier 1 may know better
 
     def option(self, index: int) -> Plan | None:
         return self.options[index] if 0 <= index < len(self.options) else None

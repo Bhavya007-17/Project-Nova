@@ -114,7 +114,9 @@ class StateChanged:
 
 @dataclass(frozen=True)
 class PreloadHint:
-    """A command may be coming: warm the LLM (Stage 05). reason: key | wake | speech."""
+    """A command may be coming: warm the LLM (Stage 05).
+
+    reason: key | wake | speech (inside a key session) | follow-up | always (always-listening chatter: ignored)."""
 
     reason: str
     at: float

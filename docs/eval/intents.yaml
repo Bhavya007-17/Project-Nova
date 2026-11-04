@@ -1,0 +1,625 @@
+# Intent eval (SPEC §18) — run with `nova eval`. Synthetic paraphrases: varied phrasing, fillers,
+# polite forms. Scored on the action and its key arguments, not exact strings.
+#
+# `want` (alternatives separated by " || ", steps by " ; "):
+#   open NAME                 open_app / switch_app / open_url (NAME: an app, a short name or a domain)
+#   close NAME                close_app
+#   window OP[|OP] TARGET     TARGET: active or an app        layout APP:AREA, APP:AREA
+#   search QUERY / search@ENGINE QUERY    type TEXT / type+enter TEXT    press KEYS
+#   tab OP[|OP] · nav OP · scroll DIR [AMOUNT] · volume OP [LEVEL] · media OP[|OP]
+#   dictation OP · listening OP · click · clarify · teach · handoff [claude|chatgpt]
+# Negatives: conversation that must not cause an action (asking is fine, acting is not).
+# Every item's screen: Chrome in front, these apps open (an item can set its own `front` / `open`).
+
+screen:
+  front: Google Chrome
+  open: [Google Chrome, Claude, Autodesk Fusion, Notepad, Spotify]
+  tab: Dashboard
+
+positives:
+  # --- open apps ------------------------------------------------------------------------------------
+  - say: can you open spotify for me
+    want: open Spotify
+  - say: could you pull up the calculator real quick
+    want: open Calculator
+  - say: um fire up notepad please
+    want: open Notepad
+  - say: I wanna write some code, get vs code going
+    want: open Visual Studio Code
+  - say: launch fusion
+    want: open Autodesk Fusion
+  - say: get me into fusion 360
+    want: open Autodesk Fusion
+  - say: I need the file explorer
+    want: open File Explorer
+  - say: pop open my files
+    want: open File Explorer
+  - say: bring up word for me
+    want: open Word
+  - say: open a spreadsheet in excel
+    want: open Excel
+  - say: start powerpoint, I have to make slides
+    want: open PowerPoint
+  - say: can I get teams up
+    want: open Microsoft Teams
+  - say: take me to the settings app
+    want: open Settings
+  - say: let's play some games, open steam
+    want: open Steam
+  - say: open up paint would you
+    want: open Paint
+  - say: I need to take a screenshot, open the snipping tool
+    want: open Snipping Tool
+  - say: something's eating my cpu, open task manager
+    want: open Task Manager
+  - say: open whatsapp
+    want: open WhatsApp
+  - say: get matlab running
+    want: open MATLAB R2025a
+  - say: open the arduino ide
+    want: open Arduino IDE
+  - say: I wanna slice a print, open bambu studio
+    want: open Bambu Studio
+  - say: start solidworks
+    want: open SOLIDWORKS 2025
+  - say: open onenote so I can take notes
+    want: open OneNote
+  - say: turn on the camera app
+    want: open Camera
+  - say: open the clock, I need a timer
+    want: open Clock
+  - say: show me my photos
+    want: open Photos
+  - say: what's the weather looking like, open the weather app
+    want: open Weather
+  - say: open microsoft to do
+    want: open Microsoft To Do
+  - say: I need a terminal
+    want: open Terminal
+  - say: open cursor
+    want: open Cursor
+  - say: put on netflix
+    want: open Netflix
+  - say: open edge
+    want: open Microsoft Edge
+  - say: open the calendar app
+    want: open Calendar || open calendar.google.com
+  - say: launch the microsoft store
+    want: open Microsoft Store
+  - say: open claude
+    want: open Claude
+  - say: hey get chatgpt open
+    want: open ChatGPT
+  - say: can you get chrome open
+    want: open Google Chrome
+  - say: open my music
+    want: open Spotify
+  - say: i want to listen to music
+    want: open Spotify || media play
+  - say: open the sound recorder
+    want: open Sound Recorder
+  - say: open the command prompt
+    want: open Command Prompt
+  - say: open powershell
+    want: open Windows PowerShell
+  - say: open control panel
+    want: open Control Panel
+  - say: open onedrive
+    want: open OneDrive
+
+  # --- open sites -------------------------------------------------------------------------------------
+  - say: can you get canvas up for me
+    want: open canvas.vt.edu
+  - say: take me to canvas
+    want: open canvas.vt.edu
+  - say: I need to check my assignments on canvas
+    want: open canvas.vt.edu
+  - say: open my email
+    want: open mail.google.com
+  - say: check my gmail
+    want: open mail.google.com
+  - say: go to youtube
+    want: open www.youtube.com
+  - say: pull up youtube
+    want: open www.youtube.com
+  - say: open github
+    want: open github.com
+  - say: open google docs
+    want: open docs.google.com
+  - say: I need my google drive
+    want: open drive.google.com
+  - say: show me my google calendar
+    want: open calendar.google.com
+  - say: go to reddit
+    want: open reddit.com
+  - say: open wikipedia
+    want: open wikipedia.org
+  - say: take me to amazon
+    want: open amazon.com
+  - say: open reddit dot com
+    want: open reddit.com
+  - say: go to stack overflow
+    want: open stackoverflow.com
+  - say: open linkedin
+    want: open linkedin.com
+  - say: open google maps
+    want: open maps.google.com || open google.com
+  - say: could you open the vt website
+    want: open vt.edu
+  - say: go to chatgpt dot com
+    want: open chatgpt.com
+
+  # --- switch -------------------------------------------------------------------------------------------
+  - say: switch over to claude
+    want: open Claude
+  - say: go back to fusion
+    want: open Autodesk Fusion
+  - say: jump to spotify
+    want: open Spotify
+  - say: take me back to chrome
+    want: open Google Chrome
+  - say: bring notepad to the front
+    want: open Notepad
+  - say: show me claude
+    want: open Claude
+  - say: flip over to the browser
+    want: open Google Chrome
+  - say: let me see fusion
+    want: open Autodesk Fusion
+  - say: back to my notes
+    want: open Notepad
+  - say: focus on spotify
+    want: open Spotify
+  - say: i wanna be in claude
+    want: open Claude
+  - say: go to the cad program
+    want: open Autodesk Fusion
+
+  # --- close ---------------------------------------------------------------------------------------------
+  - say: close spotify
+    want: close Spotify
+  - say: quit notepad
+    want: close Notepad
+  - say: get rid of fusion for now
+    want: close Autodesk Fusion
+  - say: shut down chrome
+    want: close Google Chrome
+  - say: kill spotify
+    want: close Spotify
+  - say: exit out of claude
+    want: close Claude
+  - say: I'm done with notepad, close it
+    want: close Notepad
+  - say: close this window
+    want: window close active
+  - say: close this
+    want: window close active || tab close
+  - say: can you close the music app
+    want: close Spotify
+
+  # --- one window ------------------------------------------------------------------------------------------
+  - say: make this window take the whole screen
+    want: window maximize|fullscreen active
+  - say: maximize this
+    want: window maximize|fullscreen active
+  - say: make it bigger
+    want: window maximize|fullscreen active
+  - say: blow chrome up to full size
+    want: window maximize|fullscreen Google Chrome
+  - say: minimize this window
+    want: window minimize active
+  - say: hide spotify
+    want: window minimize Spotify
+  - say: get this out of the way
+    want: window minimize active
+  - say: shrink claude down
+    want: window minimize|restore Claude
+  - say: make chrome full screen
+    want: window fullscreen|maximize Google Chrome
+  - say: go full screen
+    want: window fullscreen|maximize active
+  - say: shove chrome onto the left half
+    want: window snap_left Google Chrome
+  - say: put claude on the right side
+    want: window snap_right Claude
+  - say: move this to the left
+    want: window snap_left active
+  - say: snap notepad to the right half of the screen
+    want: window snap_right Notepad
+  - say: stick fusion on the left
+    want: window snap_left Autodesk Fusion
+  - say: put this window in the top half
+    want: window snap_top active
+  - say: throw spotify to the bottom
+    want: window snap_bottom Spotify
+  - say: center this window
+    want: window center active
+  - say: put notepad in the middle of the screen
+    want: window center Notepad
+  - say: move this to my other monitor
+    want: window move_monitor active
+  - say: send chrome to the other screen
+    want: window move_monitor Google Chrome
+  - say: restore the window
+    want: window restore active
+  - say: unmaximize this
+    want: window restore active
+  - say: can you make the window smaller
+    want: window restore|minimize active
+  - say: fill the screen with fusion
+    want: window maximize|fullscreen Autodesk Fusion
+
+  # --- layouts ---------------------------------------------------------------------------------------------
+  - say: put fusion on the left and claude on the right
+    want: layout Autodesk Fusion:left, Claude:right
+  - say: fusion left, chrome right
+    want: layout Autodesk Fusion:left, Google Chrome:right
+  - say: split the screen between chrome and notepad
+    want: layout Google Chrome:left, Notepad:right
+  - say: chrome and claude side by side
+    want: layout Google Chrome:left, Claude:right
+  - say: I want claude on the left and chrome on the right please
+    want: layout Claude:left, Google Chrome:right
+  - say: put notepad top left and spotify top right
+    want: layout Notepad:top_left, Spotify:top_right
+  - say: chrome, claude and fusion side by side
+    want: layout Google Chrome:left_third, Claude:middle_third, Autodesk Fusion:right_third
+  - say: arrange chrome on the left half and fusion on the right half
+    want: layout Google Chrome:left, Autodesk Fusion:right
+  - say: can you tile claude and notepad next to each other
+    want: layout Claude:left, Notepad:right
+  - say: spotify on the right, this on the left
+    want: layout Spotify:right, active:left
+
+  # --- web search ----------------------------------------------------------------------------------------
+  - say: search youtube for lofi hip hop
+    want: search@youtube lofi hip hop
+  - say: find me some piano covers on youtube
+    want: search@youtube piano covers
+  - say: look up how to solve a quadratic equation
+    want: search how to solve a quadratic equation
+  - say: google the weather in blacksburg
+    want: search the weather in blacksburg || search weather in blacksburg
+  - say: search for cheap flights to chicago
+    want: search cheap flights to chicago
+  - say: can you look up the boiling point of ethanol
+    want: search the boiling point of ethanol || search boiling point of ethanol
+  - say: search wikipedia for the french revolution
+    want: search@wikipedia the french revolution || search@wikipedia french revolution
+  - say: look for usb c hubs on amazon
+    want: search@amazon usb c hubs
+  - say: find mujoco on github
+    want: search@github mujoco
+  - say: play some jazz on youtube
+    want: search@youtube jazz
+  - say: show me pictures of golden retrievers
+    want: search@images golden retrievers || search@images pictures of golden retrievers
+  - say: where's the nearest coffee shop on maps
+    want: search@maps the nearest coffee shop || search@maps nearest coffee shop
+  - say: i wanna watch the new spiderman trailer on youtube
+    want: search@youtube the new spiderman trailer || search@youtube new spiderman trailer
+  - say: search the web for ros2 humble install guide
+    want: search ros2 humble install guide
+  - say: search for thermodynamics lecture notes
+    want: search thermodynamics lecture notes
+  - say: youtube how to tie a tie
+    want: search@youtube how to tie a tie
+  - say: what's the capital of australia, look it up
+    want: search the capital of australia || search capital of australia || search what's the capital of australia
+  - say: find videos about pid control on youtube
+    want: search@youtube pid control
+  - say: search bing for free fonts
+    want: search@bing free fonts
+  - say: look up flood fill algorithm
+    want: search flood fill algorithm
+
+  # --- tabs ------------------------------------------------------------------------------------------------
+  - say: I need a new tab
+    want: tab new
+  - say: open a fresh tab
+    want: tab new
+  - say: gimme another tab
+    want: tab new
+  - say: close this tab
+    want: tab close
+  - say: ditch this tab
+    want: tab close
+  - say: next tab
+    want: tab next
+  - say: go to the next tab over
+    want: tab next
+  - say: go back a tab
+    want: tab prev
+  - say: previous tab please
+    want: tab prev
+  - say: bring back the tab I just closed
+    want: tab reopen
+  - say: reopen that tab
+    want: tab reopen
+  - say: oops I closed that tab, get it back
+    want: tab reopen
+
+  # --- back / forward / reload -------------------------------------------------------------------------------
+  - say: go back to the last page
+    want: nav back
+  - say: take me back a page
+    want: nav back
+  - say: back
+    want: nav back
+  - say: go forward
+    want: nav forward
+  - say: forward a page please
+    want: nav forward
+  - say: refresh this page
+    want: nav reload
+  - say: reload
+    want: nav reload
+  - say: this page is stuck, reload it
+    want: nav reload
+
+  # --- scroll -----------------------------------------------------------------------------------------------
+  - say: scroll down
+    want: scroll down
+  - say: scroll down a bit
+    want: scroll down
+  - say: scroll up a little
+    want: scroll up
+  - say: go to the top of the page
+    want: scroll top
+  - say: take me to the bottom of the page
+    want: scroll bottom
+  - say: scroll all the way down
+    want: scroll bottom
+  - say: can you scroll up
+    want: scroll up
+  - say: keep scrolling down
+    want: scroll down
+
+  # --- typing and keys ----------------------------------------------------------------------------------------
+  - say: type hello world
+    want: type hello world
+  - say: type see you at five and hit enter
+    want: type+enter see you at five
+  - say: put thanks so much in the box
+    want: type thanks so much
+  - say: write dear professor
+    want: type dear professor
+  - say: type running late, be there in ten
+    want: type running late, be there in ten
+  - say: enter my name as bhavya
+    want: type bhavya
+  - say: press enter
+    want: press enter
+  - say: hit escape
+    want: press esc
+  - say: press control shift t
+    want: press ctrl+shift+t
+  - say: copy that
+    want: press ctrl+c
+  - say: paste it
+    want: press ctrl+v
+  - say: undo that
+    want: press ctrl+z
+  - say: select everything
+    want: press ctrl+a
+  - say: save my work
+    want: press ctrl+s
+  - say: zoom in
+    want: press ctrl+=
+  - say: show me the desktop
+    want: press win+d
+
+  # --- volume / media -----------------------------------------------------------------------------------------
+  - say: turn it up
+    want: volume up
+  - say: ugh it's blasting, way too loud
+    want: volume down
+  - say: crank the volume
+    want: volume up
+  - say: make it quieter
+    want: volume down
+  - say: mute
+    want: volume mute
+  - say: mute the sound
+    want: volume mute
+  - say: unmute
+    want: volume unmute
+  - say: set the volume to 40
+    want: volume set 40
+  - say: volume to fifty percent
+    want: volume set 50
+  - say: I can barely hear it
+    want: volume up
+  - say: pause the music
+    want: media pause|play_pause
+  - say: pause
+    want: media pause|play_pause
+  - say: resume the song
+    want: media play|play_pause
+  - say: skip this song
+    want: media next
+  - say: next track
+    want: media next
+  - say: play the previous song
+    want: media prev
+  - say: go back a song
+    want: media prev
+  - say: stop the music
+    want: media stop|pause|play_pause
+
+  # --- Nova itself ---------------------------------------------------------------------------------------------
+  - say: start dictation
+    want: dictation start
+  - say: let me dictate something
+    want: dictation start
+  - say: stop listening
+    want: listening sleep
+  - say: go to sleep for a bit
+    want: listening sleep
+
+  # --- chains --------------------------------------------------------------------------------------------------
+  - say: open chrome and go to youtube
+    want: open Google Chrome ; open www.youtube.com || open www.youtube.com
+  - say: open a new tab and search for ros2 tutorials
+    want: tab new ; search ros2 tutorials || search ros2 tutorials
+  - say: open notepad and type hello
+    want: open Notepad ; type hello
+  - say: close spotify and open chrome
+    want: close Spotify ; open Google Chrome
+  - say: open fusion then put it on the left
+    want: open Autodesk Fusion ; window snap_left Autodesk Fusion || window snap_left Autodesk Fusion
+
+  # --- vague: ask instead of guessing ----------------------------------------------------------------------------
+  - say: open the thing
+    want: clarify
+  - say: can you pull that one up
+    want: clarify
+  - say: bring up the other one
+    want: clarify
+  - say: open it
+    want: clarify
+  - say: switch to the other app
+    want: clarify
+  - say: put it over there
+    want: clarify
+  - say: open my stuff
+    want: clarify
+  - say: move that one
+    want: clarify
+  - say: go there
+    want: clarify
+  - say: close the other one
+    want: clarify
+
+  # --- handoff -------------------------------------------------------------------------------------------------
+  - say: write a cover letter for the bosch internship
+    want: handoff claude
+  - say: ask claude how to integrate x times e to the x
+    want: handoff claude
+  - say: have chatgpt explain the difference between tcp and udp
+    want: handoff chatgpt
+  - say: can you summarize the last chapter of my thermo textbook
+    want: handoff claude
+  - say: put my homework for today on claude
+    want: handoff claude
+  - say: write me a poem about robots
+    want: handoff claude
+  - say: research the best motors for a quadruped robot
+    want: handoff claude
+  - say: ask chatgpt for a dinner recipe with chicken and rice
+    want: handoff chatgpt
+  - say: on claude, plan my study schedule for finals week
+    want: handoff claude
+  - say: solve this differential equation for me
+    want: handoff claude
+  - say: draft an email to my professor asking for an extension
+    want: handoff claude
+  - say: explain how a kalman filter works
+    want: handoff claude
+
+  # --- things Nova can't do yet: "show me?" ----------------------------------------------------------------------
+  - say: switch fusion over to the dark theme
+    want: teach || clarify
+  - say: mark all my emails as read
+    want: teach || clarify || click
+  - say: change my desktop wallpaper
+    want: teach || clarify
+
+negatives:
+  - yeah I told him we'd open the lab at nine
+  - I was gonna open a bakery downtown someday
+  - she said we have to close the deal by friday
+  - can you believe he switched majors again
+  - the volume of that cylinder is twelve cubic inches
+  - my laptop keeps freezing whenever I open fusion
+  - honestly chrome eats all my ram
+  - we should search for a new apartment next month
+  - did you see the new tab design they rolled out
+  - turn left at the next light
+  - play it cool when she gets here
+  - I'll type up the report tonight
+  - you gotta maximize your potential bro
+  - he totally minimized the problem in the meeting
+  - I could scroll through tiktok all night
+  - my mom keeps asking me to close the window when it rains
+  - spotify wrapped this year was so embarrassing
+  - claude helped me a ton with my essay yesterday
+  - I think notepad is underrated honestly
+  - the professor told us to look up the answer ourselves
+  - he paused for like ten seconds before answering
+  - we went back to the restaurant from last week
+  - she keeps hitting snooze every morning
+  - that movie was so loud in the theater
+  - my brother muted me in the group chat lol
+  - next week is gonna be insane with exams
+  - can you pass me the charger
+  - did you finish the thermo homework
+  - I need to start going to the gym
+  - stop it, that tickles
+  - let's go grab lunch
+  - wait what did you say
+  - I'm switching to decaf for a while
+  - the new iphone has a bigger screen
+  - the window in my room won't close all the way
+  - put your coat on, it's cold out
+  - open the door for the pizza guy
+  - turn off the lights when you leave
+  - start the car, I'll be down in a minute
+  - move the couch a little to the left
+  - I left my notebook on the left side of the desk
+  - he's always on the right side of history apparently
+  - the tab came to forty dollars
+  - she dropped the class after the first exam
+  - we should rewatch that show sometime
+  - my roommate keeps opening the window at night
+  - that was a full screen of errors
+  - I'm going back home for thanksgiving
+  - the music at that party was terrible
+  - he tried to type with one hand while eating
+  - we need to maximize torque on the second joint
+  - did you hear the new taylor swift album
+  - honestly I might drop out and start a band
+  - the robot keeps snapping to the left when it turns
+  - can you believe it's already november
+  - uh nevermind
+  - thanks
+  - okay cool
+  - hmm let me think
+  - no I meant the other one, for the lab
+  - the canvas for my painting class is huge
+  - I was reading about the french revolution
+  - my code finally compiled
+  - fusion keeps crashing on my roommate's laptop
+  - youtube recommended me the weirdest video
+  - the zoom lecture was so boring
+  - copy that, over and out
+  - I'll paste the notes in the group chat later
+  - he saved the day honestly
+  - she's undoing all my progress
+  - he hit enter before I could stop him
+  - dude just send it already
+  - that page took forever to load
+  - he keeps refreshing his email like crazy
+  - the next song on the album is my favorite
+  - my professor's slides are a mess
+  - what do you want for dinner
+  - I'm so tired of this class
+  - we should open source the robot code
+  - he said open sesame and everyone laughed
+  - close call on that exam
+  - my sister switched schools this year
+  - it's way too quiet in the library today
+  - the volume knob on my car broke
+  - I have to search the whole house for my keys
+  - she shut down the whole idea
+  - that app is so laggy
+  - I'll launch the rocket at the club meeting saturday
+  - the boss told me to fire up the grill
+  - pull up a chair and sit down
+  - bring up the dessert menu when you're ready, he told the waiter
+  - snap a picture of the whiteboard for me
+  - my phone is about to die
+  - the lab meeting got moved to thursday
+  - I love this song
+  - ok so the plan is we meet at six
+  - he's minimizing his screen time this month

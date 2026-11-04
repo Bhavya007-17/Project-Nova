@@ -16,10 +16,15 @@ def test_doctor_dispatch(monkeypatch):
     assert cli.main(["doctor"]) == 1
 
 
-@pytest.mark.parametrize(("argv", "stage"), [(["eval"], "05")])
-def test_stubs_name_their_stage(argv, stage, capsys):
-    assert cli.main(argv) == 1
-    assert f"Stage {stage}" in capsys.readouterr().out
+def test_eval_and_bench_dispatch(monkeypatch):
+    seen = []
+    monkeypatch.setattr("nova.evals.main", lambda **kw: seen.append(("eval", kw)) or 0)
+    monkeypatch.setattr("nova.bench_llm.main", lambda models, **kw: seen.append(("bench", models, kw)) or 0)
+    assert cli.main(["eval", "--tier1", "--model", "qwen3.5:4b", "--device", "cpu", "--limit", "5"]) == 0
+    assert cli.main(["bench-llm", "a:1b", "b:2b", "--devices", "gpu,arc", "--save"]) == 0
+    assert seen[0] == ("eval", {"model": "qwen3.5:4b", "device": "cpu", "tier1_only": True, "limit": 5,
+                                "misses": True})
+    assert seen[1] == ("bench", ("a:1b", "b:2b"), {"devices": ("gpu", "arc"), "cpu_cases": 40, "save": True})
 
 
 def test_say_and_latency_dispatch(monkeypatch):

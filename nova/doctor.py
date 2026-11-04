@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from . import paths
+from .brain.llm import is_cloud
 from .config import ConfigStore
 from .console import enable_vt
 from .keys import MOD_NOREPEAT, Chord, parse_chord
@@ -251,17 +252,28 @@ def check_ollama(url: str, fetch: Callable[[str, float], Any] = _fetch_json) -> 
             "Start Ollama (Start menu > Ollama, or `ollama serve`), then run nova doctor again.",
         )
     # "-cloud" tags run on Ollama's servers; local-first means Nova must never pick them.
-    cloud = [name for name in models if _is_cloud_model(name)]
-    local = [name for name in models if not _is_cloud_model(name)]
+    cloud = [name for name in models if is_cloud(name)]
+    local = [name for name in models if not is_cloud(name)]
     detail = f"{version} at {base}; models: {', '.join(local) or 'none pulled yet'}"
     if cloud:
         detail += f"; cloud (Nova never uses): {', '.join(cloud)}"
     return Check("Ollama", True, detail)
 
 
-def _is_cloud_model(name: str) -> bool:
-    tag = name.rpartition(":")[2]
-    return tag == "cloud" or tag.endswith("-cloud")
+def check_llm(url: str, gpu_model: str, cpu_model: str, fetch: Callable[[str, float], Any] = _fetch_json) -> Check:
+    """Tier 1's models (settings.yaml llm:) are pulled."""
+    try:
+        pulled = {model.get("name") for model in fetch(url.rstrip("/") + "/api/tags", 2.0).get("models", [])}
+    except (OSError, ValueError):
+        return Check("Local LLM", False, "can't ask Ollama which models are pulled", "Start Ollama first.")
+    wanted = dict.fromkeys((gpu_model, cpu_model))
+    missing = [m for m in wanted if m not in pulled]
+    if missing:
+        return Check("Local LLM", False, "not pulled: " + ", ".join(missing),
+                     "Run: " + " ; ".join(f"ollama pull {m}" for m in missing))
+    same = gpu_model == cpu_model
+    detail = f"{gpu_model} (GPU and CPU)" if same else f"GPU {gpu_model}, CPU {cpu_model}"
+    return Check("Local LLM", True, detail + " — loads on demand, unloads when idle")
 
 
 _APP_PATHS = r"Software\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe"
@@ -484,6 +496,7 @@ def main() -> int:
             ("Microphone", check_mic),
             ("GPU", check_gpu),
             ("Ollama", lambda: check_ollama(settings.ollama.url)),
+            ("Local LLM", lambda: check_llm(settings.ollama.url, settings.llm.gpu_model, settings.llm.cpu_model)),
             ("Chrome", check_chrome),
             ("Desktop apps", check_apps),
             ("Fallback chord", lambda: check_chord(settings.chord)),

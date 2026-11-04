@@ -2,7 +2,7 @@
 
 "start" = end of speech (key release counts) -> the first action began; "total" = end of
 speech -> done (app start-up and the like included). Typed `nova say` commands have no
-speech, so they're listed apart.
+speech, so they're listed apart. Path rows (SPEC §16 budgets): tier 0, tier 1 GPU / CPU.
 """
 
 from __future__ import annotations
@@ -72,7 +72,11 @@ def summarize(records: Iterable[dict]) -> list[Row]:
         if record.get("via") == "say":
             name = f"(typed) {name}"
         overall = "all typed" if record.get("via") == "say" else "all commands"
-        for key in (name,) if record.get("asked") else (name, overall):
+        tier = record.get("tier")
+        path = "tier 0" if tier == "0" else (f"tier 1 {str(record.get('device') or '?').upper()}" if tier == "1" else "")
+        if path and record.get("via") == "say":
+            path = f"(typed) {path}"
+        for key in (name,) if record.get("asked") else tuple(k for k in (name, overall, path) if k):
             starts.setdefault(key, []).append(float(record["start_ms"]))
             if isinstance(record.get("total_ms"), (int, float)):
                 totals.setdefault(key, []).append(float(record["total_ms"]))
@@ -80,7 +84,7 @@ def summarize(records: Iterable[dict]) -> list[Row]:
     rows = []
     if finals:
         rows.append(Row("speech → text", len(finals), percentile(finals, 50), percentile(finals, 95)))
-    for name in sorted(starts, key=lambda n: (n.startswith("all") or n.startswith("(typed)"), n)):
+    for name in sorted(starts, key=lambda n: (n.startswith(("all", "(typed)", "tier")), n)):
         values = starts[name]
         total = totals.get(name)
         rows.append(Row(name, len(values), percentile(values, 50), percentile(values, 95),

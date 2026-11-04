@@ -38,6 +38,25 @@ One line each: what, version, why. Ask before adding anything over ~50 MB or a n
 - `fixtures/voicebar-recordings/` — Bhavya's recordings (4 sessions with `manifest.json`, 134 audio files). STT WER eval. Only the "check" session is clean: in "quiet" and "noise" the old recorder started late, so most files begin mid-word (`nova bench-stt` flags them).
 - `fixtures/voicebar-reference/` — voicebar phrasing fixtures (committed).
 
+## Local LLM (Stage 05; Ollama models, pulled once, never by Nova)
+- No new Python package: the Ollama client is `http.client` (`nova/brain/llm.py`), NVML comes from `nvidia-ml-py` above.
+- **qwen3.5:4b** (Q4_K_M, ~2.7 GB VRAM) — GPU model: the only candidate ≥ 90 % (94.9 % on every phrasing, 91.6 % behind Tier 0). **qwen3.5:2b-q4_K_M** (1.3 GB) — CPU model: the only one inside the 2.5 s CPU budget.
+- Qwen prompts are rendered by Nova and sent raw to /api/generate: Ollama 0.30.10's /api/chat with `think: false` ignores `format` for Qwen 3.5. Every request also pays ~0.4-0.7 s of Ollama overhead (it re-reads the model header) — half of Tier 1's time.
+- `nova bench-llm` 2026-11-04 (334 eval cases on GPU, 40 on CPU / Arc; "false" = conversation acted on with no gate in front):
+
+| model | device | alone | behind Tier 0 | false | p50 ms | p95 ms | overhead ms | cold ms | GB |
+|---|---|---|---|---|---|---|---|---|---|
+| qwen3.5:4b | GPU | 94.9% | 91.6% | 5.2% | 1132 | 1417 | 724 | 8714 | 2.7 |
+| qwen3.5:4b | CPU | 89.7% | 93.1% | 0.0% | 3290 | 4530 | 672 | 34765 | 2.9 |
+| qwen3.5:2b-q4_K_M | GPU | 62.4% | 81.4% | 15.5% | 1010 | 1199 | 733 | 8394 | 1.3 |
+| qwen3.5:2b-q4_K_M | CPU | 62.1% | 89.7% | 18.2% | 1842 | 2374 | 599 | 17791 | 1.5 |
+| gemma4:e2b | GPU | 62.4% | 79.7% | 11.3% | 1265 | 1426 | 977 | 16325 | 0.1 |
+| gemma4:e2b | CPU | 58.6% | 89.7% | 27.3% | 2004 | 3863 | 829 | 9372 | 1.0 |
+| qwen2.5:7b (baseline) | GPU | 86.1% | 87.8% | 36.1% | 935 | 1169 | 440 | 8706 | 4.4 |
+| qwen3.5:4b | Arc (Vulkan) | 93.1% | 93.1% | 0.0% | 986 | 1333 | 546 | 73874 | 2.7 |
+| qwen3.5:2b-q4_K_M | Arc (Vulkan) | 65.5% | 89.7% | 18.2% | 865 | 1130 | 555 | 10011 | 1.3 |
+| gemma4:e2b | Arc (Vulkan) | 48.3% | 86.2% | 27.3% | 1095 | 8021 | 751 | 27425 | 0.1 |
+
 ## Outside Python (already on this laptop)
 - **uv** ≥ 0.12 recommended — 0.11 makes venvs whose `pythonw.exe` is a console exe (uv #19226); `nova doctor` checks this. The first `uv` on PATH here is a pip install (Python 3.11 Scripts); a second 0.11.19 sits in `~/.local/bin`.
 - **Ollama** 0.30 — local LLM runtime (Stage 05). Only local tags are allowed; `*-cloud` tags never.

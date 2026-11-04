@@ -45,3 +45,12 @@ def test_read_and_render(tmp_path):
     assert len(records) == 3
     text = render(summarize(records))
     assert "open_app" in text and "layout" in text and "p95" in text
+
+
+def test_paths_per_tier_and_device():
+    records = [{**rec(start=40), "tier": "0"}, {**rec(start=900), "tier": "1", "device": "gpu"},
+               {**rec(start=1100), "tier": "1", "device": "gpu"}, {**rec(start=2100), "tier": "1", "device": "cpu"},
+               {**rec(start=950, via="say"), "tier": "1", "device": "gpu"}]
+    rows = {row.name: row for row in summarize(records)}
+    assert rows["tier 0"].count == 1 and rows["tier 1 GPU"].count == 2 and rows["tier 1 GPU"].p50 == 1000
+    assert rows["tier 1 CPU"].p50 == 2100 and rows["(typed) tier 1 GPU"].count == 1

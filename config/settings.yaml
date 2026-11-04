@@ -25,5 +25,15 @@ audio:
 ollama:
   url: http://127.0.0.1:11434
 
+# Local LLM for loose phrasing (Tier 1). `nova bench-llm` measured these on this laptop.
+llm:
+  gpu_model: qwen3.5:4b          # on the RTX when it has room
+  cpu_model: qwen3.5:2b-q4_K_M   # when the GPU is busy (Fusion) or device is cpu
+  device: auto             # auto | gpu | cpu
+  keep_alive: 10m          # unload the model after this long unused
+  headroom_gb: 1.0         # GPU only if the model + this much VRAM is free
+  timeout_s: 8.0
+  # simulate_free_vram_gb: 0.5   # testing: pretend only this much VRAM is free
+
 logs:
   transcripts: true        # false = logs keep timings but not what you said

@@ -100,7 +100,8 @@ def run() -> int:
     catalogs = CatalogStore(paths.CATALOG_CACHE, paths.ALIASES)
     catalogs.subscribe(lambda catalog: triggers.set_resolver(Tier0Resolver(catalog)))
     catalogs.start()
-    brain = Brain(bus, catalogs, trace=trace)
+    # Local brain (Stage 05): Tier 1 behind Tier 0; the LLM warms on key down / wake name.
+    brain = Brain(bus, catalogs, settings=lambda: store.settings, trace=trace)
     brain.start()
     triggers.start()
     notices: list[tuple[str, str]] = []

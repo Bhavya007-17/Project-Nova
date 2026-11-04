@@ -8,7 +8,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 # Subcommands that later stages fill in.
-_COMING = {"eval": "05"}
+_COMING: dict[str, str] = {}
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -35,7 +35,17 @@ def _parser() -> argparse.ArgumentParser:
     say = sub.add_parser("say", help="run a command from text, no mic (the whole brain + real actions)")
     say.add_argument("text")
     say.add_argument("--dry", action="store_true", help="only show the plan; do nothing")
-    sub.add_parser("eval", help="score the intent eval")
+    ev = sub.add_parser("eval", help="score the intent eval (docs/eval/intents.yaml) through the router")
+    ev.add_argument("--model", help="an Ollama model to use instead of the one settings.yaml picks")
+    ev.add_argument("--device", choices=("gpu", "cpu"), help="run the model on this device")
+    ev.add_argument("--tier1", action="store_true", help="send every phrasing to Tier 1 (skip Tier 0)")
+    ev.add_argument("--limit", type=int, default=0, metavar="N", help="only the first N positives (and N/2 negatives)")
+    ev.add_argument("--quiet", action="store_true", help="don't list the misses")
+    bench_llm = sub.add_parser("bench-llm", help="candidate local models x devices: accuracy, latency, load time, VRAM")
+    bench_llm.add_argument("models", nargs="*", help="Ollama models to compare (default: the Stage 05 candidates)")
+    bench_llm.add_argument("--devices", default="gpu,cpu", help="comma list of gpu, cpu, arc (default gpu,cpu)")
+    bench_llm.add_argument("--cpu-cases", type=int, default=40, metavar="N", help="cases timed on CPU / Arc (default 40)")
+    bench_llm.add_argument("--save", action="store_true", help="write the recommended models to settings.yaml")
     sub.add_parser("latency", help="p50/p95 per command type from the logs")
     return parser
 
@@ -83,5 +93,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         from . import latency
 
         return latency.main()
+    if command == "eval":
+        from . import evals
+
+        return evals.main(model=args.model, device=args.device, tier1_only=args.tier1, limit=args.limit,
+                          misses=not args.quiet)
+    if command == "bench-llm":
+        from . import bench_llm
+
+        devices = tuple(d.strip() for d in args.devices.split(",") if d.strip())
+        return bench_llm.main(tuple(args.models), devices=devices, cpu_cases=args.cpu_cases, save=args.save)
     print(f"`nova {command}` arrives in Stage {_COMING[command]}.")
     return 1

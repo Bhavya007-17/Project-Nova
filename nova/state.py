@@ -50,7 +50,9 @@ _CANCELLABLE = frozenset({State.LISTENING, State.THINKING, State.ACTING, State.C
 _ESC = _CANCELLABLE | {State.DICTATING}
 _KEY_STARTS = frozenset({State.IDLE, State.DONE, State.ERROR}) | _BUSY | _ASKING
 _PROGRESS = {  # brain-driven moves (Stage 04+)
-    State.THINKING: {State.ACTING, State.CONFIRM, State.CLARIFY, State.PASSTHROUGH, State.TEACHING, State.DICTATING},
+    # -> Idle: the brain decided a follow-up wasn't a command after all (nothing to show)
+    State.THINKING: {State.ACTING, State.CONFIRM, State.CLARIFY, State.PASSTHROUGH, State.TEACHING, State.DICTATING,
+                     State.IDLE},
     State.ACTING: {State.THINKING, State.CONFIRM, State.CLARIFY, State.PASSTHROUGH, State.DICTATING},
     State.CONFIRM: {State.ACTING, State.THINKING, State.IDLE},
     State.CLARIFY: {State.ACTING, State.THINKING, State.IDLE},
