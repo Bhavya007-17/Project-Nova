@@ -29,7 +29,7 @@ def test_eval_and_bench_dispatch(monkeypatch):
 
 def test_say_and_latency_dispatch(monkeypatch):
     seen = []
-    monkeypatch.setattr("nova.say.main", lambda text, dry=False: seen.append((text, dry)) or 0)
+    monkeypatch.setattr("nova.say.main", lambda text, dry=False, chrome_wait=0.0: seen.append((text, dry)) or 0)
     monkeypatch.setattr("nova.latency.main", lambda: seen.append("latency") or 0)
     assert cli.main(["say", "open chrome"]) == 0
     assert cli.main(["say", "--dry", "new tab"]) == 0

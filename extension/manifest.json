@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "Nova",
+  "version": "0.6.0",
+  "description": "Nova's hands in Chrome: tabs, page clicks and Canvas, driven from Nova on this laptop.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxctxnx/yGR9pwPa5PUi5l6z+h72wwowRIiee2r7+ggJzxVg+Mx2VRNrXpCfkXYZLg8HmnXxutnNgdN++bXHdtP8JeYZ9MRv/1X2Yw0qDFdk0aT0TzuKaIdHA0G0hJMWSRk9MOVqgYhdnbqmE95CbvwX89Uoo4+mHgeMqQ65AxY1uLnrfpE/X/ONvP6XCELV5DkxebXargNE7OpVWvLDCtg5lYjIWF7RqU3y2AXsbl9SAiopd/HC0O0Ig1EM7JRDEqFCet04m6Mr3910sijUMS9AUZfmL5EyAXdoH+KYu0g/j4pUyQY+TZOeLJAXD8XP0ZRi/0+wYXmFboRk1rbwN8QIDAQAB",
+  "minimum_chrome_version": "116",
+  "permissions": ["tabs", "scripting", "nativeMessaging", "storage", "alarms"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "worker.js" },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "all_frames": true,
+      "run_at": "document_idle"
+    }
+  ]
+}

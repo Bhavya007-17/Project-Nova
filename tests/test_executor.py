@@ -119,3 +119,94 @@ def test_a_single_choice_is_a_yes_no_question():
     assert result.ok and asker.questions == ["Close Notepad?"] and hands.ran == [step("close_app", app="Notepad")]
     result, hands, _ = run(plan, asker=FakeAsker(confirm=False))
     assert result.cancelled and hands.ran == []
+
+
+# --- Stage 06: steps resolved against the page / Canvas before they run ----------------------------------------------
+
+from nova.brain.executor import Pick  # noqa: E402
+
+
+class ResolvingHands(FakeHands):
+    """page_click "the blue button" resolves to an element; canvas_open_item may need a choice; canvas_due answers."""
+
+    def __init__(self, resolutions, scene=None):
+        super().__init__(scene=scene)
+        self.resolutions = resolutions
+        self.previews = []
+
+    def resolve(self, s, ctx):
+        found = self.resolutions.get(s.action)
+        return found(s) if callable(found) else (found if found is not None else s)
+
+    def preview(self, s, on):
+        self.previews.append((s.get("label"), on))
+
+
+def test_a_resolved_click_is_risk_checked_on_its_real_label():
+    resolved = step("page_click", description="the blue button", element="0:4", label="Submit Assignment")
+    hands = ResolvingHands({"page_click": resolved})
+    result, hands, asker = run(act(step("page_click", description="the blue button")), hands=hands)
+    assert result.ok and asker.questions == ["Click “Submit Assignment”?"] and hands.ran == [resolved]
+    assert hands.previews == [("Submit Assignment", True)]  # highlighted while asking; the click itself flashes it
+    result, hands, _ = run(act(step("page_click", description="the blue button")),
+                           hands=ResolvingHands({"page_click": resolved}), asker=FakeAsker(confirm=False))
+    assert result.cancelled and hands.ran == [] and hands.previews == [("Submit Assignment", True), ("Submit Assignment", False)]
+
+
+def test_several_matches_are_a_numbered_choice():
+    options = (step("canvas_open", url="https://canvas.vt.edu/a/1", title="HW 5"),
+               step("canvas_open", url="https://canvas.vt.edu/a/2", title="Pre-lab"))
+    pick = Pick("2 due today — which one?", ("HW 5 · today", "Pre-lab · today"), options)
+    hands = ResolvingHands({"canvas_open_item": pick})
+    result, hands, asker = run(act(step("canvas_open_item", item="my assignment for today")), hands=hands,
+                               asker=FakeAsker(choose=1))
+    assert result.ok and hands.ran == [options[1]] and result.asked == "clarify"
+    assert asker.questions == [("2 due today — which one?", ("HW 5 · today", "Pre-lab · today"))]
+    result, hands, _ = run(act(step("canvas_open_item", item="x")), hands=ResolvingHands({"canvas_open_item": pick}),
+                           asker=FakeAsker(choose=None))
+    assert result.cancelled and hands.ran == []
+
+
+def test_one_match_in_a_pick_is_yes_no():
+    pick = Pick("Open HW 5?", ("HW 5",), (step("canvas_open", url="https://canvas.vt.edu/a/1", title="HW 5"),))
+    result, hands, asker = run(act(step("canvas_open_item", item="x")), hands=ResolvingHands({"canvas_open_item": pick}))
+    assert result.ok and asker.questions == ["Open HW 5?"] and len(hands.ran) == 1
+
+
+def test_an_optional_list_needs_no_answer():
+    pick = Pick("3 due this week", ("HW 5 · today", "Lab 3 · Fri", "Quiz 2 · Nov 10"),
+                tuple(step("canvas_open", url=f"https://canvas.vt.edu/a/{i}", title=str(i)) for i in range(3)),
+                optional=True, detail="3 due this week", hold=6.0)
+    result, hands, _ = run(act(step("canvas_due", range="week")), hands=ResolvingHands({"canvas_due": pick}),
+                           asker=FakeAsker(choose=None))
+    assert result.ok and not result.cancelled and result.detail == "3 due this week" and hands.ran == []
+    result, hands, _ = run(act(step("canvas_due", range="week")), hands=ResolvingHands({"canvas_due": pick}),
+                           asker=FakeAsker(choose=2))
+    assert result.ok and hands.ran == [pick.steps[2]]
+
+
+def test_a_resolution_can_be_the_answer_itself():
+    answer = Outcome("Nothing due today — next: HW 6 (Thermodynamics), Nov 12", hold=6.0)
+    result, hands, _ = run(act(step("canvas_open_item", item="today")), hands=ResolvingHands({"canvas_open_item": answer}))
+    assert result.ok and result.detail.startswith("Nothing due today") and result.hold == 6.0 and hands.ran == []
+
+
+def test_resolution_failures_stop_the_plan():
+    def broken(s):
+        raise ActionError("Couldn't find “purple” on this page.")
+
+    result, hands, _ = run(act(step("page_click", description="purple"), step("tab", op="new")),
+                           hands=ResolvingHands({"page_click": broken}))
+    assert not result.ok and result.detail == "Couldn't find “purple” on this page." and hands.ran == []
+
+
+def test_a_list_or_an_answer_counts_as_the_start():
+    pick = Pick("3 due this week", ("a", "b", "c"),
+                tuple(step("canvas_open", url=f"https://canvas.vt.edu/a/{i}", title=str(i)) for i in range(3)),
+                optional=True, detail="3 due this week")
+    result, _, _ = run(act(step("canvas_due", range="week")), hands=ResolvingHands({"canvas_due": pick}),
+                       asker=FakeAsker(choose=None))
+    assert result.started_at is not None
+    result, _, _ = run(act(step("canvas_due", range="today")),
+                       hands=ResolvingHands({"canvas_due": Outcome("Nothing due today", hold=6.0)}))
+    assert result.started_at is not None

@@ -342,3 +342,17 @@ def test_every_change_is_one_transition():
         (State.THINKING, State.DONE),
         (State.DONE, State.IDLE),
     ]
+
+
+def test_an_answer_to_read_stays_up_longer():
+    run = Run()(Press("copilot", 1.0), SpeechStart(1, 1.2), Release("copilot", 2.0, 1.0, hold=True), SpeechEnd(1, "key", 2.0),
+                heard(1, "what's due today", 2.2), Done(True, 2.5, "Nothing due today — next: HW 6", 6.0))
+    assert run.state is State.DONE
+    run(Tick(2.5 + DONE_S))
+    assert run.state is State.DONE  # still reading
+    run(Tick(2.5 + 6.0))
+    assert run.state is State.IDLE
+    run = Run()(Press("copilot", 1.0), SpeechStart(1, 1.2), Release("copilot", 2.0, 1.0, hold=True), SpeechEnd(1, "key", 2.0),
+                heard(1, "what's due today", 2.2), Done(True, 2.5, "x", 600.0))
+    run(Tick(2.5 + 10.0))
+    assert run.state is State.IDLE  # capped

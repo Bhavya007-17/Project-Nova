@@ -141,12 +141,14 @@ class Gated:
 class CommandFinished:
     """The brain / executor finished the last accepted command (Stage 02: a stub).
 
-    detail = the island's short result ("Opened HW 5 – Thermo"); skill = a learned skill ran (⚡).
+    detail = the island's short result ("Opened HW 5 – Thermo"); skill = a learned skill ran (⚡);
+    hold = an answer to read ("Nothing due today — next: …"): Done stays up this long instead of 1.5 s.
     """
 
     ok: bool
     detail: str = ""
     skill: bool = False
+    hold: float = 0.0
 
 
 @dataclass(frozen=True)

@@ -19,6 +19,7 @@ from . import apps, native, system, windows
 from . import input as keyboard
 from .apps import Outcome
 from .catalog import App, Catalog, short_name
+from .chrome import ChromeHands
 from .native import ActionError, Win
 from .uia import FocusReader
 
@@ -58,16 +59,35 @@ class NovaControls:
 
 class WindowsHands:
     def __init__(self, catalog: Callable[[], Catalog], focus: FocusReader | None = None,
-                 nova: NovaControls | None = None) -> None:
+                 nova: NovaControls | None = None, chrome: ChromeHands | None = None) -> None:
         self._catalog = catalog
         self._focus = focus or FocusReader()
         self._nova = nova or NovaControls()
+        self._chrome = chrome
         self.stop = threading.Event()
+
+    @property
+    def chrome(self) -> ChromeHands | None:
+        return self._chrome
 
     # --- for the executor -------------------------------------------------------------------------------------
 
+    def resolve(self, s: Step, ctx: object) -> object:
+        """Page / Canvas / named-tab steps are resolved in Chrome first (``nova.actions.chrome``)."""
+        if self._chrome is not None and self._chrome.handles(s):
+            return self._chrome.resolve(s, ctx)
+        return s
+
+    def preview(self, s: Step, on: bool) -> None:
+        if self._chrome is not None:
+            self._chrome.preview(s, on)
+
     def label(self, s: Step) -> str:
         a = s.args
+        if self._chrome is not None:
+            text = self._chrome.label(s)
+            if text:
+                return text
         match s.action:
             case "open_app" | "switch_app":
                 return short_name(a["app"])
@@ -84,7 +104,7 @@ class WindowsHands:
             case "web_search":
                 return f"Search “{_cut(a['query'])}”"
             case "tab":
-                return _TAB_TEXT[a["op"]]
+                return _TAB_TEXT.get(a["op"], "Switch tab")
             case "nav":
                 return _NAV_TEXT[a["op"]]
             case "scroll":
@@ -117,10 +137,16 @@ class WindowsHands:
         if s.action == "close_app":
             target = catalog.app(s.get("app", ""))
             count = len(apps.windows_of(catalog, target)) if target else 0
+        url = ""
+        if self._chrome is not None and win is not None and win.exe_name.lower() == "chrome.exe":
+            tab = self._chrome.chrome.active_tab()
+            url = tab.url if tab is not None else ""
+        if s.action == "canvas_open":
+            url = str(s.get("url") or url)
         return Scene(
             app=app.name if app else "", exe=win.exe_name if win else "", window_class=win.cls if win else "",
-            title=win.title if win else "", password=password, locked=native.workstation_locked(), windows=count,
-            focus_known=known,
+            title=win.title if win else "", url=url, password=password, locked=native.workstation_locked(),
+            windows=count, focus_known=known,
         )
 
     def run(self, s: Step, ctx: object) -> Outcome:
@@ -137,18 +163,25 @@ class WindowsHands:
             case "layout":
                 return self._layout(catalog, a["slots"])
             case "open_url":
-                return apps.open_url(catalog, a["url"], _host(a["url"]))
+                tabbed = self._in_tab(a["url"], reuse=not a.get("new_tab"))
+                return tabbed or apps.open_url(catalog, a["url"], _host(a["url"]))
             case "web_search":
                 engine = a.get("engine") or "google"
                 url = ENGINES[engine].format(q=quote_plus(a["query"]))
-                outcome = apps.open_url(catalog, url, f"“{_cut(a['query'])}”")
+                outcome = self._in_tab(url, reuse=False) or apps.open_url(catalog, url, f"“{_cut(a['query'])}”")
                 return Outcome(f"Searched {engine.capitalize()} for “{_cut(a['query'])}”", outcome.method, outcome.win)
+            case "tab" if a["op"] == "goto":
+                return self._chrome_run(s)
             case "tab":
                 return self._browser_keys(catalog, _TAB_KEYS[a["op"]], _TAB_TEXT[a["op"]], a["op"] != "close")
             case "nav":
                 return self._browser_keys(catalog, _NAV_KEYS[a["op"]], _NAV_TEXT[a["op"]], a["op"] != "reload")
             case "scroll":
-                return Outcome(keyboard.scroll(a["dir"], a.get("amount", "page"), self._front()))
+                return self._page_scroll(a["dir"], a.get("amount")) or Outcome(
+                    keyboard.scroll(a["dir"], a.get("amount", "page"), self._front()))
+            case "page_click" | "page_fill" | "page_read" | "scroll_to" | "canvas_due" | "canvas_open_item" \
+                    | "canvas_item_text" | "canvas_open":
+                return self._chrome_run(s)
             case "type_text":
                 return Outcome(keyboard.type_text(a["text"], bool(a.get("submit")), self._front()))
             case "press":
@@ -161,9 +194,43 @@ class WindowsHands:
                 return Outcome(self._nova.dictation(a["op"]))
             case "listening":
                 return Outcome(self._nova.listening(a["op"]))
-            case "page_click":
-                raise ActionError("Clicking things on web pages comes with the Chrome extension (Stage 06).")
         raise ActionError(f"I can't do {s.action.replace('_', ' ')} yet.")
+
+    # --- Chrome, through the extension when it's connected --------------------------------------------------------
+
+    def _chrome_run(self, s: Step) -> Outcome:
+        if self._chrome is None:
+            raise ActionError("Page and Canvas steps need Nova's Chrome extension (nova chrome --install).")
+        return self._chrome.run(s)
+
+    def _in_tab(self, url: str, *, reuse: bool) -> Outcome | None:
+        """Open ``url`` in a Chrome tab through the extension (a tab already on that site is reused). None = do it
+        the old way (Chrome not running / extension not connected)."""
+        if self._chrome is None or not self._chrome.chrome.connected:
+            return None
+        try:
+            tab, reused = self._chrome.chrome.open(url, reuse=reuse)
+        except ActionError as error:
+            _log.info("extension couldn't open %s (%s); launching Chrome with it", url, error)
+            return None
+        host = _host(url)
+        return Outcome(f"Switched to {host}" if reused else f"Opened {host}", "tab-reused" if reused else "tab")
+
+    def _page_scroll(self, direction: str, amount: str | None) -> Outcome | None:
+        """Scroll the page in front through the extension (whatever has keyboard focus). None = use keys."""
+        if self._chrome is None or not self._chrome.chrome.connected or not self._chrome.chrome.chrome_in_front():
+            return None
+        try:
+            result = self._chrome.chrome.scroll(direction, amount)
+        except ActionError as error:
+            _log.info("page scroll failed (%s); using keys", error)
+            return None
+        if not result.get("ok"):
+            return None
+        if not result.get("moved"):
+            edge = "top" if direction in ("up", "top") else "bottom" if direction in ("down", "bottom") else "edge"
+            return Outcome(f"Already at the {edge}", "page")
+        return Outcome(f"Scrolled {direction}", "page")
 
     # --- helpers ---------------------------------------------------------------------------------------------
 

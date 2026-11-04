@@ -15,11 +15,11 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from ..actions.catalog import Catalog, Target, words_of
-from .plan import AREAS, ENGINES, MEDIA_OPS, NAV_OPS, SCROLL_AMOUNTS, SCROLL_DIRS, WINDOW_OPS
+from .plan import AREAS, CANVAS_RANGES, ENGINES, MEDIA_OPS, NAV_OPS, SCROLL_AMOUNTS, SCROLL_DIRS, WINDOW_OPS
 
 MAX_APPS = 12  # installed apps named in one request (the whole Start menu is ~1,200 tokens)
 
-_LLM_TAB_OPS = ("new", "close", "next", "prev", "reopen")
+_LLM_TAB_OPS = ("new", "close", "next", "prev", "reopen", "goto")
 _VOLUME_OPS = ("up", "down", "mute", "unmute", "set")
 
 
@@ -49,14 +49,20 @@ STEP_SCHEMAS = (
                            "items": _obj({"app": _TEXT, "area": _enum(AREAS)})}),
     _step("open_url", url=_TEXT),
     _step("web_search", query=_TEXT, engine=_enum(ENGINES)),
-    _step("tab", op=_enum(_LLM_TAB_OPS)),
+    _step("tab", ("match",), op=_enum(_LLM_TAB_OPS), match=_TEXT),
     _step("nav", op=_enum(NAV_OPS)),
     _step("scroll", dir=_enum(SCROLL_DIRS), amount=_enum(SCROLL_AMOUNTS)),
     _step("type_text", text=_TEXT, submit={"type": "boolean"}),
     _step("press", keys=_TEXT),
     _step("volume", ("level",), op=_enum(_VOLUME_OPS), level={"type": "integer"}),
     _step("media", op=_enum(MEDIA_OPS)),
-    _step("page_click", description=_TEXT),
+    _step("page_click", ("element",), description=_TEXT, element={"type": "integer"}),
+    _step("page_fill", ("element",), description=_TEXT, element={"type": "integer"}, text=_TEXT,
+          submit={"type": "boolean"}),
+    _step("scroll_to", ("element",), description=_TEXT, element={"type": "integer"}),
+    _step("canvas_due", range=_enum(CANVAS_RANGES)),
+    _step("canvas_open_item", item=_TEXT),
+    _step("canvas_item_text", item=_TEXT),
     _step("dictation", op=_enum(("start", "stop"))),
     _step("listening", op=_enum(("sleep", "wake"))),
 )
@@ -93,14 +99,19 @@ window{op,target}: one window. op: maximize | minimize (hide, get it out of the 
 layout{slots:[{app,area}]}: several windows at once. area: left | right (halves) | top | bottom | top_left | top_right | bottom_left | bottom_right | left_third | middle_third | right_third | full
 open_url{url}: a website, full https address
 web_search{query,engine}: query: what to look for. engine: google unless he names youtube, bing, duckduckgo, wikipedia, amazon, github, maps or images (pictures). Play, watch or find something on youtube: engine youtube
-tab{op}: browser tabs: new | close | next | prev (the tab before) | reopen (bring back a closed tab)
+tab{op,match}: browser tabs: new | close | next | prev (the tab before) | reopen (bring back a closed tab) | goto (a tab he names; match: its name)
 nav{op}: back (the previous page) | forward | reload
 scroll{dir,amount}: dir up | down | left | right | top | bottom; amount small | page | large
 type_text{text,submit}: type at the cursor. submit: true only if he says enter, send or submit
 press{keys}: copy ctrl+c, paste ctrl+v, cut ctrl+x, undo ctrl+z, redo ctrl+y, save ctrl+s, select all ctrl+a, zoom in ctrl+=, zoom out ctrl+-, show the desktop win+d, enter, esc
 volume{op,level}: up (louder) | down (quieter) | mute | unmute | set (only when he says a number: level 0-100)
 media{op}: play_pause | play | pause | next (skip) | prev | stop. Works on whatever is playing: never ask which app
-page_click{description}: click something on the web page in front
+page_click{description,element}: click something on the web page in front. description: what he called it. element: its id in "page", if listed
+page_fill{description,element,text,submit}: type into a box on the web page ("put physics in the search box")
+scroll_to{description,element}: scroll the web page to a part of it ("the comments", "the reviews")
+canvas_due{range}: what's due on Canvas, his school site. range: today | tomorrow | week | next_week | weekend | upcoming | overdue | monday ... sunday
+canvas_open_item{item}: open one assignment, quiz or discussion on Canvas. item: his words for which one ("my assignment for today", "the thermo homework")
+canvas_item_text{item}: what an assignment on Canvas says (its instructions)
 dictation{op}: start | stop
 listening{op}: sleep | wake
 
@@ -113,6 +124,8 @@ rules:
 - confidence: how sure you are this is what he wants. 0.9+ sure, 0.6-0.9 likely, under 0.6 unsure: then clarify.
 - Never make up an app, site or text he didn't mention. Not sure which app or site: clarify.
 - "asked" and "answer": you asked him something and this is his answer; now plan it.
+- "page": what's on the web page in front, one per line: number, role, name, [its part of the page], text beside it. For page_click / page_fill / scroll_to give the number he means as element; not listed: the description only.
+- Homework, assignments, quizzes and what's due are on Canvas (canvas_due, canvas_open_item), even when "page" is shown.
 """
 
 # (request, plan) pairs: worked examples that show the patterns. Different from docs/eval/intents.yaml on purpose.
@@ -170,6 +183,17 @@ EXAMPLES: tuple[tuple[dict[str, Any], dict[str, Any]], ...] = (
       "apps": ["ChatGPT"]},
      {"kind": "handoff", "steps": [], "confidence": 0.95,
       "handoff": {"to": "chatgpt", "mode": "text", "prompt": "what the integral of x squared is"}}),
+    ({"said": "do I have anything due tomorrow", "front": "Google Chrome", "open": ["Google Chrome"]},
+     {"kind": "act", "steps": [{"action": "canvas_due", "range": "tomorrow"}], "confidence": 0.9}),
+    ({"said": "can you pull up the thermo homework", "front": "Claude", "open": ["Claude", "Google Chrome"]},
+     {"kind": "act", "steps": [{"action": "canvas_open_item", "item": "the thermo homework"}], "confidence": 0.9}),
+    ({"said": "hit that sign up thing", "front": "Google Chrome", "open": ["Google Chrome"], "tab": "GitHub · github.com",
+      "page": ["1 link: Sign up [header]", "2 link: Sign in [header]",
+               "3 button: Sign up for GitHub [Build and ship software]"]},
+     {"kind": "act", "steps": [{"action": "page_click", "description": "sign up", "element": 1}], "confidence": 0.85}),
+    ({"said": "take me down to the reviews", "front": "Google Chrome", "open": ["Google Chrome"],
+      "page": ["1 heading: Customer reviews", "2 link: Write a review [Customer reviews]"]},
+     {"kind": "act", "steps": [{"action": "scroll_to", "description": "the reviews", "element": 1}], "confidence": 0.85}),
     ({"said": "turn on dark mode in fusion", "front": "Autodesk Fusion", "open": ["Autodesk Fusion"],
       "apps": ["Autodesk Fusion"]},
      {"kind": "teach", "steps": [], "confidence": 0.7}),
@@ -234,7 +258,8 @@ def relevant_apps(text: str, catalog: Catalog, running: Iterable[str] = (), limi
 
 
 def request(text: str, *, front: str | None, open_apps: Sequence[str], tab: str | None,
-            apps: Sequence[str], asked: str | None = None, answer: str | None = None) -> dict[str, Any]:
+            apps: Sequence[str], asked: str | None = None, answer: str | None = None,
+            page: Sequence[str] | None = None) -> dict[str, Any]:
     data: dict[str, Any] = {"said": text.strip()}
     if front:
         data["front"] = front
@@ -244,6 +269,8 @@ def request(text: str, *, front: str | None, open_apps: Sequence[str], tab: str 
         data["tab"] = tab
     if apps:
         data["apps"] = list(apps)
+    if page:
+        data["page"] = list(page)
     if asked:
         data["asked"] = asked
         data["answer"] = answer or ""

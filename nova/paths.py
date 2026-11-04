@@ -9,6 +9,7 @@ VOCAB = CONFIG / "vocab.yaml"
 ALIASES = CONFIG / "aliases.yaml"
 DATA = ROOT / "data"
 CATALOG_CACHE = DATA / "catalog.json"
+CHROME_BRIDGE = DATA / "chrome-bridge.json"  # the extension's pipe name + key (nova chrome --install)
 LOGS = ROOT / "logs"
 MODELS = ROOT / "models"
 RECORDINGS = ROOT / "fixtures" / "voicebar-recordings"

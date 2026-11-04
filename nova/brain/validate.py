@@ -16,13 +16,15 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 from urllib.parse import urlsplit
 
 from rapidfuzz import fuzz
 
 from ..actions.catalog import Catalog, Match, Target, short_name, words_of
-from .plan import KINDS, Plan, PlanError, Step, check, step
+from ..chrome import canvas
+from .plan import CANVAS_RANGES, KINDS, Plan, PlanError, Step, check, step
 from .tier0 import ACTIVE, describe
 
 ASK_BELOW = 0.6  # act plans less sure than this become questions
@@ -221,9 +223,51 @@ def _payload_step(action: str, key: str, args: Mapping[str, Any], said: str) -> 
     return step("web_search", query=cut, engine=engine)
 
 
+def _page_target(action: str, args: Mapping[str, Any], page: Sequence[Any] | None, **extra: Any) -> Step | str:
+    """page_click / page_fill / scroll_to: the element Tier 1 pointed at (a number from the page list it was shown),
+    else his description (found on the page later)."""
+    description = " ".join(str(args.get("description") or "").split())
+    number = args.get("element")
+    row = None
+    if page and isinstance(number, int) and not isinstance(number, bool) and 1 <= number <= len(page):
+        row = page[number - 1]
+    if row is not None:
+        e = row.element
+        found: dict[str, Any] = {"element": e.id, "label": e.name}
+        for flag in ("submits", "secret", "search"):
+            if getattr(e, flag, False):
+                found[flag] = True
+        return step(action, description=description or e.name, **found, **extra)
+    if not description:
+        return "I couldn't tell what on the page you mean."
+    return step(action, description=description, **extra)
+
+
 def _fix(action: str, args: Mapping[str, Any], said: str, catalog: Catalog,
-         running: frozenset[str]) -> Step | _Ask | _Unsure | str:
+         running: frozenset[str], page: Sequence[Any] | None = None) -> Step | _Ask | _Unsure | str:
     match action:
+        case "page_click" | "scroll_to":
+            return _page_target(action, args, page)
+        case "page_fill":
+            text = args.get("text")
+            cut = span(said, text) if isinstance(text, str) else None
+            if cut is None:
+                return "The plan had words you never said, so I didn't use it."
+            submit = bool(args.get("submit")) and bool(_SUBMIT_WORDS.search(said))
+            return _page_target(action, args, page, text=cut, submit=submit)
+        case "canvas_due":
+            rng = args.get("range")
+            rng = rng if rng in CANVAS_RANGES else "upcoming"
+            if canvas.parse_ref(said, datetime.now().astimezone()).words:  # "... for physics": his words filter it
+                return step("canvas_due", range=rng, item=said.strip())
+            return step("canvas_due", range=rng)
+        case "canvas_open_item" | "canvas_item_text":
+            item = args.get("item")
+            cut = span(said, item) if isinstance(item, str) else None
+            return step(action, item=cut or said.strip())  # which item: his words (dates, course) say it
+        case "tab" if args.get("op") == "goto":
+            match = " ".join(str(args.get("match") or "").split())
+            return step("tab", op="goto", match=match) if match else "Which tab?"
         case "open_app" | "switch_app" | "close_app":
             return _app_step(action, args, catalog, running)
         case "window":
@@ -270,7 +314,8 @@ def _checked_act(steps: list[Step], confidence: float) -> Plan | str:
         return f"The plan didn't make sense ({error})."
 
 
-def _act(data: Mapping[str, Any], said: str, catalog: Catalog, running: frozenset[str], confidence: float) -> Checked:
+def _act(data: Mapping[str, Any], said: str, catalog: Catalog, running: frozenset[str], confidence: float,
+         page: Sequence[Any] | None = None) -> Checked:
     raw_steps = data.get("steps")
     if not isinstance(raw_steps, list) or not raw_steps:
         return Checked(None, "act", "The plan had no steps.")
@@ -280,7 +325,7 @@ def _act(data: Mapping[str, Any], said: str, catalog: Catalog, running: frozense
     for raw in raw_steps:
         if not isinstance(raw, Mapping) or not isinstance(raw.get("action"), str):
             return Checked(None, "act", "The plan didn't make sense.")
-        made = _fix(raw["action"], {k: v for k, v in raw.items() if k != "action"}, said, catalog, running)
+        made = _fix(raw["action"], {k: v for k, v in raw.items() if k != "action"}, said, catalog, running, page)
         if isinstance(made, str):
             return Checked(None, "act", made)
         if isinstance(made, _Ask):
@@ -346,8 +391,10 @@ def _handoff(data: Mapping[str, Any], said: str, confidence: float) -> Checked:
     return Checked(plan, "handoff")
 
 
-def check_llm(data: Any, said: str, catalog: Catalog, *, running: frozenset[str] = frozenset()) -> Checked:
-    """A runnable plan from Tier 1's JSON (or a question), or why not."""
+def check_llm(data: Any, said: str, catalog: Catalog, *, running: frozenset[str] = frozenset(),
+              page: Sequence[Any] | None = None) -> Checked:
+    """A runnable plan from Tier 1's JSON (or a question), or why not. ``page``: the ranked page elements the model
+    was shown (``nova.chrome.pagemap.Scored``, numbered from 1), so its element numbers can be checked."""
     if not isinstance(data, Mapping):
         return Checked(None, problem="The local model's answer wasn't a plan.")
     kind = data.get("kind")
@@ -355,7 +402,7 @@ def check_llm(data: Any, said: str, catalog: Catalog, *, running: frozenset[str]
         return Checked(None, problem="The local model's answer wasn't a plan.")
     confidence = _confidence(data.get("confidence"))
     if kind == "act":
-        return _act(data, said, catalog, running, confidence)
+        return _act(data, said, catalog, running, confidence, page)
     if kind == "clarify":
         return _question(data, confidence)
     if kind == "handoff":

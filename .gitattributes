@@ -1,0 +1,2 @@
+# cmd.exe wants CRLF batch files
+*.bat text eol=crlf

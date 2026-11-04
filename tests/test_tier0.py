@@ -254,9 +254,80 @@ def test_commands_without_and_between_them():
     assert steps("open chrome maximize it") == [step("open_app", app=CHROME), step("window", op="maximize", target="active")]
 
 
-def test_clicks_become_page_clicks_for_stage_06():
-    assert one("click on my assignment for today") == step("page_click", description="my assignment for today")
+def test_clicks_become_page_clicks():
     assert one("click the first link") == step("page_click", description="the first link")
+    assert one("click sign in") == step("page_click", description="sign in")
+    assert one("click the assignments link") == step("page_click", description="the assignments link")
+
+
+@pytest.mark.parametrize(
+    ("text", "range_"),
+    [("what's due this week", "week"), ("what's due today", "today"), ("what do I have due tomorrow", "tomorrow"),
+     ("anything due tonight", "today"), ("do I have any homework due friday", "friday"),
+     ("what assignments do I have next week", "next_week"), ("what's due", "upcoming"),
+     ("is anything overdue", "overdue"), ("what's due on canvas this week", "week"),
+     ("um, what's due this weekend", "weekend"), ("what homework do I have tonight", "today"),
+     ("show me today's homework", "today")],
+)
+def test_canvas_questions(text, range_):
+    assert one(text) == step("canvas_due", range=range_)
+
+
+@pytest.mark.parametrize(
+    ("text", "item"),
+    [("click on my assignment for today", "my assignment for today"), ("open my thermo homework", "my thermo homework"),
+     ("pull up my next assignment", "my next assignment"), ("open HW 5", "HW 5"),
+     ("go to my quiz for next week", "my quiz for next week"), ("pull up today's homework", "today's homework"),
+     ("click on the lab report due friday", "the lab report due friday")],
+)
+def test_canvas_items(text, item):
+    assert one(text) == step("canvas_open_item", item=item)
+
+
+def test_canvas_item_words_dont_hijack_files_or_handoffs():
+    for text in ("open my homework folder", "open the assignment doc", "click the assignments tab",
+                 "click submit assignment", "click start assignment", "click the quiz details"):
+        plan = parse(text, CATALOG)
+        assert plan is None or all(s.action != "canvas_open_item" for s in plan.steps), text
+
+
+def test_scroll_to_a_part_of_the_page():
+    assert one("scroll to the comments") == step("scroll_to", description="the comments")
+    assert one("scroll down to the reviews") == step("scroll_to", description="the reviews")
+    assert one("scroll to the top") == step("scroll", dir="top")
+    assert one("go to the comments section") == step("scroll_to", description="the comments section")
+
+
+def test_buttons_by_name():
+    assert one("press the submit button") == step("page_click", description="the submit button")
+    assert one("hit the sign in button") == step("page_click", description="the sign in button")
+    assert one("tap the remember me checkbox") == step("page_click", description="the remember me checkbox")
+    assert one("press enter") == step("press", keys="enter")
+
+
+def test_typing_into_a_named_box():
+    assert one("type thermodynamics into the search box") == step(
+        "page_fill", description="the search box", text="thermodynamics", submit=False)
+    assert one("type Bhavya in the username field") == step(
+        "page_fill", description="the username field", text="Bhavya", submit=False)
+    assert one("type hello world") == step("type_text", text="hello world", submit=False)
+
+
+def test_switch_to_a_named_tab():
+    assert one("switch to the youtube tab") == step("tab", op="goto", match="youtube")
+    assert one("go to my gmail tab") == step("tab", op="goto", match="gmail")
+    assert one("go to the next tab") == step("tab", op="next")
+    assert one("switch to the canvas tab") == step("tab", op="goto", match="canvas")
+    assert parse("open a fresh tab", CATALOG) is None or one("open a fresh tab") == step("tab", op="new")
+
+
+def test_always_listening_keeps_page_and_canvas_steps_behind_the_name():
+    from nova.brain.tier0 import safe_plan
+
+    for text, safe in (("scroll to the comments", True), ("switch to the youtube tab", True),
+                       ("click sign in", False), ("what's due this week", False), ("open my thermo homework", False)):
+        plan = parse(text, CATALOG)
+        assert plan is not None and safe_plan(plan, text) is safe, text
 
 
 # --- from Bhavya's first live demo (2026-11-03) ---------------------------------------------------------------------
@@ -354,3 +425,22 @@ def test_more_everyday_phrasings(text, expected):
 def test_talk_about_a_site_is_not_a_search():
     assert parse("youtube recommended me the weirdest video", CATALOG) is None
     assert one("youtube how to tie a tie") == step("web_search", query="how to tie a tie", engine="youtube")
+
+
+def test_ordinals_on_the_page_are_clicks():
+    assert one("open the second result") == step("page_click", description="the second result")
+    assert one("go to the first link") == step("page_click", description="the first link")
+    assert one("go to the next tab") == step("tab", op="next")
+
+
+def test_what_an_assignment_says():
+    assert one("what does my homework for today say") == step("canvas_item_text",
+                                                              item="what does my homework for today say")
+    assert one("what's the thermo homework about") == step("canvas_item_text", item="what's the thermo homework about")
+    assert one("what's due today") == step("canvas_due", range="today")
+
+
+def test_whats_due_for_one_course():
+    assert one("do I have anything for physics due this week") == step(
+        "canvas_due", range="week", item="do I have anything for physics due this week")
+    assert one("what's due this week") == step("canvas_due", range="week")

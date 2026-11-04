@@ -7,6 +7,10 @@ fields, enter card / bank / ID numbers, run shell commands, delete files, act wh
 workstation is locked. Detection = action type + label / URL / window title + app. In
 doubt -> confirm. (A close that brings up an unsaved-work prompt is left to that prompt:
 the executor shows it and never clicks it.)
+
+Page clicks are judged on the element the page map resolved (its own name: "the blue button"
+may be "Submit Assignment"), plus a form's submit button while paying or messaging; page
+fills refuse password / card fields and ask before submitting anything but a search box.
 """
 
 from __future__ import annotations
@@ -35,10 +39,17 @@ _TERMINAL_CLASSES = frozenset({"CASCADIA_HOSTING_WINDOW_CLASS", "ConsoleWindowCl
 _FILE_MANAGERS = re.compile(r"^(explorer\.exe)$", re.IGNORECASE)
 _RISKY = re.compile(
     r"\b(submit|turn\s*in|send|post|publish|comment|reply|delete|remove|trash|discard|buy|order|pay|checkout"
-    r"|check\s*out|purchase|place\s+order|unsubscribe|unenroll|drop\s+(the\s+)?course|sign\s+out\s+everywhere)\b",
+    r"|check\s*out|purchase|place\s+order|unsubscribe|unenroll|drop\s+(the\s+)?course|sign\s+out\s+everywhere"
+    r"|tweet|retweet|donate|transfer|withdraw|subscribe|book\s+now|reserve\s+now)\b",
     re.IGNORECASE,
 )
-_SAFE_LABELS = re.compile(r"^(sent|send\s*later|drafts?|outbox|sent\s+folder|sent\s+items)\b", re.IGNORECASE)
+_SAFE_LABELS = re.compile(
+    r"^(sent|send\s*later|drafts?|outbox|sent\s+folder|sent\s+items|order\s+(history|details|status|summary|number)"
+    r"|track\s+(your\s+)?order|your\s+orders?)\b",
+    re.IGNORECASE,
+)
+_CHECKOUT_URL = re.compile(r"checkout|/cart\b|/basket|payment|/buy\b|/order|/purchase|billing", re.IGNORECASE)
+_CANVAS_URL = re.compile(r"(^|//)canvas\.|instructure\.com", re.IGNORECASE)
 _SSN = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
 _DIGIT_RUN = re.compile(r"\d[\d -]{11,}\d")
 _BANKING = re.compile(r"\b(routing|account|iban|swift|acct)\b", re.IGNORECASE)
@@ -162,8 +173,22 @@ def assess(s: Step, scene: Scene) -> Risk | None:
             return _confirm(f"Close all {scene.windows} {s.get('app')} windows?")
         return None
     if action in ("page_click", "ui_click"):
-        label = str(s.get("description") or s.get("element") or "")
+        # once the page map has resolved it, the element's own name is what gets clicked ("the blue button" may be
+        # "Submit Assignment")
+        label = str(s.get("label") or s.get("description") or s.get("element") or "")
+        where = " on Canvas" if scene.url and _CANVAS_URL.search(scene.url) else ""
         if risky_label(label):
-            return _confirm(f"Click {_quote(label)}?")
+            return _confirm(f"Click {_quote(label)}{where}?")
+        if s.get("submits") and scene.url and (_CHECKOUT_URL.search(scene.url) or messaging(scene)):
+            return _confirm(f"Click {_quote(label)}{where}?")  # a form's submit button while paying / messaging
+        return None
+    if action == "page_fill":
+        text = str(s.get("text", ""))
+        if s.get("secret") or scene.password:
+            return _refuse("That's a password field — I never type there.")
+        if sensitive_number(text):
+            return _refuse("I don't enter card, bank or ID numbers.")
+        if s.get("submit") and not s.get("search"):
+            return _confirm(f"Send {_quote(text)}?" if messaging(scene) else f"Submit {_quote(text)}?")
         return None
     return None

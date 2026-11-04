@@ -35,6 +35,9 @@ def _parser() -> argparse.ArgumentParser:
     say = sub.add_parser("say", help="run a command from text, no mic (the whole brain + real actions)")
     say.add_argument("text")
     say.add_argument("--dry", action="store_true", help="only show the plan; do nothing")
+    say.add_argument("--chrome", type=float, nargs="?", const=30.0, default=0.0, metavar="S",
+                     help="page / Canvas steps: host the Chrome bridge and wait up to S s (default 30) for the extension "
+                          "(only when the tray app isn't running)")
     ev = sub.add_parser("eval", help="score the intent eval (docs/eval/intents.yaml) through the router")
     ev.add_argument("--model", help="an Ollama model to use instead of the one settings.yaml picks")
     ev.add_argument("--device", choices=("gpu", "cpu"), help="run the model on this device")
@@ -47,6 +50,13 @@ def _parser() -> argparse.ArgumentParser:
     bench_llm.add_argument("--cpu-cases", type=int, default=40, metavar="N", help="cases timed on CPU / Arc (default 40)")
     bench_llm.add_argument("--save", action="store_true", help="write the recommended models to settings.yaml")
     sub.add_parser("latency", help="p50/p95 per command type from the logs")
+    chrome = sub.add_parser("chrome", help="Chrome extension: --install registers its native host (then load it once)")
+    what = chrome.add_mutually_exclusive_group(required=True)
+    what.add_argument("--install", action="store_true", help="write the host manifest + registry key, print the manual step")
+    what.add_argument("--uninstall", action="store_true", help="remove the registry key")
+    what.add_argument("--status", action="store_true", help="is the host registered and the extension loaded?")
+    chrome.add_argument("--browser", action="append", choices=("chrome", "testing", "chromium"),
+                        help="which browser's registry (default chrome; testing = Chrome for Testing)")
     return parser
 
 
@@ -88,7 +98,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if command == "say":
         from . import say
 
-        return say.main(args.text, dry=args.dry)
+        return say.main(args.text, dry=args.dry, chrome_wait=args.chrome)
     if command == "latency":
         from . import latency
 
@@ -103,5 +113,19 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         devices = tuple(d.strip() for d in args.devices.split(",") if d.strip())
         return bench_llm.main(tuple(args.models), devices=devices, cpu_cases=args.cpu_cases, save=args.save)
+    if command == "chrome":
+        from .chrome import install
+
+        browsers = tuple(args.browser or ("chrome",))
+        if args.status:
+            state = install.status()
+            print(("OK  " if state.ok else "--  ") + state.detail + (f"\n    {state.fix}" if state.fix else ""))
+            return 0 if state.ok else 1
+        for line in install.install(browsers) if args.install else install.uninstall(browsers):
+            print(line)
+        if args.install:
+            print()
+            print(install.MANUAL_STEP)
+        return 0
     print(f"`nova {command}` arrives in Stage {_COMING[command]}.")
     return 1

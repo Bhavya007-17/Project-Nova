@@ -34,6 +34,9 @@ MEDIA_OPS = frozenset({"play_pause", "play", "pause", "next", "prev", "stop"})
 DICTATION_OPS = frozenset({"start", "stop"})
 LISTENING_OPS = frozenset({"sleep", "wake", "off"})
 ENGINES = frozenset({"google", "youtube", "bing", "duckduckgo", "wikipedia", "amazon", "github", "maps", "images"})
+WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+CANVAS_RANGES = frozenset({"today", "tomorrow", "week", "next_week", "weekend", "upcoming", "overdue", *WEEKDAYS})
+READ_WHATS = frozenset({"page", "selection"})
 _KEY = re.compile(r"(ctrl|shift|alt|win|enter|esc|tab|space|backspace|delete|insert|up|down|left|right|home|end"
                   r"|pageup|pagedown|f(?:[1-9]|1[0-9]|2[0-4])|[a-z0-9]|[\[\];',./`=\\-])")
 
@@ -172,6 +175,8 @@ def _check_step(s: Step) -> None:
             _one_of(a, "engine", ENGINES, required=False)
         case "tab":
             _one_of(a, "op", TAB_OPS)
+            if a.get("op") == "goto":
+                _text(a, "match")
         case "nav":
             _one_of(a, "op", NAV_OPS)
         case "scroll":
@@ -179,8 +184,23 @@ def _check_step(s: Step) -> None:
             _one_of(a, "amount", SCROLL_AMOUNTS, required=False)
         case "type_text":
             _text(a, "text")
-        case "page_click":
+        case "page_click" | "scroll_to":
             _text(a, "description")
+            _text(a, "element", required=False)
+        case "page_fill":
+            _text(a, "description")
+            _text(a, "text")
+            _text(a, "element", required=False)
+        case "page_read":
+            _one_of(a, "what", READ_WHATS)
+        case "canvas_due":
+            _one_of(a, "range", CANVAS_RANGES)
+            _text(a, "item", required=False)  # his words, when they name a course ("for physics")
+        case "canvas_open_item" | "canvas_item_text":
+            _text(a, "item")
+        case "canvas_open":  # a resolved canvas_open_item: the item's address
+            _url(_text(a, "url") or "")
+            _text(a, "title")
         case "press":
             if not keys_ok(_text(a, "keys") or ""):
                 raise PlanError(f"can't press {a.get('keys')!r}")

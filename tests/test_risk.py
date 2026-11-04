@@ -79,3 +79,51 @@ def test_risky_labels(label):
 @pytest.mark.parametrize("label", ["HW 5 – Thermo", "Next page", "Grades", "Inbox", "Sent folder", "Show more"])
 def test_ordinary_labels(label):
     assert not risky_label(label)
+
+
+# --- Stage 06: page clicks and fills (the label is the element's own name once the page map resolved it) -------------
+
+CANVAS = Scene(app="Google Chrome", exe="chrome.exe", url="https://canvas.vt.edu/courses/11/assignments/501")
+SHOP = Scene(app="Google Chrome", exe="chrome.exe", url="https://www.example-shop.com/checkout/payment")
+PAGE = Scene(app="Google Chrome", exe="chrome.exe", url="https://example.com/")
+
+
+def test_page_clicks_confirm_on_the_resolved_label():
+    risk = assess(step("page_click", description="the blue button", element="0:4", label="Submit Assignment"), CANVAS)
+    assert risk.confirm and risk.question == "Click “Submit Assignment” on Canvas?"
+    assert assess(step("page_click", description="submit", element="0:4", label="Sign in"), PAGE) is None
+    assert assess(step("page_click", description="sign in"), PAGE) is None
+
+
+@pytest.mark.parametrize("label", ["Tweet", "Donate $5", "Transfer money", "Withdraw", "Subscribe", "Book now"])
+def test_more_risky_labels(label):
+    assert risky_label(label)
+
+
+@pytest.mark.parametrize("label", ["Sign in", "Submissions", "Comments (2)", "Posts", "Deleted items", "Order history"])
+def test_lookalike_labels_are_fine(label):
+    assert not risky_label(label)
+
+
+def test_form_submit_buttons_on_checkout_pages_confirm():
+    assert assess(step("page_click", description="continue", element="0:1", label="Continue", submits=True), SHOP).confirm
+    assert assess(step("page_click", description="continue", element="0:1", label="Continue", submits=True), PAGE) is None
+
+
+def test_page_fill_rules():
+    assert assess(step("page_fill", description="search box", text="thermo", submit=True, search=True), PAGE) is None
+    assert assess(step("page_fill", description="username", text="bhavya"), PAGE) is None
+    assert assess(step("page_fill", description="password", text="x", secret=True), PAGE).refuse
+    assert assess(step("page_fill", description="card", text="4111 1111 1111 1111"), PAGE).refuse
+    risk = assess(step("page_fill", description="comment", text="great work", submit=True), PAGE)
+    assert risk.confirm and "great work" in risk.question
+    gmail = Scene(app="Google Chrome", exe="chrome.exe", url="https://mail.google.com/mail/u/0/#inbox")
+    assert assess(step("page_fill", description="message", text="hi", submit=True), gmail).question == "Send “hi”?"
+
+
+def test_canvas_and_reading_steps_are_never_risky():
+    for s in (step("canvas_due", range="week"), step("canvas_open_item", item="my assignment for today"),
+              step("canvas_open", url="https://canvas.vt.edu/courses/1/assignments/2", title="HW 5"),
+              step("scroll_to", description="comments"), step("page_read", what="page"),
+              step("tab", op="goto", match="youtube")):
+        assert assess(s, CANVAS) is None, s

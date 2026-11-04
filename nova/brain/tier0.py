@@ -19,8 +19,10 @@ import logging
 import re
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 
 from ..actions.catalog import Catalog, Match, Target, sounds_like
+from ..chrome import canvas
 from ..gate import Resolved
 from .plan import Plan, PlanError, Step, check, step
 
@@ -652,6 +654,11 @@ def _clause(words: tuple[str, ...], st: _State) -> list[object] | Ask | None:
             return [step("press", keys=keys)] if keys else None
         if family in ("type", "search", "click"):
             return None  # handled with the original text (see parse)
+        if family == "switch" and len(rest) >= 2 and rest[-1] == "tab":  # "switch to the youtube tab"
+            name = [w for w in rest[:-1] if w not in ("the", "my", "a", "that", "this")]
+            if name and name[0] not in _NOT_TAB_NAMES:
+                st.family = None
+                return [step("tab", op="goto", match=" ".join(name))]
         if family == "open" and rest:
             fixed = _template(rest[1:] if rest[0] in ("a", "the", "some") and _template(rest) is None else rest)
             if fixed is not None:  # "I need a new tab", "give me full screen"
@@ -680,6 +687,126 @@ def _clause(words: tuple[str, ...], st: _State) -> list[object] | Ask | None:
             st.family = "open"
             return [_open_step("open", found.target)]
     return None
+
+
+# --- Chrome and Canvas (Stage 06) --------------------------------------------------------------------------------
+
+_NOT_TAB_NAMES = frozenset({"new", "next", "previous", "last", "another", "other", "current", "prior", "first", "fresh",
+                            "blank", "empty", "extra", "second", "different"})
+_COURSEWORK = frozenset({"assignment", "homework", "hw", "quiz", "lab", "project", "essay", "paper", "discussion",
+                         "reading", "worksheet", "pset", "exam", "midterm", "report", "prelab"})
+_NOT_COURSEWORK = frozenset({
+    "folder", "folders", "file", "files", "doc", "docs", "document", "documents", "notes", "note", "link", "links",
+    "button", "tab", "tabs", "page", "pages", "section", "menu", "claude", "chatgpt", "word", "excel", "pdf", "drive",
+    "app", "window", "spreadsheet", "slides", "sheet", "email", "emails",
+    # a control on the page, not the coursework itself ("click submit assignment", "start the quiz")
+    "submit", "submission", "submissions", "turn", "start", "upload", "delete", "remove", "edit", "post", "reply",
+    "comment", "comments", "grade", "grades", "rubric", "feedback", "attempt", "download", "save", "cancel", "view",
+    "details", "preview", "resume", "retake", "mark", "done", "complete",
+})
+_DUE_WORDS = frozenset({"due", "overdue"})
+_COURSE_NOUNS = frozenset({"assignment", "assignments", "homework", "hw", "quiz", "quizzes", "todo", "todos", "deadline",
+                           "deadlines"})
+_QUESTION_START = frozenset({"whats", "what", "do", "is", "are", "any", "anything", "show", "tell", "list", "check",
+                             "have", "got", "when", "whens"})
+_NOT_QUESTIONS = frozenset({"click", "open", "pull", "submit", "type", "search", "put", "send", "write"})
+_WEEKDAY_WORDS = frozenset({"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"})
+_RANGE_HINTS = frozenset({"today", "todays", "tonight", "tomorrow", "week", "weekend", "overdue", "late", "missing",
+                          "next", "upcoming", *_WEEKDAY_WORDS})
+_ROLE_NOUNS = frozenset({"button", "link", "icon", "checkbox", "toggle", "switch"})
+_ORDINAL_WORDS = frozenset({"first", "second", "third", "fourth", "fifth", "last", "top", "1st", "2nd", "3rd", "4th"})
+_PAGE_THINGS = frozenset({"result", "link", "video", "article", "post", "story", "item", "option", "entry", "one"})
+_READ_WORDS = frozenset({"say", "says", "about", "instructions", "description", "asking", "ask", "asks", "require",
+                         "requires", "want", "wants"})
+_INTO_BOX = re.compile(r"^(?P<text>.+?)\s+(?:in|into|in to)\s+(?P<target>(?:the|my|that|this)\s+(?:[\w'’-]+\s+){0,3}"
+                       r"(?:box|field|bar|input))$", re.IGNORECASE)
+
+
+def canvas_item(words: Sequence[str]) -> bool:
+    """Does this name a piece of coursework ("my assignment for today", "the thermo homework", "HW 5")?"""
+    found = set(words)
+    return bool(found & _COURSEWORK) and not found & _NOT_COURSEWORK
+
+
+def _due_range(words: Sequence[str]) -> str:
+    for i, w in enumerate(words):
+        if w in ("today", "todays", "tonight", "tonights"):
+            return "today"
+        if w in ("tomorrow", "tomorrows"):
+            return "tomorrow"
+        if w == "next" and i + 1 < len(words) and words[i + 1] == "week":
+            return "next_week"
+        if w in ("weekend", "weekends"):
+            return "weekend"
+        if w == "week":
+            return "week"
+        if w in ("overdue", "late", "missing"):
+            return "overdue"
+        if w in _WEEKDAY_WORDS:
+            return w
+    return "upcoming"
+
+
+def _page_step(words: tuple[str, ...], verb: tuple[str, int] | None, text: str, toks: Sequence[Tok], clause: Clause,
+               lead: int, clauses: Sequence[Clause], ci: int, st: _State) -> tuple[Step, int] | None:
+    """Clauses about the page or Canvas that keep his own words: "scroll to the comments", "press the submit button",
+    "open my thermo homework", "go to the reviews section". (step, next clause index) or None."""
+
+    def payload(k: int) -> tuple[str, int] | None:  # from word k of this clause on
+        begin, end, after = _payload(text, toks, clause.first + lead + k, clauses, ci, st)
+        cut = _clean_payload(text[begin:end])
+        return (cut, after) if cut else None
+
+    if words[0] == "scroll" and _template(words) is None:
+        to = next((k for k in range(1, min(4, len(words) - 1)) if words[k] == "to"), None)
+        if to is not None and all(w in ("down", "up", "back", "all", "the", "way") for w in words[1:to]):
+            got = payload(to + 1)
+            if got is not None:
+                return step("scroll_to", description=got[0]), got[1]
+        return None
+    if verb is None:
+        return None
+    family, n = verb
+    rest = words[n:]
+    if not rest:
+        return None
+    start = n - 1 if words[n - 1] == "the" else n  # "press the submit button": keep "the" in his words
+    made = None
+    lead_word = rest[1] if rest[0] in ("the", "that", "my") and len(rest) > 1 else rest[0]
+    if family == "press" and parse_keys(rest) is None and _ROLE_NOUNS & set(rest):
+        made = "page_click", "description"
+    elif family in ("open", "switch") and lead_word in _ORDINAL_WORDS and rest[-1] in _PAGE_THINGS:
+        made = "page_click", "description"  # "open the second result", "go to the first link"
+    elif family in ("open", "switch") and canvas_item(rest):
+        made = "canvas_open_item", "item"
+    elif family == "switch" and len(rest) > 1 and rest[-1] in ("section", "part"):
+        made = "scroll_to", "description"
+    if made is None:
+        return None
+    got = payload(start)
+    return (step(made[0], **{made[1]: got[0]}), got[1]) if got is not None else None
+
+
+def _canvas_question(text: str, toks: Sequence[Tok]) -> Step | None:
+    """ "what's due this week", "do I have any homework due friday", "is anything overdue" -> canvas_due;
+    "what does my homework for today say" -> canvas_item_text."""
+    words = [t.word for t in toks if t.word]
+    lead = _lead(words)
+    words = words[lead:]
+    if not words or words[0] not in _QUESTION_START or any(w in _NOT_QUESTIONS for w in words):
+        return None
+    found = set(words)
+    if found & _READ_WORDS and canvas_item(words):  # "what does my homework for today say": its instructions
+        said = [t for t in toks if t.word][lead:]
+        item = _clean_payload(text[said[0].start : said[-1].end])
+        return step("canvas_item_text", item=item) if item else None
+    if not found & _DUE_WORDS and not (found & _COURSE_NOUNS and found & _RANGE_HINTS):
+        return None
+    said = [t for t in toks if t.word][lead:]
+    asked = _clean_payload(text[said[0].start : said[-1].end])
+    if canvas.parse_ref(asked, datetime.now().astimezone()).words:  # "anything for physics due this week"
+        return step("canvas_due", range=_due_range(words), item=asked)
+    return step("canvas_due", range=_due_range(words))
 
 
 # --- payloads: type ... / search ... ----------------------------------------------------------------------------
@@ -824,6 +951,9 @@ def _merge_places(items: list[object]) -> list[Step] | None:
 def parse(text: str, catalog: Catalog, *, strict: bool = False, running: Iterable[str] = ()) -> Plan | None:
     """A plan for ``text``, or None if Tier 0 doesn't understand it."""
     toks = tokenize(text)
+    question = _canvas_question(text, toks)
+    if question is not None:
+        return _plan([question], 1.0)
     clauses = split_clauses(toks)
     st = _State(catalog, strict, running=frozenset(running))
     guessed: set[int] = set()  # clauses whose first word was a misheard verb
@@ -850,6 +980,12 @@ def parse(text: str, catalog: Catalog, *, strict: bool = False, running: Iterabl
             items.append(step("web_search", query=query, engine=words[0]))
             st.family = None
             continue
+        page = _page_step(words, verb, text, toks, clause, lead, clauses, i, st)
+        if page is not None:
+            made, i = page
+            items.append(made)
+            st.family = None
+            continue
         if verb is not None and verb[0] in ("type", "search", "click"):
             start_tok = clause.first + lead + verb[1]
             if start_tok > clause.last:
@@ -860,11 +996,11 @@ def parse(text: str, catalog: Catalog, *, strict: bool = False, running: Iterabl
             made = _payload_step(verb[0], text, toks, begin, end, st)
             if made is None:
                 return None
-            if made.action == "type_text" and i < len(clauses):
+            if made.action in ("type_text", "page_fill") and i < len(clauses):
                 nxt = clauses[i]
                 nwords = _trail(nxt.words[_lead(nxt.words):])
                 if _SUBMIT.fullmatch(" ".join(nwords)):
-                    made = step("type_text", text=made.get("text"), submit=True)
+                    made = Step(made.action, {**made.args, "submit": True})
                     i += 1
             items.append(made)
             st.family = None
@@ -966,6 +1102,20 @@ def describe(plan: Plan) -> str:
             target = a.get("target", ACTIVE)
             said = f"{_FAMILY_VERB.get(a['op'], a['op'].replace('_', ' ').capitalize())}" + (
                 f" {target}" if target != ACTIVE else " this window")
+        case "page_click":
+            said = f"Click “{a.get('label') or a['description']}”"
+        case "page_fill":
+            said = f"Type “{a['text']}” in {a.get('label') or a['description']}"
+        case "scroll_to":
+            said = f"Scroll to {a.get('label') or a['description']}"
+        case "canvas_due":
+            said = "Show what's due on Canvas"
+        case "canvas_open_item":
+            said = f"Open “{a['item']}” on Canvas"
+        case "canvas_item_text":
+            said = f"Read “{a['item']}” on Canvas"
+        case "tab" if a.get("op") == "goto":
+            said = f"Switch to the {a['match']} tab"
         case _:
             said = s.action.replace("_", " ").capitalize()
     return said + (" …" if len(plan.steps) > 1 else "")
@@ -987,8 +1137,14 @@ def _payload_step(kind: str, text: str, toks: Sequence[Tok], begin: int, end: in
     if not payload:
         return None
     if kind == "type":
+        into = _INTO_BOX.match(payload)  # "type thermo into the search box": that box on the page
+        if into is not None:
+            return step("page_fill", description=into["target"], text=into["text"], submit=False)
         return step("type_text", text=payload, submit=False)
     if kind == "click":
+        said = [t.word for t in toks if begin <= t.start and t.end <= end and t.word]
+        if canvas_item(said):
+            return step("canvas_open_item", item=payload)
         return step("page_click", description=payload)
     inner = [t for t in toks if begin <= t.start and t.end <= end and t.word]
     words = [t.word for t in inner]
@@ -1056,9 +1212,11 @@ def _engine_search(words: tuple[str, ...]) -> bool:
 
 # --- always-listening: the gate's resolver ------------------------------------------------------------------------
 
-_SAFE = frozenset({"open_app", "switch_app", "open_url", "layout", "nav", "scroll", "media", "volume", "listening"})
+_SAFE = frozenset({"open_app", "switch_app", "open_url", "layout", "nav", "scroll", "scroll_to", "media", "volume",
+                   "listening"})
 _FAMILIES = {"open_app": "open", "switch_app": "open", "open_url": "open", "close_app": "close", "window": "window",
-             "layout": "window", "type_text": "type", "press": "press", "web_search": "search", "page_click": "click"}
+             "layout": "window", "type_text": "type", "press": "press", "web_search": "search", "page_click": "click",
+             "page_fill": "type", "scroll_to": "scroll", "canvas_due": "canvas", "canvas_open_item": "click"}
 
 
 class Tier0Resolver:

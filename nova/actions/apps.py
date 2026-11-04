@@ -36,6 +36,7 @@ class Outcome:
     detail: str  # island text: "Opened Chrome"
     method: str = ""  # how the foreground was taken (for the latency log)
     win: Win | None = None
+    hold: float = 0.0  # an answer to read ("Nothing due today — next: …"): keep it up this long (s)
 
 
 def windows_of(catalog: Catalog, app: App, wins: list[Win] | None = None) -> list[Win]:

@@ -309,6 +309,16 @@ def check_chrome(find: Callable[[], Path | None] = find_chrome) -> Check:
     return Check("Chrome", True, f"{chrome_version(exe.parent) or 'version unknown'} ({exe})")
 
 
+def check_extension(state: Callable[[], Any] | None = None) -> Check:
+    """Nova's Chrome extension: native host registered, files in place, loaded in a Chrome profile."""
+    if state is None:
+        from .chrome import install
+
+        state = install.status
+    found = state()
+    return Check("Chrome extension", found.ok, found.detail, found.fix)
+
+
 @dataclass(frozen=True)
 class WantedApp:
     label: str
@@ -498,6 +508,7 @@ def main() -> int:
             ("Ollama", lambda: check_ollama(settings.ollama.url)),
             ("Local LLM", lambda: check_llm(settings.ollama.url, settings.llm.gpu_model, settings.llm.cpu_model)),
             ("Chrome", check_chrome),
+            ("Chrome extension", check_extension),
             ("Desktop apps", check_apps),
             ("Fallback chord", lambda: check_chord(settings.chord)),
             ("Keyboard hook", check_keyboard_hook),

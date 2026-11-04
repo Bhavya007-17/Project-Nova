@@ -21,6 +21,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit
 
 from ..actions.catalog import Catalog
 from ..config import Llm
@@ -32,6 +33,7 @@ _log = logging.getLogger(__name__)
 
 NUM_CTX = 4096
 MAX_TOKENS = 200  # the longest plan (4 steps / a 4-slot layout) is ~120 tokens; a rambling answer stops here
+CPU_PAGE_ROWS = 12  # page elements shown to the CPU model (the GPU one gets up to 40)
 PRELOAD_REASONS = frozenset({"key", "wake", "speech", "follow-up"})  # not "always": chatter never needs the LLM
 WARM_AGAIN_S = 60.0
 _WARM_TIMEOUT_S = 180.0  # a cold load + reading the prefix on the CPU
@@ -54,7 +56,18 @@ class Seen:
             if w.app and w.app not in names:
                 names.append(w.app)
         tab = getattr(ctx, "tab", None)
-        return cls(front or None, tuple(names), tab.title if tab is not None and tab.title else None)
+        return cls(front or None, tuple(names), _tab_text(tab))
+
+
+def _tab_text(tab: Any) -> str | None:
+    """Chrome's tab as the model sees it: "Dashboard · canvas.vt.edu" (the site says more than a title)."""
+    if tab is None:
+        return None
+    title = " ".join(str(getattr(tab, "title", "") or "").split())
+    host = (urlsplit(str(getattr(tab, "url", "") or "")).hostname or "").removeprefix("www.")
+    if title and host and host not in title.lower():
+        return f"{title} · {host}"
+    return title or host or None
 
 
 @dataclass(frozen=True)
@@ -159,7 +172,10 @@ class Tier1:
     # --- planning ---------------------------------------------------------------------------------------------
 
     def think(self, text: str, seen: Seen, catalog: Catalog | None = None, *, asked: str | None = None,
-              answer: str | None = None, choice: Choice | None = None) -> Thought:
+              answer: str | None = None, choice: Choice | None = None,
+              page: Sequence[str] | None = None) -> Thought:
+        """``page``: the ranked page elements, one line each (``nova.chrome.pagemap.llm_rows``), when he points at
+        the page."""
         began = time.perf_counter()
         catalog = catalog or self._catalog()
         llm = self._settings()
@@ -168,8 +184,10 @@ class Tier1:
             dialect = self._dialect(choice.model)
             messages, static = self._static(catalog)
             listed = [name for name in prompt.relevant_apps(text, catalog, seen.open_apps) if name not in seen.open_apps]
+            if page and choice.device == "cpu":
+                page = page[:CPU_PAGE_ROWS]  # every row is ~20 tokens: the CPU reads them ~10x slower
             request = prompt.request(text, front=seen.front, open_apps=seen.open_apps, tab=seen.tab, apps=listed,
-                                     asked=asked, answer=answer)
+                                     asked=asked, answer=answer, page=page)
             if dialect.raw:
                 reply = self._client.generate(
                     choice.model, static + chatml_turn(prompt.dumps(request), dialect.think_block), schema=prompt.SCHEMA,

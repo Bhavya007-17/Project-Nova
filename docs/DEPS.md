@@ -28,6 +28,11 @@ One line each: what, version, why. Ask before adding anything over ~50 MB or a n
 - **UI Automation** (COM `CUIAutomation`, on its own thread with a deadline) — the focused control's type and `IsPassword` before typing (SPEC §14). Chrome answers "pane" to its first question while it builds its tree, so Nova asks twice.
 - **IAudioEndpointVolume / IAudioMeterInformation** (COM) — exact volume (read back) and "is anything playing" before pause / play; media keys via SendInput.
 
+## Chrome (Stage 06; no new Python packages)
+- **Nova's Chrome extension** (`extension/`, MV3, plain JS, no libraries) — worker keeps a native-messaging port to Nova, content script in every frame maps / clicks / fills / scrolls; permissions tabs, scripting, nativeMessaging, storage, alarms (retry every 30 s while Nova is down), host `<all_urls>`. Stable id `dnhapjgbmkmjofkmgpjoaidnhadgnkhf` from the manifest `key`; its private key (`extension/key.pem`, git-ignored) was made once with Node 24's `crypto`.
+- **Native-messaging host** (`extension/host/nova_host.bat` -> `nova_host.py`, standard library) — Chrome's stdio frames <-> Nova's named pipe (`multiprocessing.connection`, 256-bit key in `data/chrome-bridge.json`); registered under HKCU by `nova chrome --install` (`winreg`). No TCP port.
+- **Chrome for Testing 149** (Playwright's copy, already on this laptop) — only for `extension/test/selftest.py`: it still honours `--load-extension` (Chrome 137+ doesn't). Nova never uses it.
+
 ## Dev
 - **pytest** 9.2 — unit tests for pure logic.
 - **pytest-cov** 7.1 — coverage (80 % target; GUI shell omitted, checked by live demo).

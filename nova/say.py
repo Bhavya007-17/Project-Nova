@@ -21,7 +21,9 @@ from .brain.brain import Command, handle
 from .brain.executor import Executor
 from .brain.llm import Ollama
 from .brain.router import Router, describe_handoff, running_apps
+from .actions.chrome import Chrome, ChromeHands
 from .brain.tier1 import Tier1
+from .chrome.bridge import Bridge, BridgeInfo
 from .config import ConfigStore
 from .events import BrainProgress, CommandFinished
 from .governor import Governor
@@ -79,7 +81,21 @@ def brain_parts(catalogs: CatalogStore) -> tuple[Router, Tier1]:
     return Router(tier1), tier1
 
 
-def main(text: str, *, dry: bool = False) -> int:
+def _bridge(wait: float) -> Bridge | None:
+    """The Chrome bridge for this one command (the tray app holds it while it runs). Waits for the extension."""
+    if wait <= 0:
+        return None
+    bridge = Bridge(BridgeInfo.ensure(paths.CHROME_BRIDGE))
+    if not bridge.start():
+        print(f"  (Chrome: {bridge.error} — page steps run in the tray app)")
+        return None
+    print(f"  (waiting up to {wait:.0f} s for Chrome's extension — click into Chrome to hurry it)")
+    if not bridge.wait_connected(wait):
+        print("  (Chrome's extension didn't connect)")
+    return bridge
+
+
+def main(text: str, *, dry: bool = False, chrome_wait: float = 0.0) -> int:
     started = time.perf_counter()
     store = _catalog_store()
     catalog = store.current()
@@ -104,8 +120,13 @@ def main(text: str, *, dry: bool = False) -> int:
         else:
             print("plan: " + " → ".join(repr(s) for s in plan.steps) + f" (confidence {plan.confidence:.2f}){llm}")
         return 0
+    bridge = _bridge(chrome_wait)
+    chrome = ChromeHands(Chrome(bridge, store.current)) if bridge is not None else None
+    if chrome is not None:
+        router = Router(_tier1, page=chrome.page_rows)
     hands = WindowsHands(store.current, nova=NovaControls(
-        dictation=lambda op: "Dictation runs in the tray app", listening=lambda op: "Sleep runs in the tray app"))
+        dictation=lambda op: "Dictation runs in the tray app", listening=lambda op: "Sleep runs in the tray app"),
+        chrome=chrome)
     executor = Executor(hands, asker, progress=lambda labels, i: print(f"  … {' → '.join(labels)}  [{labels[i]}]"))
     trace = TraceLog(paths.LOGS)
     shown: list[str] = []
@@ -118,9 +139,11 @@ def main(text: str, *, dry: bool = False) -> int:
 
     try:
         _, record = handle(Command(text, via="say", at=started), catalog, executor, router=router, asker=asker,
-                                publish=publish, trace=trace)
+                           publish=publish, trace=trace, snap=lambda c: snapshot(c, bridge))
     finally:
         trace.close()
+        if bridge is not None:
+            bridge.close()
     for line in shown:
         print(line)
     if record["cancelled"]:

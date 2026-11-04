@@ -1,14 +1,18 @@
 """Context snapshot (SPEC §7.1): what's on screen when a command arrives, in ~10 ms.
 
 Foreground window (process, title, class, which app), the top 12 app windows, monitors,
-Chrome's active tab (title only until the Stage 06 extension adds the address). The focused
-control (UI Automation) is asked separately and only when typing, see ``nova.actions.uia``.
+Chrome's active tab (title + address from the extension's last report, no round trip; the
+window title when the extension isn't connected). The focused control (UI Automation) is asked
+separately and only when typing, see ``nova.actions.uia``; the page map only when he points at
+the page (``nova.actions.chrome``).
 """
 
 from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from typing import Any
+from urllib.parse import urlsplit
 
 from . import native
 from .catalog import Catalog
@@ -27,7 +31,7 @@ class AppWindow:
 @dataclass(frozen=True)
 class Tab:
     title: str
-    url: str = ""  # Stage 06
+    url: str = ""  # from the extension
 
 
 @dataclass(frozen=True)
@@ -48,10 +52,12 @@ class Context:
                         for w in self.windows],
             "monitors": len(self.monitors),
             "tab": self.tab.title if self.tab else None,
+            "site": (urlsplit(self.tab.url).hostname or None) if self.tab and self.tab.url else None,
         }
 
 
-def snapshot(catalog: Catalog) -> Context:
+def snapshot(catalog: Catalog, chrome: Any = None) -> Context:
+    """``chrome``: the extension bridge (anything with ``active_tab()``), or None."""
     started = time.perf_counter()
     wins = native.app_windows(limit=TOP_WINDOWS)
     named = tuple(AppWindow(w, _name(catalog, w)) for w in wins)
@@ -60,8 +66,12 @@ def snapshot(catalog: Catalog) -> Context:
     if fg is None and fg_hwnd:
         win = native.describe(fg_hwnd)
         fg = AppWindow(win, _name(catalog, win)) if win is not None else None
-    chrome = next((w for w in named if w.app == "Google Chrome"), None)
-    tab = Tab(chrome.win.title.removesuffix(_CHROME_SUFFIX)) if chrome else None
+    live = chrome.active_tab() if chrome is not None else None
+    window = next((w for w in named if w.app == "Google Chrome"), None)
+    if live is not None:
+        tab: Tab | None = Tab(live.title, live.url)
+    else:
+        tab = Tab(window.win.title.removesuffix(_CHROME_SUFFIX)) if window else None
     return Context(fg, named, tuple(native.monitors()), tab, native.workstation_locked(),
                    (time.perf_counter() - started) * 1000)
 

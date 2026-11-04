@@ -8,6 +8,7 @@
 #   search QUERY / search@ENGINE QUERY    type TEXT / type+enter TEXT    press KEYS
 #   tab OP[|OP] · nav OP · scroll DIR [AMOUNT] · volume OP [LEVEL] · media OP[|OP]
 #   dictation OP · listening OP · click · clarify · teach · handoff [claude|chatgpt]
+#   scroll_to · fill · canvas_due RANGE · canvas_open · canvas_text   (page / Canvas steps, Stage 06)
 # Negatives: conversation that must not cause an action (asking is fine, acting is not).
 # Every item's screen: Chrome in front, these apps open (an item can set its own `front` / `open`).
 
@@ -113,7 +114,7 @@ positives:
   - say: take me to canvas
     want: open canvas.vt.edu
   - say: I need to check my assignments on canvas
-    want: open canvas.vt.edu
+    want: open canvas.vt.edu || canvas_due upcoming || canvas_due week
   - say: open my email
     want: open mail.google.com
   - say: check my gmail
@@ -381,7 +382,7 @@ positives:
   - say: type see you at five and hit enter
     want: type+enter see you at five
   - say: put thanks so much in the box
-    want: type thanks so much
+    want: type thanks so much || fill
   - say: write dear professor
     want: type dear professor
   - say: type running late, be there in ten
@@ -491,6 +492,58 @@ positives:
   - say: close the other one
     want: clarify
 
+  # --- the page in front, Canvas, named tabs (Stage 06) ----------------------------------------------------------
+  - say: click sign in
+    want: click
+  - say: hit the log in button
+    want: click
+  - say: could you tap on the first link
+    want: click
+  - say: press the submit button
+    want: click
+  - say: click on the reply button under the first comment
+    want: click
+  - say: open the second result
+    want: click
+  - say: scroll to the comments
+    want: scroll_to
+  - say: bring me down to the reviews section
+    want: scroll_to
+  - say: jump to the part about pricing
+    want: scroll_to || click
+  - say: type thermodynamics into the search box
+    want: fill
+  - say: what's due this week
+    want: canvas_due week
+  - say: is there stuff due tomorrow
+    want: canvas_due tomorrow
+  - say: what homework do I have tonight
+    want: canvas_due today
+  - say: is anything overdue on canvas
+    want: canvas_due overdue
+  - say: what's coming up on canvas
+    want: canvas_due upcoming || canvas_due week
+  - say: anything due friday
+    want: canvas_due friday
+  - say: what assignments do I have next week
+    want: canvas_due next_week
+  - say: click on my assignment for today
+    want: canvas_open
+  - say: open my thermo homework
+    want: canvas_open
+  - say: pull up my next assignment
+    want: canvas_open
+  - say: can you get the physics lab report up
+    want: canvas_open
+  - say: show me the quiz for next week
+    want: canvas_open || canvas_due next_week
+  - say: what does my homework for today say
+    want: canvas_text || canvas_open
+  - say: switch to the youtube tab
+    want: tab goto
+  - say: go over to my gmail tab
+    want: tab goto
+
   # --- handoff -------------------------------------------------------------------------------------------------
   - say: write a cover letter for the bosch internship
     want: handoff claude
@@ -526,6 +579,10 @@ positives:
     want: teach || clarify
 
 negatives:
+  - the homework due friday is brutal
+  - I clicked on the wrong link earlier
+  - my assignment for today took forever
+  - that comment section was wild
   - yeah I told him we'd open the lab at nine
   - I was gonna open a bakery downtown someday
   - she said we have to close the deal by friday

@@ -14,6 +14,7 @@ from .actions.catalog import CatalogStore
 from .brain.brain import Brain
 from .brain.tier0 import Tier0Resolver
 from .bus import Bus
+from .chrome.bridge import Bridge, BridgeInfo
 from .config import ConfigStore
 from .events import ConfigChanged, MicChanged, PowerChanged, SpeechReady
 from .hook import TriggerHook
@@ -100,11 +101,15 @@ def run() -> int:
     catalogs = CatalogStore(paths.CATALOG_CACHE, paths.ALIASES)
     catalogs.subscribe(lambda catalog: triggers.set_resolver(Tier0Resolver(catalog)))
     catalogs.start()
+    # Chrome (Stage 06): the extension's native host connects to this pipe; page clicks, tabs and Canvas go through it.
+    notices: list[tuple[str, str]] = []
+    bridge = Bridge(BridgeInfo.ensure(paths.CHROME_BRIDGE))
+    if not bridge.start():
+        notices.append(("Nova + Chrome", f"Page clicks and Canvas won't work: {bridge.error}"))
     # Local brain (Stage 05): Tier 1 behind Tier 0; the LLM warms on key down / wake name.
-    brain = Brain(bus, catalogs, settings=lambda: store.settings, trace=trace)
+    brain = Brain(bus, catalogs, settings=lambda: store.settings, trace=trace, bridge=bridge)
     brain.start()
     triggers.start()
-    notices: list[tuple[str, str]] = []
     if not hook.start():
         notices.append(("Nova keys", f"The Copilot key and the chord won't work: {hook.error}. \"Nova ...\" still does."))
     lock = LockWatcher(speech.set_locked)
@@ -122,6 +127,7 @@ def run() -> int:
             stop()
         hook.close()
         brain.close()
+        bridge.close()
         catalogs.close()
         triggers.close()
         speech.close()

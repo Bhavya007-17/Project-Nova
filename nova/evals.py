@@ -23,7 +23,18 @@ import yaml
 
 from . import paths
 from .actions.catalog import Catalog, words_of
-from .brain.plan import AREAS, ENGINES, MEDIA_OPS, NAV_OPS, SCROLL_AMOUNTS, SCROLL_DIRS, WINDOW_OPS, Plan, Step
+from .brain.plan import (
+    AREAS,
+    CANVAS_RANGES,
+    ENGINES,
+    MEDIA_OPS,
+    NAV_OPS,
+    SCROLL_AMOUNTS,
+    SCROLL_DIRS,
+    WINDOW_OPS,
+    Plan,
+    Step,
+)
 
 EVAL_FILE = paths.ROOT / "docs" / "eval" / "intents.yaml"
 _SINGLE_AREA = {"left": "snap_left", "right": "snap_right", "top": "snap_top", "bottom": "snap_bottom",
@@ -152,6 +163,10 @@ def _want_step(text: str, catalog: Catalog) -> tuple:
         return ("volume", _ops(ops, _VOLUME, "volume"), int(level) if level else None)
     if head == "click" and not rest:
         return ("click",)
+    if head in ("scroll_to", "fill", "canvas_open", "canvas_text") and not rest:
+        return (head,)
+    if head == "canvas_due" and rest in CANVAS_RANGES:
+        return ("canvas_due", rest)
     raise ValueError(f"can't read want step {text!r}")
 
 
@@ -201,6 +216,16 @@ def _canon(s: Step) -> tuple:
             return ("volume", a.get("op"), a.get("level"))
         case "page_click" | "ui_click":
             return ("click",)
+        case "scroll_to":
+            return ("scroll_to",)
+        case "page_fill":
+            return ("fill",)
+        case "canvas_due":
+            return ("canvas_due", a.get("range"))
+        case "canvas_open_item" | "canvas_open":
+            return ("canvas_open",)
+        case "canvas_item_text":
+            return ("canvas_text",)
     return (s.action, a.get("op"))
 
 

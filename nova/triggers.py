@@ -262,7 +262,7 @@ class Triggers:
         elif isinstance(item, AlwaysListeningChanged):
             self._always = item.on
         elif isinstance(item, CommandFinished):
-            self._feed(Done(item.ok, now, item.detail), now)
+            self._feed(Done(item.ok, now, item.detail, item.hold), now)
         elif isinstance(item, BrainProgress):
             state = _STATES.get(item.state)
             if state is None:

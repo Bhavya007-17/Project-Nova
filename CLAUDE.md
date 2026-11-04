@@ -41,4 +41,5 @@ Nova is Bhavya's local voice layer for his Windows laptop: a Dynamic-Island pill
 - Voicebar's source stays at `C:\dev\voicebar` (read-only; its venvs, caches and other models are gone) and is archived at github.com/Bhavya007-17/voicebar (tag `v1`). Never import from or modify it. Download any other model you need.
 
 ## Commands (as they get built)
-`uv run nova` (tray app) · `nova doctor` · `nova listen` · `nova say "<text>"` · `nova eval` · `nova latency` · `nova skills list`
+`uv run nova` (tray app) · `nova doctor` · `nova listen` · `nova say "<text>"` (`--chrome` for page / Canvas steps) · `nova eval` · `nova latency` · `nova chrome --install | --status` · `nova skills list`
+Chrome self-test (Chrome for Testing, throwaway profile): `uv run python extension/test/selftest.py [--llm]`

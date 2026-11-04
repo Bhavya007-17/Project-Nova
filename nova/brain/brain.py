@@ -19,9 +19,11 @@ from dataclasses import dataclass
 
 from ..actions import native
 from ..actions.catalog import Catalog, CatalogStore
+from ..actions.chrome import Chrome, ChromeHands
 from ..actions.context import Context, snapshot
 from ..actions.hands import NovaControls, WindowsHands
 from ..bus import Bus
+from ..chrome.bridge import Bridge
 from ..config import Settings
 from ..events import (
     AnswerHeard,
@@ -219,7 +221,7 @@ def handle(
         result = executor.run(plan, ctx)
         detail = result.detail
         if not result.cancelled:
-            publish(CommandFinished(result.ok, detail))
+            publish(CommandFinished(result.ok, detail, hold=result.hold))
     done = time.perf_counter()
     ran = result.plan if result and result.plan else plan
     thought = next((r.thought for r in settled.rounds if r.thought is not None), None)
@@ -239,6 +241,7 @@ def handle(
         "detail": detail,
         "parse_ms": routed.parse_ms,
         "ctx_ms": round(ctx.ms, 1),
+        "page_ms": routed.page_ms,  # the page map shown to Tier 1 (None: not fetched)
         **(thought.trace() if thought is not None else {}),
         "rounds": len(settled.rounds),
         "wait_ms": round((began - origin) * 1000, 1),
@@ -255,19 +258,21 @@ def handle(
 
 class Brain:
     def __init__(self, bus: Bus, catalogs: CatalogStore, *, settings: Callable[[], Settings] = Settings,
-                 trace: TraceLog | None = None) -> None:
+                 trace: TraceLog | None = None, bridge: Bridge | None = None) -> None:
         self._bus = bus
         self._catalogs = catalogs
         self._trace = trace
         self._commands: queue.SimpleQueue[object] = queue.SimpleQueue()
         self._answers: queue.SimpleQueue[object] = queue.SimpleQueue()
         self._ends: dict[int, float] = {}
-        self._hands = WindowsHands(catalogs.current, nova=NovaControls(self._dictation, self._listening))
+        chrome = ChromeHands(Chrome(bridge, catalogs.current)) if bridge is not None else None
+        self._snap: Callable[[Catalog], Context] = lambda catalog: snapshot(catalog, bridge)
+        self._hands = WindowsHands(catalogs.current, nova=NovaControls(self._dictation, self._listening), chrome=chrome)
         self._executor = Executor(self._hands, IslandAsker(bus, self._answers), progress=self._progress)
         client = Ollama(settings().ollama.url)
         self._governor = Governor(client, lambda: settings().llm)
         self._tier1 = Tier1(client, self._governor, lambda: settings().llm, catalogs.current)
-        self._router = Router(self._tier1)
+        self._router = Router(self._tier1, page=chrome.page_rows if chrome is not None else None)
         self._busy = False
         self._unsubscribe = [
             bus.subscribe(Gated, self._on_gated),
@@ -329,7 +334,7 @@ class Brain:
             self._hands.stop.clear()
             try:
                 _, record = handle(item, self._catalogs.current(), self._executor, router=self._router,
-                                   publish=self._bus.publish, trace=self._trace)
+                                   publish=self._bus.publish, trace=self._trace, snap=self._snap)
                 _log.info("command %r -> %s (tier %s, %s) llm %s ms, start %s ms, total %s ms", item.text,
                           record["detail"], record["tier"], record["type"], record.get("llm_ms"), record["start_ms"],
                           record["total_ms"])

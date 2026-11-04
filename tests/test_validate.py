@@ -183,3 +183,62 @@ def test_enter_only_when_he_asked_for_it():
     assert checked.plan.steps == (step("type_text", text="thanks so much", submit=False),)
     sent = check(act({"action": "type_text", "text": "on my way", "submit": True}), "type on my way and send it")
     assert sent.plan.steps[0].get("submit") is True
+
+
+# --- Stage 06: page elements Tier 1 points at, Canvas, tabs ----------------------------------------------------------
+
+from nova.chrome.pagemap import Element, Scored  # noqa: E402
+
+PAGE_ROWS = (
+    Scored(Element("0:3", "button", "Sign in"), 90.0, 0),
+    Scored(Element("0:9", "link", "HW 5", row="Due Nov 4"), 50.0, 1),
+    Scored(Element("0:14", "button", "Submit Assignment", submits=True), 40.0, 2),
+    Scored(Element("0:20", "searchbox", "Search", editable=True, search=True), 30.0, 3),
+)
+
+
+def test_page_clicks_point_at_listed_elements():
+    plan = check_llm(act({"action": "page_click", "description": "sign in", "element": 1}), "hit that sign in thing",
+                     CATALOG, page=PAGE_ROWS).plan
+    assert plan.steps == (step("page_click", description="sign in", element="0:3", label="Sign in"),)
+    plan = check_llm(act({"action": "page_click", "description": "the blue one", "element": 9}), "click the blue one",
+                     CATALOG, page=PAGE_ROWS).plan
+    assert plan.steps == (step("page_click", description="the blue one"),)  # not listed: found on the page later
+    plan = check_llm(act({"action": "page_click", "description": "", "element": 3}), "press that one", CATALOG,
+                     page=PAGE_ROWS).plan
+    assert plan.steps[0].get("label") == "Submit Assignment" and plan.steps[0].get("submits") is True
+    assert check(act({"action": "page_click", "description": "", "element": 2}), "press that").plan is None  # no page
+
+
+def test_page_fill_text_is_his_words():
+    plan = check(act({"action": "page_fill", "description": "search box", "text": "thermo", "submit": False}),
+                 "put thermo in the search box").plan
+    assert plan.steps == (step("page_fill", description="search box", text="thermo", submit=False),)
+    assert check(act({"action": "page_fill", "description": "search", "text": "physics", "submit": False}),
+                 "put thermo in the search box").plan is None
+    plan = check_llm(act({"action": "page_fill", "description": "search", "element": 4, "text": "thermo", "submit": True}),
+                     "search thermo in the box and press enter", CATALOG, page=PAGE_ROWS).plan
+    assert plan.steps == (step("page_fill", description="search", element="0:20", label="Search", search=True,
+                               text="thermo", submit=True),)
+
+
+def test_canvas_steps():
+    assert check(act({"action": "canvas_due", "range": "tomorrow"}), "do I have anything due tomorrow").plan.steps == (
+        step("canvas_due", range="tomorrow"),)
+    assert check(act({"action": "canvas_due", "range": "someday"}), "what's due").plan.steps == (
+        step("canvas_due", range="upcoming"),)
+    plan = check(act({"action": "canvas_open_item", "item": "the thermo homework"}), "can you pull up the thermo homework").plan
+    assert plan.steps == (step("canvas_open_item", item="the thermo homework"),)
+    plan = check(act({"action": "canvas_open_item", "item": "thermodynamics assignment"}), "open my thermo thing").plan
+    assert plan.steps == (step("canvas_open_item", item="open my thermo thing"),)  # not his words: his whole sentence
+    plan = check(act({"action": "canvas_item_text", "item": "my homework for today"}), "what does my homework for today say").plan
+    assert plan.steps == (step("canvas_item_text", item="my homework for today"),)
+
+
+def test_tab_goto_and_scroll_to():
+    assert check(act({"action": "tab", "op": "goto", "match": "youtube"}), "flip over to youtube").plan.steps == (
+        step("tab", op="goto", match="youtube"),)
+    assert check(act({"action": "tab", "op": "goto"}), "flip over to the other tab").plan is None
+    plan = check_llm(act({"action": "scroll_to", "description": "reviews", "element": 2}), "jump down to the reviews",
+                     CATALOG, page=PAGE_ROWS).plan
+    assert plan.steps[0].get("element") == "0:9"

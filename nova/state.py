@@ -36,6 +36,7 @@ class State(enum.Enum):
 
 FOLLOW_UP_S = 8.0  # after a command ran, commands don't need the name (SPEC §5)
 DONE_S = 1.5  # Done shows this long (SPEC §6)
+MAX_HOLD_S = 10.0  # an answer to read ("Nothing due today — next: …") stays at most this long
 ERROR_S = 5.0
 TAP_WAIT_S = 6.0  # tapped, then said nothing
 WAKE_WAIT_S = 8.0  # "Nova" alone: wait this long for the command
@@ -110,11 +111,12 @@ class Tick:
 
 @dataclass(frozen=True)
 class Done:
-    """The command ran (ok) or failed; detail = short island text."""
+    """The command ran (ok) or failed; detail = short island text; hold = show an answer this long (s)."""
 
     ok: bool
     at: float
     detail: str = ""
+    hold: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -440,7 +442,7 @@ def _tick(m: Machine, e: Tick) -> Step:
 def _done(m: Machine, e: Done) -> Step:
     if m.state not in _BUSY and m.state not in _ASKING:
         return Step(m)
-    state, wait = (State.DONE, DONE_S) if e.ok else (State.ERROR, ERROR_S)
+    state, wait = (State.DONE, max(DONE_S, min(e.hold, MAX_HOLD_S))) if e.ok else (State.ERROR, ERROR_S)
     why = e.detail or ("done" if e.ok else "failed")
     return _go(m, state, why, session=None, deadline=e.at + wait, follow_up_until=e.at + FOLLOW_UP_S)
 

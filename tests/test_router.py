@@ -166,3 +166,56 @@ def test_tier_0_guesses_let_tier_1_try_first():
     assert route("I need a new dab", FakeTier1(Thought(error="Ollama isn't answering"))).plan.kind == "clarify"
     sure = FakeTier1()
     assert route("open chrome", sure).tier == "0" and sure.calls == []  # a sure Tier 0 plan never asks the model
+
+
+# --- Stage 06: the page in front -------------------------------------------------------------------------------------
+
+from nova.actions.chrome import PageRows  # noqa: E402
+from nova.chrome.pagemap import Element, Scored  # noqa: E402
+
+
+class PageTier1(FakeTier1):
+    def think(self, text, seen, catalog=None, *, asked=None, answer=None, choice=None, page=None):
+        self.pages = getattr(self, "pages", []) + [page]
+        return super().think(text, seen, catalog, asked=asked, answer=answer, choice=choice)
+
+
+SIGN_IN = Element("0:3", "button", "Sign in")
+
+
+def test_a_plain_click_on_the_page_needs_no_llm():
+    direct = step("page_click", description="hit that sign in thing", element="0:3", label="Sign in")
+    pages = []
+
+    def page(text, ctx):
+        pages.append(text)
+        return PageRows((Scored(SIGN_IN, 100.0, 0),), 12.0, direct)
+
+    tier1 = PageTier1()
+    routed = Router(tier1, page=page).route("hit that sign in thing", EMPTY, CATALOG)
+    assert routed.tier == "page" and routed.plan.steps == (direct,) and routed.page_ms == 12.0
+    assert tier1.calls == [] and pages == ["hit that sign in thing"]
+
+
+def test_otherwise_tier_1_sees_the_same_page_once():
+    rows = PageRows((Scored(SIGN_IN, 60.0, 0), Scored(Element("0:4", "link", "Help"), 0.0, 1)), 9.0)
+    fetched = []
+
+    def page(text, ctx):
+        fetched.append(text)
+        return rows
+
+    tier1 = PageTier1({"kind": "act", "steps": [{"action": "page_click", "description": "the blue one", "element": 2}],
+                       "confidence": 0.9})
+    routed = Router(tier1, page=page).route("press the blue one", EMPTY, CATALOG)
+    assert routed.tier == "1" and routed.plan.steps == (
+        step("page_click", description="the blue one", element="0:4", label="Help"),)
+    assert fetched == ["press the blue one"] and tier1.pages == [["1 button: Sign in", "2 link: Help"]]
+    assert routed.page_ms == 9.0
+
+
+def test_always_listening_never_reads_the_page():
+    fetched = []
+    Router(PageTier1(), page=lambda text, ctx: fetched.append(text)).route("press the blue one", EMPTY, CATALOG,
+                                                                          strict=True)
+    assert fetched == []
