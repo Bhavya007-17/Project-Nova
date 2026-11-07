@@ -1,0 +1,19 @@
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  pytest:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install (Python 3.12 from .python-version, locked deps)
+        run: uv sync --frozen
+      - name: Unit tests (pure logic; no mic, models or windows needed)
+        run: uv run pytest -q
