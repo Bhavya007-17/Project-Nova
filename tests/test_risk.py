@@ -127,3 +127,13 @@ def test_canvas_and_reading_steps_are_never_risky():
               step("scroll_to", description="comments"), step("page_read", what="page"),
               step("tab", op="goto", match="youtube")):
         assert assess(s, CANVAS) is None, s
+
+
+def test_dictation_never_lands_in_passwords_terminals_or_with_card_numbers():
+    from nova.brain.risk import assess_dictation
+
+    assert assess_dictation("hello there", Scene(app="Notepad", exe="notepad.exe")) is None
+    assert assess_dictation("hello", Scene(password=True)).refuse
+    assert assess_dictation("ls\n", Scene(exe="WindowsTerminal.exe")).refuse
+    assert assess_dictation("my card is 4111 1111 1111 1111", Scene(app="Notepad")).refuse
+    assert assess_dictation("hi", Scene(locked=True)).refuse

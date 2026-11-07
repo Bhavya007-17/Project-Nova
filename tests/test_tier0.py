@@ -444,3 +444,45 @@ def test_whats_due_for_one_course():
     assert one("do I have anything for physics due this week") == step(
         "canvas_due", range="week", item="do I have anything for physics due this week")
     assert one("what's due this week") == step("canvas_due", range="week")
+
+
+# --- dictation (Stage 07) ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("type this: I'll be there at five", [step("dictation", op="start", text="I'll be there at five")]),
+    ("Type this, um, see you soon and then we can go", [step("dictation", op="start",
+                                                                text="um, see you soon and then we can go")]),
+    ("type the following open the door and close the window",
+     [step("dictation", op="start", text="open the door and close the window")]),  # all of it is text
+    ("write this down", [step("dictation", op="start")]),
+    ("type this", [step("dictation", op="start")]),
+    ("take a note", [step("dictation", op="start")]),
+    ("let me dictate", [step("dictation", op="start")]),
+    ("paste my last dictation", [step("dictation", op="paste")]),
+    ("paste the last dictation again", [step("dictation", op="paste")]),
+    ("open a google doc", [step("docs_new")]),
+    ("create a new doc", [step("docs_new")]),
+    ("new google doc", [step("docs_new")]),
+    ("Nova open a new Google Doc and type this: Dear team, the demo is Friday.",
+     [step("docs_new"), step("dictation", op="start", text="Dear team, the demo is Friday.")]),
+    ("open a google doc and type hello world", [step("docs_new"), step("dictation", op="start", text="hello world")]),
+    ("open a google doc and start dictation", [step("docs_new"), step("dictation", op="start")]),
+])
+def test_dictation_phrasings(text, expected):
+    assert steps(text.removeprefix("Nova ")) == expected
+
+
+def test_plain_type_and_paste_and_google_docs_home_stay_as_they_were():
+    assert one("type hello world") == step("type_text", text="hello world", submit=False)
+    assert one("paste") == step("press", keys="ctrl+v")
+    assert one("open google docs") == step("open_url", url="https://docs.google.com")
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("Open Google Doc and type this.", [step("docs_new"), step("dictation", op="start")]),
+    ("open google document", [step("docs_new")]),
+    ("open google docs and type this hello there", [step("docs_new"), step("dictation", op="start", text="hello there")]),
+])
+def test_a_google_doc_without_the_a_is_still_a_new_doc(text, expected):
+    assert steps(text) == expected

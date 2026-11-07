@@ -46,6 +46,9 @@ class FakeSpeech:
     def set_attentive(self, on):
         self.calls.put(("attentive", on))
 
+    def set_dictating(self, on):
+        self.calls.put(("dictating", on))
+
     def drain(self, wait=0.2):
         out, deadline = [], time.monotonic() + wait
         while time.monotonic() < deadline:
@@ -208,6 +211,7 @@ def test_double_tap_requests_dictation(rig):
         time.sleep(0.05)
     changed = r.next(DictationChanged)
     assert changed.on and changed.why == "double-tap"
+    assert ("dictating", True) in r.speech.drain()  # speech is cut on dictation pauses now
 
 
 def test_names_arrive_later(rig):

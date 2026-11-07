@@ -8,8 +8,10 @@
 //   wait({selector, text, timeout}) until something shows up
 //   scroll(dir, amount) / scrollTo(n)
 //   canvasItems()                   Canvas DOM fallback: To Do / planner links with their row text
+//   caret(limit)                    dictation: the focused field and the text just before its caret
+//   docsReady({focus, timeout})     Google Docs: wait until the editor is up (and focus it)
 (() => {
-  if (globalThis.__nova) return;
+  if (globalThis.__nova && globalThis.__nova.version >= 2) return;
 
   const ACTIONABLE = [
     "a[href]", "button", "input:not([type=hidden])", "select", "textarea", "summary", "label[for]",
@@ -522,5 +524,98 @@
     return { items: out, url: location.href };
   }
 
-  globalThis.__nova = { version: 1, map, click, fill, read, highlight, wait, scroll, scrollTo, describe, canvasItems };
+  // --- the caret (dictation, SPEC §11) ------------------------------------------------------------------------------
+
+  const TEXT_INPUTS = new Set(["", "text", "search", "email", "url", "tel"]);
+  const BLOCKS = "p,div,li,h1,h2,h3,h4,h5,h6,blockquote,pre,td,th,dd,dt,section,article";
+
+  function deepActive() {
+    let el = document.activeElement;
+    while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
+    return el;
+  }
+
+  function docsEditor() {
+    return location.hostname === "docs.google.com" && /^\/document\/d\//.test(location.pathname);
+  }
+
+  // Docs draws its text on a canvas; its cursor is still an element: where it is says whether a paste landed.
+  function docsCursor() {
+    const c = document.querySelector(".kix-cursor-caret") || document.querySelector(".kix-cursor");
+    if (!c) return null;
+    const r = c.getBoundingClientRect();
+    return r.width || r.height ? [Math.round(r.left), Math.round(r.top), Math.round(r.height)] : null;
+  }
+
+  // Text of the caret's own line / paragraph before it ("" = it starts the line).
+  function editableBefore(root, limit, focused) {
+    const sel = getSelection();
+    if (!sel || !sel.rangeCount) return { focused, editable: true, before: null };
+    const r = sel.getRangeAt(0);
+    let block = r.startContainer.nodeType === 1 ? r.startContainer : r.startContainer.parentElement;
+    block = (block && block.closest(BLOCKS)) || root;
+    if (!root.contains(block)) block = root;
+    const pre = document.createRange();
+    pre.selectNodeContents(block);
+    pre.setEnd(r.startContainer, r.startOffset);
+    return { focused, editable: true, before: pre.toString().slice(-limit), secret: secret(root) };
+  }
+
+  function caret(limit = 300) {
+    const focused = document.hasFocus();
+    if (docsEditor()) {
+      return { focused, docs: true, editable: true, before: null, cursor: docsCursor(), ready: !!document.querySelector(".kix-appview-editor") };
+    }
+    const el = deepActive();
+    if (!el || el === document.body || el === document.documentElement) {
+      if (document.designMode === "on" || (document.body && document.body.isContentEditable)) return editableBefore(document.body, limit, focused);
+      return { focused, editable: false };
+    }
+    if (el.tagName === "IFRAME" || el.tagName === "FRAME") return { focused, frame: true };
+    const tag = el.tagName;
+    if (tag === "INPUT" && secret(el)) return { focused, editable: true, secret: true };
+    if (tag === "TEXTAREA" || (tag === "INPUT" && TEXT_INPUTS.has((el.getAttribute("type") || "").toLowerCase()))) {
+      if (secret(el)) return { focused, editable: true, secret: true };
+      const value = el.value || "";
+      let at = null;
+      try {
+        at = el.selectionStart;
+      } catch (e) {
+        at = null;
+      }
+      if (at === null || at === undefined) at = value.length;
+      return { focused, editable: true, before: value.slice(Math.max(0, at - limit), at), single: tag === "INPUT" };
+    }
+    if (el.isContentEditable) return editableBefore(el, limit, focused);
+    return { focused, editable: false };
+  }
+
+  // Google Docs: until the editor is up a paste goes nowhere. Known parts: the editor (.kix-appview-editor) and the
+  // hidden frame that takes his typing (.docs-texteventtarget-iframe). If Docs changes them, carry on once the page
+  // has loaded and settled (known: false).
+  async function docsReady(opts = {}) {
+    const started = performance.now();
+    const timeout = Math.min(opts.timeout || 10000, 30000);
+    while (performance.now() - started < timeout) {
+      const editor = document.querySelector(".kix-appview-editor");
+      const target = document.querySelector("iframe.docs-texteventtarget-iframe");
+      const settled = document.readyState === "complete" && performance.now() - started > 4000;
+      if ((editor && document.readyState === "complete") || settled) {
+        if (opts.focus && target && document.activeElement !== target) {
+          try {
+            target.focus();
+            const inner = target.contentDocument && target.contentDocument.querySelector("[contenteditable=true]");
+            if (inner) inner.focus();
+          } catch (e) {
+            /* best effort */
+          }
+        }
+        return { ok: true, known: !!editor, focused: !target || document.activeElement === target, cursor: docsCursor(), ms: Math.round(performance.now() - started) };
+      }
+      await sleep(100);
+    }
+    return { ok: false, ms: Math.round(performance.now() - started) };
+  }
+
+  globalThis.__nova = { version: 2, map, click, fill, read, highlight, wait, scroll, scrollTo, describe, canvasItems, caret, docsReady };
 })();

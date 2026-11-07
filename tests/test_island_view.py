@@ -255,3 +255,14 @@ def test_status_dot_follows_always_listening_like_the_controller():
     off = Settings(triggers=Triggers(always_listening=False))
     view = feed(view, ConfigChanged(off), ConfigChanged(Settings()))  # the file itself turned it back on
     assert view.always and view.file_always
+
+
+def test_dictating_shows_what_was_typed_and_what_was_saved_instead():
+    from nova.events import DictationTyped
+
+    view = feed(READY, go("idle", "dictating", "double-tap"), DictatedText(5, "um so the first law", 0.0))
+    view = reduce(view, DictationTyped(5, "So the first law."))
+    assert view.words == "So the first law." and view.final
+    view = reduce(view, DictationTyped(6, "secret", False, "That's a password field · Saved"))
+    assert view.words == "That's a password field · Saved"
+    assert reduce(feed(READY), DictationTyped(1, "x")).words == ""  # not dictating: nothing to show

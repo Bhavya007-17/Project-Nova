@@ -9,6 +9,7 @@
 #   tab OP[|OP] · nav OP · scroll DIR [AMOUNT] · volume OP [LEVEL] · media OP[|OP]
 #   dictation OP · listening OP · click · clarify · teach · handoff [claude|chatgpt]
 #   scroll_to · fill · canvas_due RANGE · canvas_open · canvas_text   (page / Canvas steps, Stage 06)
+#   docs_new (a new Google Doc, Stage 07)
 # Negatives: conversation that must not cause an action (asking is fine, acting is not).
 # Every item's screen: Chrome in front, these apps open (an item can set its own `front` / `open`).
 
@@ -453,6 +454,23 @@ positives:
     want: dictation start
   - say: let me dictate something
     want: dictation start
+  # dictation (Stage 07)
+  - say: type this, I'm running ten minutes late
+    want: dictation start
+  - say: write the following see you at the lab tonight
+    want: dictation start
+  - say: take a note
+    want: dictation start
+  - say: paste my last dictation
+    want: dictation paste
+  - say: can you paste what I dictated before
+    want: dictation paste
+  - say: open a new google doc
+    want: docs_new
+  - say: make me a blank google doc and type this meeting notes for friday
+    want: docs_new ; dictation start
+  - say: open google docs
+    want: open docs.google.com
   - say: stop listening
     want: listening sleep
   - say: go to sleep for a bit

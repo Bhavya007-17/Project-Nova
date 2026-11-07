@@ -31,7 +31,7 @@ SCROLL_DIRS = frozenset({"up", "down", "left", "right", "top", "bottom"})
 SCROLL_AMOUNTS = frozenset({"small", "page", "large"})
 VOLUME_OPS = frozenset({"up", "down", "mute", "unmute", "set"})
 MEDIA_OPS = frozenset({"play_pause", "play", "pause", "next", "prev", "stop"})
-DICTATION_OPS = frozenset({"start", "stop"})
+DICTATION_OPS = frozenset({"start", "stop", "paste"})  # paste: his last dictation again
 LISTENING_OPS = frozenset({"sleep", "wake", "off"})
 ENGINES = frozenset({"google", "youtube", "bing", "duckduckgo", "wikipedia", "amazon", "github", "maps", "images"})
 WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
@@ -213,10 +213,32 @@ def _check_step(s: Step) -> None:
             _one_of(a, "op", MEDIA_OPS)
         case "dictation":
             _one_of(a, "op", DICTATION_OPS)
+            _text(a, "text", required=False)  # start: words he already said ("type this: ...")
+        case "docs_new":
+            pass
         case "listening":
             _one_of(a, "op", LISTENING_OPS)
         case _:
             raise PlanError(f"unknown action {s.action!r}")
+
+
+def dictate_after_docs(steps: tuple[Step, ...]) -> tuple[Step, ...]:
+    """ "Open a Google Doc and type …": the words go into the new doc as dictation (cleaned, and he can keep
+    going), not as one-off typing."""
+    out = list(steps)
+    for i in range(1, len(out)):
+        writes = out[i].action == "type_text" and not out[i].get("submit") or \
+            (out[i].action == "dictation" and out[i].get("op") == "start")
+        if writes and out[i - 1].action == "open_url" and _docs_home(str(out[i - 1].get("url", ""))):
+            out[i - 1] = step("docs_new")  # "open Google Docs and type …": the home page has nowhere to type
+        if out[i - 1].action == "docs_new" and out[i].action == "type_text" and not out[i].get("submit"):
+            out[i] = step("dictation", op="start", text=out[i].get("text"))
+    return tuple(out)
+
+
+def _docs_home(url: str) -> bool:
+    parts = urlsplit(url)
+    return parts.hostname == "docs.google.com" and parts.path.rstrip("/") in ("", "/document", "/document/u/0")
 
 
 def check(plan: Plan) -> Plan:

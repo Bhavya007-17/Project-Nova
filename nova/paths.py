@@ -10,6 +10,7 @@ ALIASES = CONFIG / "aliases.yaml"
 DATA = ROOT / "data"
 CATALOG_CACHE = DATA / "catalog.json"
 CHROME_BRIDGE = DATA / "chrome-bridge.json"  # the extension's pipe name + key (nova chrome --install)
+DICTATION_HISTORY = DATA / "dictation_history.jsonl"  # the last 50 dictations (SPEC §11)
 LOGS = ROOT / "logs"
 MODELS = ROOT / "models"
 RECORDINGS = ROOT / "fixtures" / "voicebar-recordings"

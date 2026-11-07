@@ -242,6 +242,7 @@ def main() -> int:
         run("what's due next week", choices=[1], check=lambda r: r["detail"] == "Opened HW 6")
         run("open my assignment for saturday", check=lambda r: r["detail"].startswith("Nothing due"))
         run("switch to the nova test page tab", check=lambda r: r["detail"].startswith("Switched to"))
+        failures += dictation_checks(api, catalog, base)
         if args.llm:
             run("scroll to the top")
             time.sleep(1.0)  # let the smooth scroll finish: "up top" means what's on screen at the top
@@ -266,6 +267,71 @@ def main() -> int:
             install.uninstall(("testing",))
         time.sleep(0.5)
         shutil.rmtree(profile, ignore_errors=True)
+
+
+def dictation_checks(api: Chrome, catalog: Catalog, base: str) -> int:
+    """Stage 07: the caret in a contenteditable / password field / textarea through the extension, then dictation
+    (rules only, a real clipboard paste into this Chrome) landing in the textarea, with "scratch that"."""
+    from nova.config import Llm
+    from nova.dictation.cleanup import Cleaner
+    from nova.dictation.history import History
+    from nova.dictation.session import Dictation
+    from nova.dictation.target import Target
+
+    failures = 0
+
+    def check(name: str, ok: bool, detail: object = "") -> None:
+        nonlocal failures
+        failures += 0 if ok else 1
+        print(f"{'PASS' if ok else 'FAIL'}  {name:52} {detail}")
+
+    tab = api.active_tab()
+    if tab is None or not tab.url.startswith(f"{base}/page.html"):
+        tab, _ = api.open(f"{base}/page.html", reuse=True)
+        tab = api.wait(tab, timeout=10)
+    api.front(tab)
+    view = api.page_map()
+    named = {e.name: e for e in view.elements}
+    notes, draft, password = named.get("Notes"), named.get("Draft"), named.get("Password")
+    if notes is None or draft is None or password is None:
+        check("the test page's fields are mapped", False, sorted(named)[:12])
+        return failures
+    api.call("fill", "$n", "Meeting notes: we tested it with", {}, element=notes.id)
+    began = time.perf_counter()
+    caret = api.caret()
+    check("caret: contenteditable", caret.get("before") == "Meeting notes: we tested it with",
+          f"{(time.perf_counter() - began) * 1000:.0f} ms {caret.get('before')!r}")
+    api.click(password.id, "Password")
+    caret = api.caret()
+    check("caret: a password field says so", caret.get("secret") is True, caret.get("secret"))
+    api.call("fill", "$n", "", {}, element=draft.id)
+    caret = api.caret()
+    check("caret: an empty textarea", caret.get("before") == "" and caret.get("editable"), caret)
+    target = Target(lambda: catalog, api)
+    spot = target.look()
+    check("look: Chrome, the textarea", spot.kind == "chrome" and spot.before == "", f"{spot.ms:.0f} ms {spot.kind}")
+    history = History(Path(tempfile.mkdtemp(prefix="nova-dictation-")) / "history.jsonl")
+    dictation = Dictation(None, Cleaner(None, Llm, lambda: (), enabled=lambda: False), target, history)
+    dictation.start()
+    try:
+        began = time.perf_counter()
+        dictation.begin("selftest", "um, hello from nova. new paragraph. second line, scratch that, the second line.")
+        dictation.release()
+        dictation.drain(15)
+        ms = (time.perf_counter() - began) * 1000
+        caret = api.caret()
+        want = "Hello from nova.\n\nThe second line."
+        check("dictation lands in the textarea, cleaned", caret.get("before") == want,
+              f"{ms:.0f} ms {caret.get('before')!r}")
+        dictation.begin("selftest", "and that is all.")
+        dictation.release()
+        dictation.drain(15)
+        caret = api.caret()
+        check("the next segment joins with a space", caret.get("before") == want + " And that is all.",
+              repr(caret.get("before")))
+    finally:
+        dictation.close()
+    return failures
 
 
 if __name__ == "__main__":

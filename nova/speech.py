@@ -29,10 +29,19 @@ import numpy as np
 from . import paths
 from .audio import BLOCK, SAMPLE_RATE, Mic, MicError, Ring, level_of
 from .bus import Bus
-from .events import FinalTranscript, MicChanged, MicLevel, PartialTranscript, SpeechEnded, SpeechReady, SpeechStarted
+from .events import (
+    FinalTranscript,
+    MicChanged,
+    MicLevel,
+    PartialTranscript,
+    PauseCandidate,
+    SpeechEnded,
+    SpeechReady,
+    SpeechStarted,
+)
 from .log import TraceLog
 from .stt.base import Transcriber
-from .vad import FRAME, EndpointRules, Endpointer, EnergyGate, Silero
+from .vad import DICTATION_RULES, FRAME, EndpointRules, Endpointer, EnergyGate, Silero
 from .vocab import VocabFile
 
 _log = logging.getLogger(__name__)
@@ -43,6 +52,7 @@ PARTIAL_SNAP_FRAMES = 20  # ...cut at the quietest frame in the window's first 6
 RETRY_S = (1.0, 2.0, 5.0, 10.0)  # reopen back-off after a failed open
 SILENT_MIC_S = 3.0  # only digital zeros this long after opening: say so
 IDLE_BATCH = 6  # nobody talking: wake for every 6th block (~192 ms); while talking: every block
+CANDIDATE_SAMPLES = int(0.3 * SAMPLE_RATE)  # dictating: a pause this long may end the segment (PauseCandidate)
 
 assert BLOCK == FRAME  # one mic block = one VAD frame
 
@@ -92,6 +102,7 @@ class _Final:
     endpoint_at: float = 0.0
     early: bool = False  # decoding started before the endpoint
     result: _Result | None = None
+    announced: bool = False  # published as a PauseCandidate
 
 
 @dataclass(eq=False)
@@ -215,6 +226,8 @@ class SpeechWorker:
         self._cancel_requested = False
         self._held = False
         self._attentive = False
+        self._dictating = False  # requested (any thread)
+        self._dictation_rules = False  # in effect (worker thread)
         self._idle = True
         self._stopping = threading.Event()
         self._thread = threading.Thread(target=self._run, name="nova-speech", daemon=True)
@@ -277,6 +290,12 @@ class SpeechWorker:
         self._attentive = bool(on)
         self._wake.set()
 
+    def set_dictating(self, on: bool) -> None:
+        """Dictation: segments end on 600 ms pauses with no cap (SPEC §11), and a pause that may end one is
+        announced (PauseCandidate) so cleanup can start early."""
+        self._dictating = bool(on)
+        self._wake.set()
+
     @property
     def idle(self) -> bool:
         """Nobody talking and no final pending (updated by the worker every loop)."""
@@ -318,6 +337,9 @@ class SpeechWorker:
 
     def _step(self) -> None:
         self._sync_source(time.perf_counter())
+        if self._dictating != self._dictation_rules:
+            self._dictation_rules = self._dictating
+            self._ep.set_rules(DICTATION_RULES if self._dictating else self._rules)
         if self._held:
             self._ep.held = True  # a press takes effect before this audio is read...
         if self._source.is_open:
@@ -513,6 +535,7 @@ class SpeechWorker:
                 self._finals[key] = _Final(key)
                 assert self._final_lane is not None
                 self._final_lane.put(_Job("final", *key, pcm=self._ep.audio(*pause)), self._wanted)
+            self._candidate(self._finals[key])
             return  # nothing new to show during a pause
         talk = self._talks.get(utt.id)
         lane = self._partial_lane
@@ -560,6 +583,20 @@ class SpeechWorker:
                 self._emit_final(final)
             else:
                 self._show(job, result.text)  # an early decode in a pause: refresh the live words
+                self._candidate(final)
+
+    def _candidate(self, final: _Final) -> None:
+        """Dictating and the pause is long enough: say what this segment will be if he stays quiet."""
+        if not self._dictation_rules or final.announced or final.result is None or final.ended is not None:
+            return
+        utt = self._ep.active
+        if utt is None or utt.id != final.key[0] or utt.silence < CANDIDATE_SAMPLES:
+            return
+        final.announced = True
+        raw = final.result.text
+        text = self._vocab.current().correct(raw).text if self._vocab is not None and raw else raw
+        if text:
+            self._bus.publish(PauseCandidate(utt.id, text, raw))
 
     def _show(self, job: _Job, text: str) -> None:
         utt = self._ep.active

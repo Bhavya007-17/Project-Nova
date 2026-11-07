@@ -242,3 +242,17 @@ def test_tab_goto_and_scroll_to():
     plan = check_llm(act({"action": "scroll_to", "description": "reviews", "element": 2}), "jump down to the reviews",
                      CATALOG, page=PAGE_ROWS).plan
     assert plan.steps[0].get("element") == "0:9"
+
+
+def test_a_new_google_doc_then_words_becomes_dictation_into_it():
+    plan = check({"kind": "act", "confidence": 0.9, "steps": [
+        {"action": "docs_new"}, {"action": "type_text", "text": "dear team", "submit": False}]},
+        "make me a new google doc and write dear team")
+    assert plan.plan.steps == (step("docs_new"), step("dictation", op="start", text="dear team"))
+
+
+def test_dictation_text_must_be_his_words():
+    said = "let me dictate a note"
+    plan = check({"kind": "act", "confidence": 0.9, "steps": [{"action": "dictation", "op": "start", "text": "hi"}]},
+                 said)
+    assert plan.plan.steps == (step("dictation", op="start"),)

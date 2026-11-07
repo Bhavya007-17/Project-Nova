@@ -80,7 +80,8 @@ def run() -> int:
     stop_watching = store.watch()
     trace = TraceLog(paths.LOGS, transcripts=store.settings.logs.transcripts)
     # Ears (Stage 01): models load on the speech thread, so the tray shows up at once.
-    speech = standard_worker(bus, vocab=VocabFile(paths.VOCAB), trace=trace, device=store.settings.audio.device)
+    vocab = VocabFile(paths.VOCAB)
+    speech = standard_worker(bus, vocab=vocab, trace=trace, device=store.settings.audio.device)
 
     def on_config(event: ConfigChanged) -> None:
         speech.set_device(event.settings.audio.device)
@@ -107,7 +108,8 @@ def run() -> int:
     if not bridge.start():
         notices.append(("Nova + Chrome", f"Page clicks and Canvas won't work: {bridge.error}"))
     # Local brain (Stage 05): Tier 1 behind Tier 0; the LLM warms on key down / wake name.
-    brain = Brain(bus, catalogs, settings=lambda: store.settings, trace=trace, bridge=bridge)
+    brain = Brain(bus, catalogs, settings=lambda: store.settings, trace=trace, bridge=bridge,
+                  terms=lambda: vocab.current().terms)
     brain.start()
     triggers.start()
     if not hook.start():

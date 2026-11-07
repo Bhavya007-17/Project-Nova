@@ -24,7 +24,7 @@ from datetime import datetime
 from ..actions.catalog import Catalog, Match, Target, sounds_like
 from ..chrome import canvas
 from ..gate import Resolved
-from .plan import Plan, PlanError, Step, check, step
+from .plan import Plan, PlanError, Step, check, dictate_after_docs, step
 
 _log = logging.getLogger(__name__)
 
@@ -243,6 +243,7 @@ _UP_WORDS = {"louder": "up", "raise": "up", "increase": "up", "boost": "up", "qu
 _MEDIA_PLAY = {"play": "play", "resume": "play", "unpause": "play", "pause": "pause"}
 _EDGE = {"top": "top", "start": "top", "beginning": "top", "bottom": "bottom", "end": "bottom"}
 
+_DOC = r"(?:google (?:doc|document|docs)|doc)"
 _TEMPLATES: list[tuple[re.Pattern[str], Callable[[re.Match], Step]]] = [
     (re.compile(p), make) for p, make in [
         # tabs and windows of the browser
@@ -301,6 +302,19 @@ _TEMPLATES: list[tuple[re.Pattern[str], Callable[[re.Match], Step]]] = [
         (r"(?:start|begin|turn on)(?: (?:the|a))? dictation|start dictating|dictation on",
          lambda m: step("dictation", op="start")),
         (r"(?:stop|end|turn off)(?: the)? dictation|stop dictating|dictation off", lambda m: step("dictation", op="stop")),
+        (r"(?:paste|type|insert|put)(?: in| back)? (?:my|the) (?:last|previous|latest) dictation(?: again| back)?"
+         r"|paste (?:what i (?:just )?dictated|my dictation)(?: again)?", lambda m: step("dictation", op="paste")),
+        (r"take (?:a |some )?notes?|take (?:this|that) down|let me dictate|i (?:want|need) to dictate"
+         r"|dictate(?: (?:something|a note|this|for me))?", lambda m: step("dictation", op="start")),
+        # a new Google Doc (SPEC §10): "doc" or "google doc" with a / new; "google docs" alone is the Docs home page
+        (r"(?:open|create|make|start|get|give me|pull up|bring up|spin up)(?: me)?(?: up)? (?:a|an)"
+         r"(?: (?:new|blank|fresh|empty))? " + _DOC, lambda m: step("docs_new")),
+        (r"(?:open|create|make|start|get|give me|pull up|bring up|spin up)(?: me)?(?: up)?(?: a| an)?"
+         r" (?:new|blank|fresh|empty) " + _DOC, lambda m: step("docs_new")),
+        (r"(?:a )?(?:new|blank|fresh|empty) " + _DOC, lambda m: step("docs_new")),
+        # "open Google Doc" — speech-to-text often drops the "a"; one doc (not "docs") is a document, not the home page
+        (r"(?:open|create|make|start|get|give me|pull up|bring up|spin up)(?: me)?(?: up)? google (?:doc|document)",
+         lambda m: step("docs_new")),
         (r"(?:stop listening|go to sleep|sleep|take a break)(?: (?:for now|for a bit|for a while|for a minute"
          r"|for a few minutes|for the night))?",
          lambda m: step("listening", op="sleep")),
@@ -986,6 +1000,13 @@ def parse(text: str, catalog: Catalog, *, strict: bool = False, running: Iterabl
             items.append(made)
             st.family = None
             continue
+        if verb is not None and verb[0] == "type":
+            dictated = _dictate(text, toks, clause.first + lead + verb[1], words[verb[1]:])
+            if dictated is not None:  # "type this: ..." = dictation, starting with the rest of what he said
+                items.append(dictated)
+                st.family = None
+                i = len(clauses)
+                continue
         if verb is not None and verb[0] in ("type", "search", "click"):
             start_tok = clause.first + lead + verb[1]
             if start_tok > clause.last:
@@ -1042,6 +1063,24 @@ def parse(text: str, catalog: Catalog, *, strict: bool = False, running: Iterabl
         said = describe(plan)
         return Plan("clarify", question=f"{said}?", choices=(said,), options=(plan,), confidence=0.5)
     return plan
+
+
+_DICTATE_LEADS = sorted([("this",), ("the", "following"), ("this", "down"), ("that", "down"), ("what", "i", "say"),
+                         ("as", "i", "talk"), ("the", "rest")], key=len, reverse=True)
+
+
+def _dictate(text: str, toks: Sequence[Tok], first: int, rest: tuple[str, ...]) -> Step | None:
+    """ "type this ..." / "type the following ..." / "write this down": dictation, with whatever followed (SPEC §11)."""
+    for lead in _DICTATE_LEADS:
+        n = len(lead)
+        if tuple(rest[:n]) != lead or len(rest) > n and rest[n] in ("in", "into"):
+            continue  # "type this into the search box" is a page fill
+        words = [k for k in range(first, len(toks)) if toks[k].word]
+        if len(words) < n:
+            return None
+        after = text[toks[words[n - 1]].end :].lstrip(" \t:,;-—–.")
+        return step("dictation", op="start", text=after) if after.strip() else step("dictation", op="start")
+    return None
 
 
 _NEW_WORK = frozenset({"me", "us", "him", "her", "them", "a", "an", "some", "up", "my"})
@@ -1116,6 +1155,10 @@ def describe(plan: Plan) -> str:
             said = f"Read “{a['item']}” on Canvas"
         case "tab" if a.get("op") == "goto":
             said = f"Switch to the {a['match']} tab"
+        case "docs_new":
+            said = "Open a new Google Doc"
+        case "dictation":
+            said = {"paste": "Paste your last dictation", "stop": "Stop dictation"}.get(a.get("op"), "Start dictation")
         case _:
             said = s.action.replace("_", " ").capitalize()
     return said + (" …" if len(plan.steps) > 1 else "")
@@ -1176,7 +1219,7 @@ def _plan(items: list[object], confidence: float) -> Plan | None:
     if not steps:
         return None
     try:
-        return check(Plan("act", tuple(steps), confidence=confidence))
+        return check(Plan("act", dictate_after_docs(tuple(steps)), confidence=confidence))
     except PlanError as error:
         _log.debug("tier 0 made a bad plan: %s", error)
         return None

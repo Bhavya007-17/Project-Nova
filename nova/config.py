@@ -61,6 +61,13 @@ class Logs:
 
 
 @dataclass(frozen=True)
+class Dictation:
+    """SPEC §11."""
+
+    cleanup: bool = True  # the small model fixes misheard words (GPU only; false = rules only)
+
+
+@dataclass(frozen=True)
 class Llm:
     """Tier 1 (SPEC §7.4, §15). Models picked by `nova bench-llm`."""
 
@@ -83,6 +90,7 @@ class Settings:
     ollama: Ollama = field(default_factory=Ollama)
     llm: Llm = field(default_factory=Llm)
     logs: Logs = field(default_factory=Logs)
+    dictation: Dictation = field(default_factory=Dictation)
 
 
 DEFAULT_YAML = """\
@@ -125,6 +133,10 @@ llm:
 
 logs:
   transcripts: true        # false = logs keep timings but not what you said
+
+# Dictation: double-tap Copilot, or "type this ...". Ends on a tap, "stop dictation" or 10 s of silence.
+dictation:
+  cleanup: true            # the local model fixes misheard words (GPU only); false = rules only
 """
 
 

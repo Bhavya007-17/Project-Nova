@@ -53,7 +53,7 @@ LAYOUT_WAIT_S = 20.0
 class NovaControls:
     """What steps about Nova itself do (dictation / listening), wired by the brain."""
 
-    dictation: Callable[[str], str] = lambda op: "Dictation comes in Stage 07"
+    dictation: Callable[..., str] = lambda op, text=None: "Dictation runs in the tray app"
     listening: Callable[[str], str] = lambda op: "OK"
 
 
@@ -117,6 +117,8 @@ class WindowsHands:
                 return f"Volume {a.get('level', a['op'])}"
             case "media":
                 return a["op"].replace("_", " / ").capitalize()
+            case "dictation":
+                return {"paste": "Paste last dictation", "stop": "Stop dictation"}.get(a["op"], "Dictation")
         return s.action.replace("_", " ").capitalize()
 
     def scene(self, s: Step, ctx: object) -> Scene:
@@ -191,7 +193,7 @@ class WindowsHands:
             case "media":
                 return Outcome(system.media(a["op"]))
             case "dictation":
-                return Outcome(self._nova.dictation(a["op"]))
+                return Outcome(self._nova.dictation(a["op"], a.get("text")))
             case "listening":
                 return Outcome(self._nova.listening(a["op"]))
         raise ActionError(f"I can't do {s.action.replace('_', ' ')} yet.")

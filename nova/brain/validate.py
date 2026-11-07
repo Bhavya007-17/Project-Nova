@@ -24,7 +24,7 @@ from rapidfuzz import fuzz
 
 from ..actions.catalog import Catalog, Match, Target, short_name, words_of
 from ..chrome import canvas
-from .plan import CANVAS_RANGES, KINDS, Plan, PlanError, Step, check, step
+from .plan import CANVAS_RANGES, KINDS, Plan, PlanError, Step, check, dictate_after_docs, step
 from .tier0 import ACTIVE, describe
 
 ASK_BELOW = 0.6  # act plans less sure than this become questions
@@ -287,6 +287,12 @@ def _fix(action: str, args: Mapping[str, Any], said: str, catalog: Catalog,
         case "volume":
             kept = {k: v for k, v in args.items() if k != "level" or args.get("op") == "set"}
             return Step("volume", kept)
+        case "dictation":
+            text = args.get("text")
+            cut = span(said, text) if isinstance(text, str) and text.strip() else None
+            return step("dictation", op=args.get("op"), **({"text": cut} if cut else {}))  # only words he said
+        case "docs_new":
+            return step("docs_new")
     return Step(action, dict(args))
 
 
@@ -309,7 +315,7 @@ def _yes_no(plan: Plan) -> Plan:
 
 def _checked_act(steps: list[Step], confidence: float) -> Plan | str:
     try:
-        return check(Plan("act", tuple(steps), confidence=confidence))
+        return check(Plan("act", dictate_after_docs(tuple(steps)), confidence=confidence))
     except PlanError as error:
         return f"The plan didn't make sense ({error})."
 

@@ -54,3 +54,18 @@ def test_paths_per_tier_and_device():
     rows = {row.name: row for row in summarize(records)}
     assert rows["tier 0"].count == 1 and rows["tier 1 GPU"].count == 2 and rows["tier 1 GPU"].p50 == 1000
     assert rows["tier 1 CPU"].p50 == 2100 and rows["(typed) tier 1 GPU"].count == 1
+
+
+def test_dictation_segments_from_the_pause_and_from_speech():
+    records = [
+        {"kind": "dictation", "after_pause_ms": 80.0, "total_ms": 690.0, "llm": "pending", "landed": True},
+        {"kind": "dictation", "after_pause_ms": 90.0, "total_ms": 700.0, "llm": "off", "landed": None},
+        {"kind": "dictation", "after_pause_ms": 95.0, "total_ms": 705.0, "llm": "off", "landed": False},
+        {"kind": "dictation", "after_pause_ms": 5000.0, "total_ms": 9000.0, "initial": True},  # includes the plan
+        {"kind": "dictation_fix", "after_pause_ms": 1100.0, "total_ms": 1700.0, "applied": "yes"},
+        {"kind": "dictation_fix", "llm": "clean"},  # nothing to fix: no timing
+    ]
+    rows = {row.name: row for row in summarize(records)}
+    assert rows["dictation segment"].count == 3 and rows["dictation segment"].ok == 2
+    assert rows["dictation segment"].p50 == 90.0 and rows["dictation segment"].total_p50 == 700.0
+    assert rows["  misheard word fixed"].p50 == 1100.0

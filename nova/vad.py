@@ -65,6 +65,10 @@ class EndpointRules:
         return _samples(self.tail_ms)
 
 
+DICTATION_RULES = EndpointRules(short_silence_ms=600, long_silence_ms=600, max_ms=None)  # SPEC §11: segments on
+# pauses of 600 ms; no cap (a long sentence is one segment)
+
+
 @dataclass
 class Utterance:
     """The utterance in progress. Positions are absolute sample indexes."""
@@ -111,11 +115,8 @@ class Endpointer:
         self.rules = rules or EndpointRules()
         self._clock = clock or (lambda pos: pos / SAMPLE_RATE)
         r = self.rules
-        self._short = _samples(r.short_silence_ms)
-        self._long = _samples(r.long_silence_ms)
-        self._long_after = _samples(r.long_after_ms)
-        self._max = _samples(r.max_ms) if r.max_ms is not None else None
         self._history: deque[tuple[int, np.ndarray, float]] = deque(maxlen=r.pre_roll_frames + r.start_frames)
+        self.set_rules(r)
         self._streak = 0
         self._utt: Utterance | None = None
         self._pcm: _Pcm | None = None
@@ -123,6 +124,17 @@ class Endpointer:
         self._next_id = 1
         self._draining = 0  # after a cap: samples of silence still needed before a new start (0 = not draining)
         self.held = False  # push-to-talk key down: pauses never end the utterance (release does)
+
+    def set_rules(self, rules: EndpointRules) -> None:
+        """Switch rules (commands <-> dictation); the utterance in progress ends by the new ones."""
+        self.rules = rules
+        self._short = _samples(rules.short_silence_ms)
+        self._long = _samples(rules.long_silence_ms)
+        self._long_after = _samples(rules.long_after_ms)
+        self._max = _samples(rules.max_ms) if rules.max_ms is not None else None
+        size = rules.pre_roll_frames + rules.start_frames
+        if self._history.maxlen != size:
+            self._history = deque(self._history, maxlen=size)
 
     @property
     def active(self) -> Utterance | None:

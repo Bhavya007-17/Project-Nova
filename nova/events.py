@@ -87,6 +87,16 @@ class PartialTranscript:
 
 
 @dataclass(frozen=True)
+class PauseCandidate:
+    """Dictating: he has paused long enough that this may be the end of a segment, and this is the text it will
+    have if he stays quiet (the decode the final will reuse). Lets cleanup start before the segment ends."""
+
+    utterance: int
+    text: str  # after vocab fix-up
+    raw_text: str
+
+
+@dataclass(frozen=True)
 class FinalTranscript:
     utterance: int
     text: str  # after vocab fix-up
@@ -235,6 +245,16 @@ class DictatedText:
     utterance: int
     text: str
     at: float
+
+
+@dataclass(frozen=True)
+class DictationTyped:
+    """A dictated segment was typed (ok), or couldn't be and was saved (note says what to do)."""
+
+    utterance: int | None
+    text: str  # what was typed / saved, cleaned
+    ok: bool = True
+    note: str = ""
 
 
 @dataclass(frozen=True)

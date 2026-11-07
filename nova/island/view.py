@@ -17,6 +17,7 @@ from ..events import (
     CommandFinished,
     ConfigChanged,
     DictatedText,
+    DictationTyped,
     FinalTranscript,
     Gated,
     JobChip,
@@ -202,6 +203,12 @@ def reduce(view: View, event: object) -> View:
     if isinstance(event, DictatedText):
         if state == "dictating" and event.text:
             return _words(view, event.text, event.utterance, final=True)
+        return view
+    if isinstance(event, DictationTyped):  # the cleaned sentence as typed, or why it was saved instead
+        shown = event.text if event.ok and event.text else event.note
+        if state == "dictating" and shown:
+            utterance = event.utterance if event.utterance is not None else (view.utterance or 0)
+            return _words(view, shown, utterance, final=True)
         return view
     if isinstance(event, Gated):
         if state == "listening" and event.wake_only:

@@ -278,3 +278,29 @@ def test_mic_level_flows_only_while_a_session_listens(make):
     h.collect(0.1)
     h.source.feed(speech_ms=300)
     assert not [e for e in h.collect(0.3) if isinstance(e, MicLevel)]
+
+
+# --- dictation (Stage 07) ---------------------------------------------------------------------------
+
+
+def test_dictation_announces_a_pause_that_may_end_the_segment(make):
+    from nova.events import PauseCandidate
+
+    h = make(FakeStt())
+    h.worker.set_dictating(True)
+    h.source.feed(speech_ms=1000, silence_ms=400)
+    candidate = h.next(PauseCandidate)
+    assert not [e for e in h.collect(0.2) if isinstance(e, SpeechEnded)]  # 400 ms isn't the end of a segment
+    h.source.feed(silence_ms=400)
+    final = h.next(FinalTranscript)
+    assert final.text == candidate.text and final.early
+
+
+def test_no_pause_candidates_for_commands(make):
+    from nova.events import PauseCandidate
+
+    h = make(FakeStt())
+    h.source.feed(speech_ms=1000, silence_ms=900)
+    events = [*h.collect(0.5)]
+    assert any(isinstance(e, FinalTranscript) for e in events)
+    assert not any(isinstance(e, PauseCandidate) for e in events)

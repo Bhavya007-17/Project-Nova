@@ -37,3 +37,7 @@ llm:
 
 logs:
   transcripts: true        # false = logs keep timings but not what you said
+
+# Dictation: double-tap Copilot, or "type this ...". Ends on a tap, "stop dictation" or 10 s of silence.
+dictation:
+  cleanup: true            # the local model fixes misheard words (GPU only); false = rules only

@@ -89,6 +89,7 @@ class SpeechControl(Protocol):
     def cancel(self) -> None: ...
     def set_held(self, held: bool) -> None: ...
     def set_attentive(self, on: bool) -> None: ...
+    def set_dictating(self, on: bool) -> None: ...
 
 
 class Detector(Protocol):
@@ -362,6 +363,8 @@ class Triggers:
             self._speech.set_held(after.held)
         if after.attentive != before.attentive:
             self._speech.set_attentive(after.attentive)
+        if after.dictating != before.dictating:
+            self._speech.set_dictating(after.dictating)
         if self._keys is not None and after.esc != before.esc:
             self._keys.esc_armed = after.esc
         if self._keys is not None and after.asking != before.asking:

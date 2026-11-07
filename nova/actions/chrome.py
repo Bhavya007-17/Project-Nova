@@ -43,11 +43,16 @@ CANVAS_S = 8.0
 CANVAS_PAGES = 5  # planner pages of 100 items
 CANVAS_CACHE_S = 60.0
 READ_HOLD_S = 6.0  # "Nothing due today — next: …" stays up this long
+DOCS_NEW = "https://docs.new"
+DOCS_DOC = "https://docs.google.com/document/d/"
+DOCS_OPEN_S = 15.0  # docs.new -> a document's address (a redirect + a fresh document)
+DOCS_READY_S = 12.0  # ...then the editor
+CARET_S = 1.5
 CHROME_EXE = "chrome.exe"
 DIRECT_AT = 85.0  # a click his words name this plainly needs no LLM ("hit that sign in thing")
 _CLICK_WORDS = re.compile(r"\b(click|tap|press|hit|push|smash|select|choose)\b")
 STEPS = frozenset({"page_click", "page_fill", "page_read", "scroll_to", "canvas_due", "canvas_open_item",
-                   "canvas_item_text", "canvas_open"})
+                   "canvas_item_text", "canvas_open", "docs_new"})
 
 
 def _cut(text: str, limit: int = 32) -> str:
@@ -175,11 +180,38 @@ class Chrome:
     def click(self, element: str, label: str = "") -> dict[str, Any]:
         return self._request("page.click", {"id": element, "label": label}, CLICK_S) or {}
 
-    def call(self, fn: str, *args: Any, element: str | None = None, timeout: float = 3.0) -> dict[str, Any]:
+    def call(self, fn: str, *args: Any, element: str | None = None, timeout: float = 3.0,
+             tab: TabInfo | None = None) -> dict[str, Any]:
         request: dict[str, Any] = {"fn": fn, "args": list(args)}
         if element is not None:
             request["id"] = element
+        if tab is not None:
+            request["tabId"] = tab.id
         return self._request("page.call", request, timeout) or {}
+
+    def caret(self, limit: int = 300) -> dict[str, Any]:
+        """The focused field of the active tab (any frame) and the text before its caret: {editable, before,
+        secret, docs, cursor, ...} (``nova.dictation.target``)."""
+        return self._request("page.caret", {"limit": limit}, CARET_S) or {}
+
+    # --- Google Docs (SPEC §10) ----------------------------------------------------------------------------------
+
+    def docs_new(self) -> TabInfo:
+        """A new Google Doc in a new tab, in front, its editor up and focused."""
+        tab, _ = self.open(DOCS_NEW, reuse=False)
+        tab = self.wait(tab, timeout=DOCS_OPEN_S, url_prefix=DOCS_DOC)
+        if not tab.url.startswith(DOCS_DOC):
+            if "accounts.google.com" in tab.url:
+                raise ActionError("Google wants you to sign in first — sign in, then ask again.")
+            raise ActionError("Google Docs didn't open a new document.")
+        ready = self.call("docsReady", {"focus": True, "timeout": int(DOCS_READY_S * 1000)}, tab=tab,
+                          timeout=DOCS_READY_S + 2.0)
+        if not ready.get("ok"):
+            raise ActionError("The Google Doc didn't finish loading.")
+        if not ready.get("known"):
+            _log.warning("Google Docs' editor looks different from what Nova knows; going on anyway")
+        self.front(tab)
+        return tab
 
     def scroll(self, direction: str, amount: str | None) -> dict[str, Any]:
         return self.call("scroll", direction, amount)
@@ -461,6 +493,9 @@ class ChromeHands:
                 tab = TabInfo(int(a["tab"]), 0, "", str(a.get("title") or ""))
                 shown = self.chrome.activate(tab)
                 return Outcome(f"Switched to {_cut(shown.title or a.get('match', 'the tab'))}", "tab")
+            case "docs_new":
+                self.chrome.docs_new()
+                return Outcome("New Google Doc", "docs")
         raise ActionError(f"I can't do {s.action.replace('_', ' ')} yet.")
 
     def _click(self, s: Step) -> Outcome:
@@ -504,6 +539,8 @@ class ChromeHands:
                 return f"Canvas → {_cut(a.get('title', ''), 24)}"
             case "tab" if a.get("op") == "goto":
                 return f"Tab “{_cut(a.get('match', ''), 20)}”"
+            case "docs_new":
+                return "New Google Doc"
         return None
 
 

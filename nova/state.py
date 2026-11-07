@@ -15,6 +15,7 @@ from __future__ import annotations
 import enum
 from dataclasses import dataclass, replace
 
+from .dictation.rules import split_stop
 from .gate import Addressing, Decision, Env, decide
 from .keys import Cancel, DoubleTap, Press, Release
 
@@ -44,6 +45,7 @@ HEARD_WAIT_S = 10.0  # speech ended but no final (or no answer from the brain)
 CONFIRM_S = 15.0  # SPEC §6: 15 s without an answer = cancel
 CLARIFY_S = 20.0
 CLAIM_S = 1.0  # speech that started at most this long before a key press belongs to the key session
+DICTATION_SILENCE_S = 10.0  # SPEC §11: dictation ends after this long without speech
 
 _BUSY = frozenset({State.THINKING, State.ACTING})
 _ASKING = frozenset({State.CONFIRM, State.CLARIFY})
@@ -61,7 +63,7 @@ _PROGRESS = {  # brain-driven moves (Stage 04+)
     State.TEACHING: {State.IDLE, State.THINKING},
     State.DICTATING: {State.IDLE},
 }
-_PROGRESS_DEADLINE = {State.CONFIRM: CONFIRM_S, State.CLARIFY: CLARIFY_S}
+_PROGRESS_DEADLINE = {State.CONFIRM: CONFIRM_S, State.CLARIFY: CLARIFY_S, State.DICTATING: DICTATION_SILENCE_S}
 
 
 # --- inputs (Press / Release / DoubleTap / Cancel come from nova.keys) --------------------------------
@@ -226,6 +228,7 @@ class Session:
     """A listening session: who opened it and which utterance it claimed."""
 
     trigger: str  # copilot | chord (keys) · wake ("Nova" alone: the next utterance) · named (live words said Nova)
+    #             · dictation (a tap while he talks: that utterance is typed, then dictation ends)
     utterance: int | None = None
     held: bool = False  # its key is down
     finishing: bool = False  # a tap asked to finish: that press's release does nothing
@@ -253,12 +256,19 @@ class Outputs:
     attentive: bool  # a session waits for speech: run the VAD on every frame
     esc: bool  # Esc cancels: the hook swallows it
     asking: str | None = None  # confirm | clarify: the hook reads Enter / 1-4 as answers
+    dictating: bool = False  # segment speech on dictation pauses (SPEC §11), not command endpoints
 
 
 def outputs(m: Machine) -> Outputs:
     held = m.state is State.LISTENING and m.session is not None and m.session.held
     asking = m.state.value if m.state in _ASKING else None
-    return Outputs(held, m.state in (State.LISTENING, State.DICTATING), m.state in _ESC, asking)
+    dictating = m.state is State.DICTATING
+    return Outputs(held, m.state in (State.LISTENING, State.DICTATING), m.state in _ESC, asking, dictating)
+
+
+def _finishing(m: Machine) -> bool:
+    """Dictating, and a tap asked to stop once the sentence he's saying is typed."""
+    return m.state is State.DICTATING and m.session is not None and m.session.finishing
 
 
 def next_deadline(m: Machine) -> float | None:
@@ -322,6 +332,9 @@ def _power(m: Machine, e: Power) -> Step:
 def _press(m: Machine, e: Press) -> Step:
     state, session = m.state, m.session
     if state is State.DICTATING:
+        if m.speaking is not None and not _finishing(m):  # mid-sentence: type it, then stop
+            return Step(replace(m, session=Session("dictation", m.speaking[0], finishing=True),
+                                deadline=e.at + HEARD_WAIT_S), (EndUtterance(),))
         return _idle(m, "dictation stopped", Dictation(False, "tap"))
     if state is State.PASSTHROUGH:
         return _idle(m, "voice mode ended", PassthroughEnded("tap"))
@@ -365,12 +378,13 @@ def _release(m: Machine, e: Release) -> Step:
 
 def _double(m: Machine, e: DoubleTap) -> Step:
     return _go(m, State.DICTATING, "double-tap: dictation", DropUtterance(), Dictation(True, "double-tap"),
-               session=None, deadline=None)
+               session=None, deadline=e.at + DICTATION_SILENCE_S)
 
 
 def _cancel(m: Machine, e: Cancel) -> Step:
     drop = (DropUtterance(),) if _speaking_mine(m) else ()
     if m.state is State.DICTATING:
+        drop = (DropUtterance(),) if m.speaking is not None else ()
         return _idle(m, "dictation stopped", *drop, Dictation(False, e.why))
     if m.state in _CANCELLABLE:
         return _idle(m, "cancelled", *drop, Cancelled(e.why))
@@ -379,6 +393,8 @@ def _cancel(m: Machine, e: Cancel) -> Step:
 
 def _speech_start(m: Machine, e: SpeechStart) -> Step:
     m = replace(m, speaking=(e.utterance, e.at))
+    if m.state is State.DICTATING and not _finishing(m):
+        return Step(replace(m, deadline=None))  # talking: the silence clock stops
     session = m.session
     if m.state is State.LISTENING and session is not None and session.utterance is None:
         return Step(replace(m, session=replace(session, utterance=e.utterance), deadline=None), (Preload("speech"),))
@@ -388,6 +404,12 @@ def _speech_start(m: Machine, e: SpeechStart) -> Step:
 def _speech_end(m: Machine, e: SpeechEnd) -> Step:
     if m.speaking is not None and m.speaking[0] == e.utterance:
         m = replace(m, speaking=None)
+    if m.state is State.DICTATING:
+        if not _finishing(m):
+            return Step(replace(m, deadline=e.at + DICTATION_SILENCE_S))
+        if e.reason == "cancel" and _mine(m, e.utterance):
+            return _idle(m, "dictation stopped", Dictation(False, "tap"))
+        return Step(m)
     if m.state is not State.LISTENING or not _mine(m, e.utterance):
         return Step(m)
     if e.reason == "cancel":
@@ -407,7 +429,13 @@ def _wake_heard(m: Machine, e: WakeHeard) -> Step:
 
 def _heard(m: Machine, e: Heard) -> Step:
     if m.state is State.DICTATING:
-        return Step(m, (Dictated(e.text, e.utterance),))
+        text, stop = split_stop(e.text)
+        typed = (Dictated(text, e.utterance),) if text.strip() else ()
+        if stop:
+            return _idle(m, "dictation stopped", *typed, Dictation(False, "stop dictation"))
+        if _finishing(m) and _mine(m, e.utterance):
+            return _idle(m, "dictation stopped", *typed, Dictation(False, "tap"))
+        return Step(m, typed)
     if m.state in _ASKING:
         return Step(m, (Answer(e.text, e.utterance),))
     mine = _mine(m, e.utterance)
@@ -431,6 +459,11 @@ def _tick(m: Machine, e: Tick) -> Step:
         m = replace(m, follow_up_until=0.0)
     if m.deadline is None or e.at < m.deadline:
         return Step(m)
+    if m.state is State.DICTATING:
+        if m.speaking is not None and not _finishing(m):
+            return Step(replace(m, deadline=None))  # he's mid-sentence: the clock starts when he stops
+        why = "tap" if _finishing(m) else "silence"
+        return _idle(m, "dictation stopped" if why == "tap" else "10 s of silence", Dictation(False, why))
     if m.state in _ASKING:
         return _idle(m, "no answer", Cancelled("no answer"))
     if m.state in _BUSY:
@@ -440,6 +473,9 @@ def _tick(m: Machine, e: Tick) -> Step:
 
 
 def _done(m: Machine, e: Done) -> Step:
+    if m.state is State.DICTATING and not e.ok:  # the plan that started dictation failed (no Google Doc...)
+        return _go(m, State.ERROR, e.detail or "failed", Dictation(False, "failed"), session=None,
+                   deadline=e.at + ERROR_S)
     if m.state not in _BUSY and m.state not in _ASKING:
         return Step(m)
     state, wait = (State.DONE, max(DONE_S, min(e.hold, MAX_HOLD_S))) if e.ok else (State.ERROR, ERROR_S)

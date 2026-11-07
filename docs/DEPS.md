@@ -27,11 +27,16 @@ One line each: what, version, why. Ask before adding anything over ~50 MB or a n
 - **SendInput** Unicode / key chords (marked with NOVA_MARK so Nova's own hook lets them through) and a **clipboard borrow** (all formats saved and put back ~300 ms after Ctrl+V; kept out of Win+V history) for text over 20 characters.
 - **UI Automation** (COM `CUIAutomation`, on its own thread with a deadline) — the focused control's type and `IsPassword` before typing (SPEC §14). Chrome answers "pane" to its first question while it builds its tree, so Nova asks twice.
 - **IAudioEndpointVolume / IAudioMeterInformation** (COM) — exact volume (read back) and "is anything playing" before pause / play; media keys via SendInput.
+- **UI Automation TextPattern** (same COM object; `IUIAutomationTextPattern` / `TextRange` vtables in `nova/actions/uia.py`) — dictation reads the text just before the caret (spacing / capitals at joins, "did the paste land", "scratch that" only takes back its own text). Checked on RichEdit (`RICHEDIT50W`, what Notepad is built on): ~9 ms warm.
 
 ## Chrome (Stage 06; no new Python packages)
 - **Nova's Chrome extension** (`extension/`, MV3, plain JS, no libraries) — worker keeps a native-messaging port to Nova, content script in every frame maps / clicks / fills / scrolls; permissions tabs, scripting, nativeMessaging, storage, alarms (retry every 30 s while Nova is down), host `<all_urls>`. Stable id `dnhapjgbmkmjofkmgpjoaidnhadgnkhf` from the manifest `key`; its private key (`extension/key.pem`, git-ignored) was made once with Node 24's `crypto`.
 - **Native-messaging host** (`extension/host/nova_host.bat` -> `nova_host.py`, standard library) — Chrome's stdio frames <-> Nova's named pipe (`multiprocessing.connection`, 256-bit key in `data/chrome-bridge.json`); registered under HKCU by `nova chrome --install` (`winreg`). No TCP port.
 - **Chrome for Testing 149** (Playwright's copy, already on this laptop) — only for `extension/test/selftest.py`: it still honours `--load-extension` (Chrome 137+ doesn't). Nova never uses it.
+
+## Dictation (Stage 07; no new packages)
+- Rules are plain Python (`nova/dictation/rules.py`). Cleanup reuses Tier 1's model through the same governor (GPU only; rules only on the CPU): it lists misheard words as schema-forced JSON and Nova applies them. Measured: ~1.0-1.25 s per call, ~0.8 s of it Ollama's per-request overhead, so text is typed first and a fix lands in place later.
+- History: `data/dictation_history.jsonl` (last 50, local). Google Docs: the extension's `docsReady` / `caret` (Docs draws text on a canvas: only its cursor element is readable).
 
 ## Dev
 - **pytest** 9.2 — unit tests for pure logic.

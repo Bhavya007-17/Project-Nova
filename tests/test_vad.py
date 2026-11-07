@@ -357,3 +357,29 @@ def test_release_after_hold_ends_with_everything():
     f.ep.held = False
     ended = f.ep.end_now()
     assert ended is not None and ended.reason == "key" and ended.end == end
+
+
+# --- dictation (Stage 07) ---------------------------------------------------------------------------
+
+
+def test_dictation_rules_wait_600_ms_and_have_no_cap():
+    from nova.vad import DICTATION_RULES
+
+    feed = Feed()
+    feed.ep.set_rules(DICTATION_RULES)
+    feed.speech(1000)
+    assert not feed.silence(500)  # a pause inside a sentence
+    feed.speech(40_000)  # longer than the command cap
+    assert not [e for e in feed.events if isinstance(e, SpeechEnded)]
+    ended = [e for e in feed.silence(700) if isinstance(e, SpeechEnded)]
+    assert ended and ended[0].reason == "silence"
+
+
+def test_switching_back_to_commands_ends_on_the_short_pause():
+    from nova.vad import DICTATION_RULES
+
+    feed = Feed()
+    feed.ep.set_rules(DICTATION_RULES)
+    feed.speech(1000)
+    feed.ep.set_rules(EndpointRules())
+    assert [e for e in feed.silence(400) if isinstance(e, SpeechEnded)]

@@ -59,6 +59,10 @@
   <h2>Frame</h2>
   <iframe id="frame" src="frame.html" title="Inner frame" style="width: 420px; height: 90px; border: 1px solid #ccc"></iframe>
 
+  <h2>Notes</h2>
+  <div id="notes" contenteditable="true" aria-label="Notes" style="border: 1px solid #ccc; min-height: 2em"><p>Meeting notes: we tested it with</p></div>
+  <textarea id="draft" aria-label="Draft" rows="3" cols="60"></textarea>
+
   <h2>Submit</h2>
   <form id="hw-form" onsubmit="event.preventDefault(); say('form submitted: ' + this.comment.value)">
     <textarea name="comment" aria-label="Comment" rows="2"></textarea>

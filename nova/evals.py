@@ -44,7 +44,7 @@ _EDGE_FILLERS = frozenset({"for", "some", "the", "a", "an", "about", "on", "plea
                            "pictures", "picture", "images", "photos"})
 _MODIFIERS = ("ctrl", "shift", "alt", "win")
 _SIMPLE = {"tab": frozenset({"new", "close", "next", "prev", "reopen", "goto"}), "nav": NAV_OPS, "media": MEDIA_OPS,
-           "dictation": frozenset({"start", "stop"}), "listening": frozenset({"sleep", "wake", "off"})}
+           "dictation": frozenset({"start", "stop", "paste"}), "listening": frozenset({"sleep", "wake", "off"})}
 _VOLUME = frozenset({"up", "down", "mute", "unmute", "set"})
 
 
@@ -163,7 +163,7 @@ def _want_step(text: str, catalog: Catalog) -> tuple:
         return ("volume", _ops(ops, _VOLUME, "volume"), int(level) if level else None)
     if head == "click" and not rest:
         return ("click",)
-    if head in ("scroll_to", "fill", "canvas_open", "canvas_text") and not rest:
+    if head in ("scroll_to", "fill", "canvas_open", "canvas_text", "docs_new") and not rest:
         return (head,)
     if head == "canvas_due" and rest in CANVAS_RANGES:
         return ("canvas_due", rest)
@@ -226,6 +226,8 @@ def _canon(s: Step) -> tuple:
             return ("canvas_open",)
         case "canvas_item_text":
             return ("canvas_text",)
+        case "docs_new":
+            return ("docs_new",)
     return (s.action, a.get("op"))
 
 

@@ -138,6 +138,20 @@ def _quote(text: str, limit: int = 40) -> str:
     return f"“{text if len(text) <= limit else text[: limit - 1] + '…'}”"
 
 
+def assess_dictation(text: str, scene: Scene) -> Risk | None:
+    """Dictated text about to be pasted (SPEC §11, §14): never into a password field or a terminal (a line break
+    there runs a command), never card / bank / ID numbers, never while locked. No questions: he is talking."""
+    if scene.locked:
+        return _refuse("The screen is locked.")
+    if scene.password:
+        return _refuse("That's a password field — I never type there.")
+    if terminal(scene):
+        return _refuse("I don't type into terminals — no shell commands from voice.")
+    if sensitive_number(text):
+        return _refuse("I don't enter card, bank or ID numbers.")
+    return None
+
+
 def assess(s: Step, scene: Scene) -> Risk | None:
     """None = go ahead. Risk.confirm = ask in the island first. Risk.refuse = never."""
     if scene.locked:

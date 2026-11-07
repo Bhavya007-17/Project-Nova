@@ -3,6 +3,9 @@
 "start" = end of speech (key release counts) -> the first action began; "total" = end of
 speech -> done (app start-up and the like included). Typed `nova say` commands have no
 speech, so they're listed apart. Path rows (SPEC §16 budgets): tier 0, tier 1 GPU / CPU.
+Dictation rows (SPEC §11: a segment lands <= 1 s after the pause): p50 / p95 from the moment
+the pause ended the segment to the text landing; "done" = from the end of his speech. A misheard
+word the local model found is fixed in place later: its row says when the fix landed.
 """
 
 from __future__ import annotations
@@ -61,9 +64,18 @@ def summarize(records: Iterable[dict]) -> list[Row]:
     totals: dict[str, list[float]] = {}
     oks: dict[str, int] = {}
     finals: list[float] = []
+    dictated: dict[str, tuple[list[float], list[float], list[int]]] = {}
     for record in records:
         if record.get("kind") == "utterance" and isinstance(record.get("final_ms"), (int, float)):
             finals.append(float(record["final_ms"]))
+        kind = record.get("kind")
+        if kind in ("dictation", "dictation_fix") and not record.get("initial")                 and isinstance(record.get("after_pause_ms"), (int, float)):
+            key = "dictation segment" if kind == "dictation" else "  misheard word fixed"
+            after, total, landed = dictated.setdefault(key, ([], [], []))
+            after.append(float(record["after_pause_ms"]))
+            if isinstance(record.get("total_ms"), (int, float)):
+                total.append(float(record["total_ms"]))
+            landed.append(0 if record.get("landed") is False or record.get("fix_landed") is False else 1)
         if record.get("kind") != "command" or not isinstance(record.get("start_ms"), (int, float)):
             continue
         name = str(record.get("type") or "?")
@@ -84,6 +96,11 @@ def summarize(records: Iterable[dict]) -> list[Row]:
     rows = []
     if finals:
         rows.append(Row("speech → text", len(finals), percentile(finals, 50), percentile(finals, 95)))
+    for key in ("dictation segment", "  misheard word fixed"):
+        if key in dictated:
+            after, total, landed = dictated[key]
+            rows.append(Row(key, len(after), percentile(after, 50), percentile(after, 95),
+                            percentile(total, 50) if total else None, sum(landed)))
     for name in sorted(starts, key=lambda n: (n.startswith(("all", "(typed)", "tier")), n)):
         values = starts[name]
         total = totals.get(name)

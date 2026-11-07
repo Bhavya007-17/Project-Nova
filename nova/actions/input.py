@@ -15,6 +15,7 @@ import ctypes
 import logging
 import threading
 import time
+from collections.abc import Callable
 from ctypes import byref, wintypes
 
 from . import native
@@ -267,6 +268,86 @@ def _paste(text: str, target: Win | None) -> None:
                 u32.CloseClipboard()
         finally:
             u32.DestroyWindow(owner)
+
+
+def _clipboard_free(owner: int, timeout: float = 0.15) -> None:
+    """Wait until nobody holds the clipboard: listeners (clipboard history, other apps) open it right after it
+    changes, and an editor that finds it busy drops the paste without a word."""
+    time.sleep(0.01)
+    if native.wait_for(lambda: bool(u32.OpenClipboard(owner)), timeout, interval=0.005):
+        u32.CloseClipboard()
+
+
+def paste(text: str, target: Win | None, landed: Callable[[], bool] | None = None,
+          wait_s: float = 0.6) -> tuple[bool | None, float]:
+    """Dictation's clipboard borrow (SPEC §11): paste ``text``, then poll ``landed()`` until the text is there (his
+    clipboard goes back as soon as it is) or ``wait_s`` passes; with no way to tell, give the app the usual ~300 ms.
+    Returns (True landed / False didn't / None can't tell, perf_counter when it landed or was sent). Never retries:
+    a paste that didn't show up may still arrive (a busy app), and typing twice is worse than not at all."""
+    if not text or "\0" in text:
+        raise ActionError("Nothing to type.")
+    _wait_for_hands_off()
+    _guard(target)
+    with _clipboard_lock:
+        owner = u32.CreateWindowExW(0, "STATIC", "Nova clipboard", 0, 0, 0, 0, 0, _HWND_MESSAGE, None, None, None)
+        if not owner:
+            raise ActionError("Couldn't borrow the clipboard.")
+        try:
+            _open_clipboard(owner)
+            try:
+                saved = _snapshot()
+                if not u32.EmptyClipboard() or not _put(_CF_UNICODETEXT, (text + "\0").encode("utf-16-le")):
+                    raise ActionError("Couldn't put the text on the clipboard.")
+                for fmt, data in _private_formats():
+                    _put(fmt, data)
+            finally:
+                u32.CloseClipboard()
+            sequence = int(u32.GetClipboardSequenceNumber())
+            _clipboard_free(owner)
+            _guard(target)
+            native.send_keys(chord("ctrl+v"))
+            sent = time.perf_counter()
+            ok: bool | None = None
+            at = sent
+            if landed is None:
+                _pump(RESTORE_AFTER_S)
+            else:
+                while True:
+                    _pump(0.02)
+                    try:
+                        if landed():
+                            ok, at = True, time.perf_counter()
+                            break
+                    except Exception:  # noqa: BLE001 - a check that failed says nothing
+                        _log.debug("landing check failed", exc_info=True)
+                    if time.perf_counter() - sent >= wait_s:
+                        ok = False
+                        break
+                if not ok:
+                    _pump(max(0.0, RESTORE_AFTER_S - (time.perf_counter() - sent)))
+            if int(u32.GetClipboardSequenceNumber()) == sequence:
+                _open_clipboard(owner)
+                try:
+                    if int(u32.GetClipboardSequenceNumber()) == sequence:
+                        u32.EmptyClipboard()
+                        for fmt, data in saved:
+                            _put(fmt, data)
+                finally:
+                    u32.CloseClipboard()
+            return ok, at
+        finally:
+            u32.DestroyWindow(owner)
+
+
+def erase(count: int, target: Win | None) -> None:
+    """Backspace ``count`` times ("scratch that", a period that cut a sentence in half)."""
+    if count <= 0:
+        return
+    _wait_for_hands_off()
+    _guard(target)
+    strokes = chord("backspace") * count
+    if native.send_keys(strokes) != len(strokes):
+        raise ActionError("Windows blocked the keys.")
 
 
 def scroll(direction: str, amount: str, target: Win | None) -> str:

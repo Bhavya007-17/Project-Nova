@@ -323,6 +323,15 @@ const COMMANDS = {
     }
     return r;
   },
+  "page.caret": async (args) => {
+    // dictation: the field with focus (in whichever frame has it) and the text before its caret
+    const tab = await tabFor(args);
+    const results = (await inFrames(tab.id, null, "caret", [args.limit || 300])).filter((r) => r.result && !r.result.__missing);
+    const docs = results.find((r) => r.result.docs);
+    const inside = results.filter((r) => r.result.focused && !r.result.frame);
+    const best = docs || inside.find((r) => r.result.editable) || inside[0] || results.find((r) => r.frameId === 0);
+    return { tab: info(tab), frameId: best ? best.frameId : 0, ...(best ? best.result : { editable: false }) };
+  },
   "page.call": async (args) => {
     // fill / read / highlight / scroll / scrollTo / wait / describe in one frame (default: the top one)
     const tab = await tabFor(args);

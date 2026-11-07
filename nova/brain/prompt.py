@@ -63,7 +63,8 @@ STEP_SCHEMAS = (
     _step("canvas_due", range=_enum(CANVAS_RANGES)),
     _step("canvas_open_item", item=_TEXT),
     _step("canvas_item_text", item=_TEXT),
-    _step("dictation", op=_enum(("start", "stop"))),
+    _step("dictation", op=_enum(("start", "stop", "paste"))),
+    _step("docs_new"),
     _step("listening", op=_enum(("sleep", "wake"))),
 )
 
@@ -112,7 +113,8 @@ scroll_to{description,element}: scroll the web page to a part of it ("the commen
 canvas_due{range}: what's due on Canvas, his school site. range: today | tomorrow | week | next_week | weekend | upcoming | overdue | monday ... sunday
 canvas_open_item{item}: open one assignment, quiz or discussion on Canvas. item: his words for which one ("my assignment for today", "the thermo homework")
 canvas_item_text{item}: what an assignment on Canvas says (its instructions)
-dictation{op}: start | stop
+dictation{op}: start | stop | paste (type his last dictation again)
+docs_new{}: a new blank Google Doc; what he wants written in it: a type_text step after it
 listening{op}: sleep | wake
 
 rules:

@@ -3,7 +3,8 @@
 Router (Tier 0 -> Tier 1 -> checked plan) -> questions -> risk check -> the real Windows
 actions, with confirm / clarify asked here in the console (non-interactive: treated as No).
 `--dry` stops after the plan. Writes the same trace line as a spoken command (via = "say"),
-so `nova latency` counts it.
+so `nova latency` counts it. Dictation steps type the words given once ("type this: …", "open a Google Doc and
+type this: …", "paste my last dictation"); live dictation needs the mic (the tray app).
 """
 
 from __future__ import annotations
@@ -25,9 +26,14 @@ from .actions.chrome import Chrome, ChromeHands
 from .brain.tier1 import Tier1
 from .chrome.bridge import Bridge, BridgeInfo
 from .config import ConfigStore
+from .dictation.cleanup import Cleaner
+from .dictation.history import History
+from .dictation.session import Dictation
+from .dictation.target import Target
 from .events import BrainProgress, CommandFinished
 from .governor import Governor
 from .log import TraceLog
+from .vocab import VocabFile
 
 
 class ConsoleAsker:
@@ -124,11 +130,41 @@ def main(text: str, *, dry: bool = False, chrome_wait: float = 0.0) -> int:
     chrome = ChromeHands(Chrome(bridge, store.current)) if bridge is not None else None
     if chrome is not None:
         router = Router(_tier1, page=chrome.page_rows)
-    hands = WindowsHands(store.current, nova=NovaControls(
-        dictation=lambda op: "Dictation runs in the tray app", listening=lambda op: "Sleep runs in the tray app"),
-        chrome=chrome)
-    executor = Executor(hands, asker, progress=lambda labels, i: print(f"  … {' → '.join(labels)}  [{labels[i]}]"))
     trace = TraceLog(paths.LOGS)
+    config = ConfigStore(paths.SETTINGS)
+    config.load()
+    vocab = VocabFile(paths.VOCAB)
+    cleaner = Cleaner(_tier1.governor, lambda: config.settings.llm, lambda: vocab.current().terms,
+                      client=lambda: Ollama(config.settings.ollama.url),
+                      enabled=lambda: config.settings.dictation.cleanup)
+    history = History(paths.DICTATION_HISTORY)
+    dictation = Dictation(None, cleaner, Target(store.current, chrome.chrome if chrome is not None else None),
+                          history, trace=trace)
+    planned = {"new_doc": False}
+
+    def dictate(op: str, said: str | None = None) -> str:
+        if op == "paste":
+            return dictation.paste_last()
+        if op != "start":
+            return "Dictation isn't on"
+        if not said:
+            return "Live dictation needs the mic: double-tap Copilot with the tray app running"
+        if not planned.get("started"):
+            cleaner.warm(block=True)
+            dictation.start()
+            planned["started"] = True
+        before = history.last()
+        dictation.begin("say", said, new_doc=planned["new_doc"])
+        dictation.release()
+        dictation.drain(15.0, fixes=True)
+        last = history.last()
+        if last is None or last == before:
+            return "Nothing typed"
+        return ("Typed" if last.landed else "Saved (couldn't type it)") + f" “{last.text}”"
+
+    hands = WindowsHands(store.current, nova=NovaControls(
+        dictation=dictate, listening=lambda op: "Sleep runs in the tray app"), chrome=chrome)
+    executor = Executor(hands, asker, progress=lambda labels, i: print(f"  … {' → '.join(labels)}  [{labels[i]}]"))
     shown: list[str] = []
 
     def publish(event: object) -> None:
@@ -139,8 +175,11 @@ def main(text: str, *, dry: bool = False, chrome_wait: float = 0.0) -> int:
 
     try:
         _, record = handle(Command(text, via="say", at=started), catalog, executor, router=router, asker=asker,
-                           publish=publish, trace=trace, snap=lambda c: snapshot(c, bridge))
+                           publish=publish, trace=trace, snap=lambda c: snapshot(c, bridge),
+                           prepare=lambda plan: planned.update(new_doc=any(s.action == "docs_new" for s in plan.steps)))
     finally:
+        if planned.get("started"):
+            dictation.close()
         trace.close()
         if bridge is not None:
             bridge.close()

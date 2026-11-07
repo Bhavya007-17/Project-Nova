@@ -4,8 +4,10 @@ from nova.gate import Env, StubResolver, WakeName
 from nova.keys import Cancel, DoubleTap, Press, Release
 from nova.state import (
     CLAIM_S,
+    DICTATION_SILENCE_S,
     DONE_S,
     FOLLOW_UP_S,
+    HEARD_WAIT_S,
     TAP_WAIT_S,
     WAKE_WAIT_S,
     Answer,
@@ -356,3 +358,72 @@ def test_an_answer_to_read_stays_up_longer():
                 heard(1, "what's due today", 2.2), Done(True, 2.5, "x", 600.0))
     run(Tick(2.5 + 10.0))
     assert run.state is State.IDLE  # capped
+
+
+# --- dictation (Stage 07) -------------------------------------------------------------------------------
+
+
+def test_dictation_ends_after_ten_seconds_of_silence():
+    run = Run()(DoubleTap("copilot", 1.0))
+    assert run.m.deadline == 1.0 + DICTATION_SILENCE_S
+    run(SpeechStart(1, 3.0))
+    assert run.m.deadline is None
+    run(SpeechEnd(1, "silence", 4.0), Tick(13.9))
+    assert run.state is State.DICTATING
+    run(Tick(14.0))
+    assert run.state is State.IDLE and run.has(Dictation)[0].why == "silence"
+
+
+def test_a_tap_while_talking_finishes_the_sentence_first():
+    run = Run()(DoubleTap("copilot", 1.0), SpeechStart(4, 2.0), Press("copilot", 3.0))
+    assert run.state is State.DICTATING and run.has(EndUtterance)
+    run(Release("copilot", 3.1, 0.1, hold=False), SpeechEnd(4, "key", 3.0), SpeechStart(5, 3.2))
+    assert run.state is State.DICTATING
+    run(heard(4, "the last words", 3.3))
+    assert run.has(Dictated)[0].text == "the last words"
+    assert run.state is State.IDLE and run.has(Dictation)[0].why == "tap"
+
+
+def test_finishing_gives_up_when_no_text_comes():
+    run = Run()(DoubleTap("copilot", 1.0), SpeechStart(4, 2.0), Press("copilot", 3.0), Tick(3.0 + HEARD_WAIT_S))
+    assert run.state is State.IDLE and run.has(Dictation)[0].why == "tap"
+
+
+def test_stop_dictation_ends_it_at_once_after_typing_what_came_first():
+    run = Run()(DoubleTap("copilot", 1.0), SpeechStart(2, 2.0), SpeechEnd(2, "silence", 3.0),
+                heard(2, "That's all. Stop dictation.", 3.6))
+    assert run.has(Dictated)[0].text == "That's all."
+    assert run.state is State.IDLE and run.has(Dictation)[0].why == "stop dictation"
+    run = Run()(DoubleTap("copilot", 1.0), heard(3, "Nova, stop dictation", 2.0))
+    assert not run.has(Dictated) and run.state is State.IDLE
+
+
+def test_esc_while_dictating_drops_what_he_is_saying():
+    run = Run()(DoubleTap("copilot", 1.0), SpeechStart(5, 2.0), Cancel(2.5))
+    assert run.state is State.IDLE and run.has(DropUtterance) and run.has(Dictation)[0].why == "Esc"
+
+
+def test_a_plan_starting_dictation_sets_the_silence_clock_and_its_failure_ends_it():
+    run = Run()(heard(1, "Nova, open a google doc and type this", 1.0), Progress(State.ACTING, 1.1),
+                Progress(State.DICTATING, 1.2, "Google Doc"))
+    assert run.state is State.DICTATING and run.m.deadline == 1.2 + DICTATION_SILENCE_S
+    assert run.has(Dictation)[0].on
+    run(Done(True, 1.5, "Dictating"))
+    assert run.state is State.DICTATING
+    run(Done(False, 4.0, "Google Docs didn't open"))
+    assert run.state is State.ERROR and not run.has(Dictation)[0].on
+
+
+def test_outputs_say_when_dictating():
+    assert outputs(Run()(DoubleTap("copilot", 1.0)).m).dictating
+    assert not outputs(Machine()).dictating
+
+
+def test_silence_clock_waits_for_a_sentence_already_under_way():
+    run = Run()(SpeechStart(1, 0.5), heard(9, "Nova, type this", 0.6), Progress(State.DICTATING, 0.7, "voice"),
+                Tick(11.0))
+    assert run.state is State.DICTATING
+    run(SpeechEnd(1, "silence", 12.0), Tick(21.9))
+    assert run.state is State.DICTATING
+    run(Tick(22.0))
+    assert run.state is State.IDLE
