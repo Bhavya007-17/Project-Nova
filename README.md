@@ -248,6 +248,7 @@ one approval + green CI).
 
 - **Bhavya Dosi** — [@Bhavya007-17](https://github.com/Bhavya007-17) (owner)
 - **Nischay Rawat** — [@nischayrawat17](https://github.com/nischayrawat17)
+- **Shaashwat Mishra** — [@shaashwatmishra203-creator](https://github.com/shaashwatmishra203-creator)
 
 ## Acknowledgements
 
