@@ -18,3 +18,7 @@ extension/*.pem
 
 # Chrome native-messaging host manifest: written by `nova chrome --install` (absolute paths)
 extension/host/com.nova.bridge.json
+
+# Personal agent settings (each teammate keeps their own)
+CLAUDE.local.md
+.claude/settings.local.json

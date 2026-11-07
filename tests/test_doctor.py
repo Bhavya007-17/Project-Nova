@@ -53,6 +53,33 @@ def test_exit_code():
     assert doctor.exit_code([Check("a", True, ""), Check("b", False, "")]) == 1
 
 
+def test_optional_row_shows_opt_and_never_fails():
+    checks = [
+        Check("Python", True, "3.12.13"),
+        Check("Recordings", False, "missing", fix="only nova bench-stt uses them", optional=True),
+    ]
+    lines = doctor.render(checks, color=False).splitlines()
+    assert lines[1].split()[:2] == ["Recordings", "OPT"]
+    assert lines[2].strip() == "fix: only nova bench-stt uses them"
+    assert doctor.exit_code(checks) == 0
+
+
+def test_render_color_marks_optional_yellow():
+    out = doctor.render([Check("A", False, "y", "z", optional=True)], color=True)
+    assert "\x1b[33mOPT" in out
+
+
+def test_summary_counts_required_problems_and_optional_separately():
+    ok = Check("a", True, "")
+    bad = Check("b", False, "", "fix b")
+    opt = Check("c", False, "", "maybe", optional=True)
+    assert doctor.summary([ok]) == "All good."
+    assert doctor.summary([ok, opt]) == "All good. 1 optional item missing (Nova works without it)."
+    assert doctor.summary([ok, bad, opt, opt]) == (
+        "1 to fix (see the fix: lines). 2 optional items missing (Nova works without them)."
+    )
+
+
 # --- individual probes (pure parts) -------------------------------------------
 
 
@@ -120,6 +147,12 @@ def test_models_missing_file_named(tmp_path):
     assert check.fix
 
 
+def test_models_missing_points_to_the_download_script(tmp_path):
+    check = doctor.check_models(tmp_path)
+    assert not check.ok and not check.optional
+    assert "scripts/get_models.py" in check.fix
+
+
 def test_models_empty_file_counts_as_missing(tmp_path):
     _models(tmp_path)
     (tmp_path / "parakeet" / "vocab.txt").write_bytes(b"")
@@ -142,6 +175,12 @@ def test_recordings_missing(tmp_path):
     assert not doctor.check_recordings(tmp_path / "empty").ok
 
 
+def test_recordings_missing_is_optional_and_says_who_needs_them(tmp_path):
+    for check in (doctor.check_recordings(tmp_path / "nope"), doctor.check_recordings(tmp_path)):
+        assert not check.ok and check.optional
+        assert "nova bench-stt" in check.fix
+
+
 WANTED = (
     WantedApp("Claude app", "Claude", "Claude_pzs8sxrjxfjjc!Claude", "handoff"),
     WantedApp("Fusion", "Autodesk Fusion", "AutodeskInc.Fusion360", "open/arrange"),
@@ -161,6 +200,12 @@ def test_apps_found_by_name_when_aumid_changed():
     (claude, fusion) = doctor.match_apps(rows, WANTED)
     assert claude.ok and "Claude_newpublisher!Claude" in claude.detail
     assert not fusion.ok and "Start menu" in fusion.detail and fusion.fix
+
+
+def test_missing_apps_are_optional():
+    checks = doctor.match_apps([], WANTED)
+    assert [(c.ok, c.optional) for c in checks] == [(False, True), (False, True)]
+    assert doctor.exit_code(checks) == 0
 
 
 def test_apps_tolerate_single_row_object():

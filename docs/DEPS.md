@@ -41,11 +41,13 @@ One line each: what, version, why. Ask before adding anything over ~50 MB or a n
 ## Dev
 - **pytest** 9.2 — unit tests for pure logic.
 - **pytest-cov** 7.1 — coverage (80 % target; GUI shell omitted, checked by live demo).
+- **Pillow** (not a project dependency) — only `scripts/island_screenshots.py` (README images / GIF), pulled in for that run with `uv run --with pillow`.
+- **GitHub Actions** (`.github/workflows/tests.yml`) — `uv sync --frozen` + `uv run pytest` on a Windows runner for every PR and push to main.
 
-## Models and data (in the repo folder, git-ignored, never downloaded by Nova)
-- `models/parakeet/` — Parakeet TDT 0.6B v3, int8 ONNX for onnx-asr (`nemo-parakeet-tdt-0.6b-v3`, ~639 MB), copied from voicebar. STT (SPEC §4).
-- `models/silero/silero_vad.onnx` — Silero VAD (~2.2 MB), copied from voicebar. Speech start/end.
-- `fixtures/voicebar-recordings/` — Bhavya's recordings (4 sessions with `manifest.json`, 134 audio files). STT WER eval. Only the "check" session is clean: in "quiet" and "noise" the old recorder started late, so most files begin mid-word (`nova bench-stt` flags them).
+## Models and data (in the repo folder, git-ignored; Nova itself never downloads)
+- `models/parakeet/` — Parakeet TDT 0.6B v3, int8 ONNX for onnx-asr (`nemo-parakeet-tdt-0.6b-v3`, ~639 MB, CC-BY-4.0). STT (SPEC §4). `scripts/get_models.py` fetches it from huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx at commit 8f23f0c (SHA-256 checked; identical to the copy voicebar used).
+- `models/silero/silero_vad.onnx` — Silero VAD v6.2 (~2.2 MB, MIT). Speech start/end. Same script, from github.com/snakers4/silero-vad tag v6.2.
+- `fixtures/voicebar-recordings/` — Bhavya's private recordings (4 sessions with `manifest.json`, 134 audio files), kept off GitHub; doctor shows them as optional. STT WER eval. Only the "check" session is clean: in "quiet" and "noise" the old recorder started late, so most files begin mid-word (`nova bench-stt` flags them).
 - `fixtures/voicebar-reference/` — voicebar phrasing fixtures (committed).
 
 ## Local LLM (Stage 05; Ollama models, pulled once, never by Nova)

@@ -37,6 +37,7 @@ class Check:
     ok: bool
     detail: str
     fix: str = ""
+    optional: bool = False  # missing is fine: Nova works without it (shown as OPT, never fails the doctor)
 
 
 Probe = Callable[[], "Check | Sequence[Check]"]
@@ -82,16 +83,16 @@ def run_checks(probes: Sequence[tuple[str, Probe]], timeout: float = 30.0) -> li
     return checks
 
 
-_GREEN, _RED, _RESET = "\x1b[32m", "\x1b[31m", "\x1b[0m"
+_GREEN, _RED, _YELLOW, _RESET = "\x1b[32m", "\x1b[31m", "\x1b[33m", "\x1b[0m"
 
 
 def render(checks: Sequence[Check], *, color: bool) -> str:
     width = max((len(check.name) for check in checks), default=0)
     lines = []
     for check in checks:
-        status = "OK " if check.ok else "FIX"
+        status, tint = ("OK ", _GREEN) if check.ok else ("OPT", _YELLOW) if check.optional else ("FIX", _RED)
         if color:
-            status = f"{_GREEN if check.ok else _RED}{status}{_RESET}"
+            status = f"{tint}{status}{_RESET}"
         lines.append(f"{check.name:<{width}}  {status}  {check.detail}")
         if not check.ok and check.fix:
             lines.append(f"{'':<{width}}       fix: {check.fix}")
@@ -99,7 +100,17 @@ def render(checks: Sequence[Check], *, color: bool) -> str:
 
 
 def exit_code(checks: Sequence[Check]) -> int:
-    return 0 if all(check.ok for check in checks) else 1
+    return 0 if all(check.ok or check.optional for check in checks) else 1
+
+
+def summary(checks: Sequence[Check]) -> str:
+    problems = sum(not check.ok and not check.optional for check in checks)
+    optional = sum(not check.ok and check.optional for check in checks)
+    text = "All good." if not problems else f"{problems} to fix (see the fix: lines)."
+    if optional:
+        one = optional == 1
+        text += f" {optional} optional {'item' if one else 'items'} missing (Nova works without {'it' if one else 'them'})."
+    return text
 
 
 # --- probes ----------------------------------------------------------------------
@@ -362,11 +373,11 @@ def match_apps(rows: Any, wanted: Sequence[WantedApp] = WANTED_APPS) -> list[Che
             continue
         named = next((row for row in rows if str(row.get("Name", "")).casefold() == app.start_name.casefold()), None)
         if named is not None:
-            checks.append(Check(app.label, True, f"{named.get('AppID')} (CLAUDE.md says {app.aumid}; update it)"))
+            checks.append(Check(app.label, True, f"{named.get('AppID')} (AGENTS.md says {app.aumid}; update it)"))
         else:
             checks.append(
                 Check(app.label, False, f"not in the Start menu (looked for {app.aumid})",
-                      f"Install {app.start_name}; Nova needs it for {app.needed_for}.")
+                      f"Install {app.start_name} if you want {app.needed_for}.", optional=True)
             )
     return checks
 
@@ -454,7 +465,8 @@ def check_models(models_dir: Path) -> Check:
     if missing:
         return Check(
             "Models", False, f"missing in {models_dir}: {', '.join(missing)}",
-            "Put the missing files back (docs/DEPS.md says what each is). Doctor never downloads.",
+            "Run scripts/setup.ps1, or just `uv run python scripts/get_models.py` (~670 MB, checked by SHA-256). "
+            "Doctor itself never downloads.",
         )
     folders = sorted(entry for entry in models_dir.iterdir() if entry.is_dir())
     sizes = [f"{folder.name} {_size(sum(f.stat().st_size for f in folder.rglob('*') if f.is_file()))}" for folder in folders]
@@ -465,13 +477,14 @@ _AUDIO = frozenset({".wav", ".flac", ".mp3", ".ogg", ".m4a"})
 
 
 def check_recordings(recordings_dir: Path) -> Check:
-    fix = f"Copy Bhavya's voicebar recordings back into {recordings_dir} (the STT eval needs them)."
+    fix = (f"Only `nova bench-stt` (the speech-to-text WER eval) uses them. They're private voice recordings, "
+           f"kept off GitHub: put session folders (audio + manifest.json) in {recordings_dir} to run it.")
     if not recordings_dir.is_dir():
-        return Check("Recordings", False, f"{recordings_dir} is missing", fix)
+        return Check("Recordings", False, f"{recordings_dir} is missing", fix, optional=True)
     sessions = sum(1 for _ in recordings_dir.rglob("manifest.json"))
     audio = sum(1 for f in recordings_dir.rglob("*") if f.suffix.lower() in _AUDIO)
     if not sessions:
-        return Check("Recordings", False, f"no sessions (manifest.json) in {recordings_dir}", fix)
+        return Check("Recordings", False, f"no sessions (manifest.json) in {recordings_dir}", fix, optional=True)
     return Check("Recordings", True, f"{sessions} sessions, {audio} audio files")
 
 
@@ -518,6 +531,5 @@ def main() -> int:
         ]
     )
     print(render(checks, color=enable_vt()))
-    problems = sum(not check.ok for check in checks)
-    print("\nAll good." if not problems else f"\n{problems} to fix (see the fix: lines).")
+    print("\n" + summary(checks))
     return exit_code(checks)
