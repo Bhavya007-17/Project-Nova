@@ -188,6 +188,36 @@ def test_end_now_when_quiet_does_nothing():
     assert f.ep.end_now() is None
 
 
+def test_the_tail_of_his_words_after_a_key_release_is_not_a_new_utterance():
+    # Logged: 57 of 179 key releases started another utterance within 100 ms (a ~200 ms clip, heard as "Yeah.").
+    f = Feed()
+    f.speech(800)
+    f.ep.end_now()
+    assert f.speech(200) == []  # he let go mid-word
+    assert f.silence(220) == []  # not 250 ms of quiet yet
+    assert f.speech(100) == []
+    f.silence(260)
+    events = f.speech(100)
+    assert [type(e) for e in events] == [SpeechStarted]
+
+
+def test_a_new_key_press_is_heard_at_once_after_a_release():
+    f = Feed()
+    f.speech(800)
+    f.ep.end_now()
+    f.ep.listen_now()  # the speech worker calls this when the key goes down again
+    events = f.speech(100)
+    assert [type(e) for e in events] == [SpeechStarted]
+
+
+def test_quiet_after_a_key_release_is_a_rule():
+    assert EndpointRules().after_key_ms == 250
+    f = Feed(EndpointRules(after_key_ms=0))
+    f.speech(800)
+    f.ep.end_now()
+    assert [type(e) for e in f.speech(100)] == [SpeechStarted]
+
+
 def test_cancel_reports_and_forgets():
     f = Feed()
     f.speech(500)

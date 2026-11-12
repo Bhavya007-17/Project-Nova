@@ -199,6 +199,32 @@ def test_key_release_ends_at_once(make):
     assert final.reason == "key"
 
 
+def test_words_trailing_after_a_key_release_start_nothing(make):
+    h = make(FakeStt())
+    h.source.feed(silence_ms=300)
+    h.source.feed(speech_ms=800)
+    h.next(SpeechStarted)
+    h.worker.end_now()
+    assert h.next(SpeechEnded).reason == "key"
+    h.source.feed(speech_ms=200, silence_ms=400)  # he let go mid-word
+    assert not [e for e in h.collect(0.4) if isinstance(e, SpeechStarted)]
+    h.source.feed(speech_ms=500, silence_ms=400)  # after the quiet, speech counts again
+    assert h.next(SpeechStarted).utterance == 2
+
+
+def test_a_second_press_right_after_a_release_is_heard(make):
+    h = make(FakeStt())
+    h.source.feed(silence_ms=300)
+    h.source.feed(speech_ms=800)
+    h.next(SpeechStarted)
+    h.worker.end_now()
+    assert h.next(SpeechEnded).reason == "key"
+    h.worker.set_held(True)
+    time.sleep(0.05)
+    h.source.feed(speech_ms=400)
+    assert h.next(SpeechStarted).utterance == 2
+
+
 def test_worker_survives_an_internal_error(make, monkeypatch):
     h = make(FakeStt())
     calls = {"n": 0}
