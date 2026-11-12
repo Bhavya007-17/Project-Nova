@@ -98,3 +98,80 @@ def test_manifest_is_pinned_and_matches_doctor():
     for model in gm.MODELS:
         assert len(model.sha256) == 64 and model.size > 0
         assert "/main/" not in model.url and "/master/" not in model.url  # a commit or a release tag
+
+
+# --- archives (the optional sherpa-onnx copy) -----------------------------------------------------------------
+
+
+def _tarball(files: dict[str, bytes], extra: dict[str, bytes] | None = None) -> bytes:
+    import io
+    import tarfile
+
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:bz2") as tar:
+        for name, data in {**files, **(extra or {})}.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    return buffer.getvalue()
+
+
+def _archive(files: dict[str, bytes], blob: bytes, pins: dict[str, bytes] | None = None):
+    pins = pins or files
+    members = tuple(
+        gm.Member(f"s/{name.rsplit('/', 1)[-1]}", name, len(data), hashlib.sha256(data).hexdigest())
+        for name, data in pins.items()
+    )
+    return gm.Archive("s.tar.bz2", "https://example.invalid/s.tar.bz2", len(blob), hashlib.sha256(blob).hexdigest(),
+                      members)
+
+
+def test_fetch_archive_extracts_only_the_pinned_files_then_deletes_the_archive(tmp_path):
+    files = {"pkg/encoder.onnx": b"enc", "pkg/tokens.txt": b"a 0\nb 1\n"}
+    blob = _tarball(files, extra={"pkg/test_wavs/0.wav": b"RIFF", "../evil.txt": b"no"})
+    archive = _archive(files, blob)
+    assert gm.missing_members(tmp_path, archive) == list(archive.files)
+    gm.fetch_archive(archive, tmp_path, opener=lambda request, timeout: _Response(blob), say=lambda *_, **__: None)
+    assert (tmp_path / "s" / "encoder.onnx").read_bytes() == b"enc"
+    assert (tmp_path / "s" / "tokens.txt").read_bytes() == b"a 0\nb 1\n"
+    assert not (tmp_path / "s.tar.bz2").exists()
+    assert sorted(p.name for p in (tmp_path / "s").iterdir()) == ["encoder.onnx", "tokens.txt"]
+    assert not (tmp_path.parent / "evil.txt").exists()
+    assert gm.missing_members(tmp_path, archive) == []
+
+
+def test_extract_rejects_a_member_with_other_bytes(tmp_path):
+    files = {"pkg/encoder.onnx": b"enc"}
+    blob = _tarball(files)
+    archive = _archive(files, blob, pins={"pkg/encoder.onnx": b"ENC"})
+    (tmp_path / "s.tar.bz2").write_bytes(blob)
+    with pytest.raises(RuntimeError, match="SHA-256"):
+        gm.extract(archive, tmp_path / "s.tar.bz2", tmp_path)
+    assert not (tmp_path / "s" / "encoder.onnx").exists()
+    assert not (tmp_path / "s" / "encoder.onnx.part").exists()
+
+
+def test_extract_reports_a_missing_member(tmp_path):
+    blob = _tarball({"pkg/encoder.onnx": b"enc"})
+    archive = _archive({"pkg/encoder.onnx": b"enc", "pkg/joiner.onnx": b"j"}, blob)
+    (tmp_path / "s.tar.bz2").write_bytes(blob)
+    with pytest.raises(RuntimeError, match="lacks pkg/joiner.onnx"):
+        gm.extract(archive, tmp_path / "s.tar.bz2", tmp_path)
+
+
+def test_sherpa_flag_checks_its_files_too(tmp_path, capsys):
+    assert gm.main(["--check", "--sherpa", "--dir", str(tmp_path)]) == 1
+    out = capsys.readouterr().out
+    assert "sherpa-parakeet/encoder.int8.onnx" in out
+    assert "parakeet/encoder-model.int8.onnx" in out
+
+
+def test_sherpa_archive_is_pinned():
+    archive = gm.SHERPA
+    assert archive.url.startswith("https://github.com/k2-fsa/sherpa-onnx/releases/download/")
+    assert len(archive.sha256) == 64 and archive.size > 0
+    assert {m.path.split("/")[-1] for m in archive.files} == {"encoder.int8.onnx", "decoder.int8.onnx",
+                                                               "joiner.int8.onnx", "tokens.txt"}
+    for member in archive.files:
+        assert member.path.startswith("sherpa-parakeet/")
+        assert len(member.sha256) == 64 and member.size > 0

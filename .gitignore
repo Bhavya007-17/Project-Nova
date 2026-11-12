@@ -11,6 +11,7 @@ models/
 logs/
 data/
 fixtures/voicebar-recordings/
+fixtures/command-set/
 
 # Chrome extension private key (stable id comes from the manifest "key")
 extension/*.pem
