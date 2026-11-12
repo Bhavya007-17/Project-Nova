@@ -15,7 +15,7 @@ from nova.brain.llm import NUM_CTX, LLMCancelled, LLMError, Loaded, Loader, Olla
 from nova.brain.tier1 import Dialect, Seen, Thought, Tier1, chatml, chatml_turn, dialect_for
 from nova.brain.validate import check_llm
 from nova.config import Llm
-from nova.governor import Choice
+from nova.governor import ALL_LAYERS, Choice
 
 # --- the prompt ---------------------------------------------------------------------------------------------------
 
@@ -213,7 +213,7 @@ def test_qwen_is_rendered_here_and_sent_raw():
     assert text.startswith("<|im_start|>system\n") and text.endswith("<think>\n\n</think>\n\n")
     assert '"said":"my roommate opened the window"' in text
     assert kw["schema"] == prompt.SCHEMA and kw["keep_alive"] == "5m" and kw["timeout"] == 6.0
-    assert kw["options"] == {"num_ctx": 4096} and kw["num_predict"] == 200
+    assert kw["options"] == {"num_ctx": 4096, "num_gpu": ALL_LAYERS} and kw["num_predict"] == 200
 
 
 def test_other_families_use_chat_and_cpu_means_no_gpu_layers():
@@ -229,7 +229,9 @@ def test_other_families_use_chat_and_cpu_means_no_gpu_layers():
 
 
 def test_load_options_are_the_same_for_every_caller():
-    assert load_options(Choice("qwen3.5:4b", "gpu").options) == {"num_ctx": NUM_CTX}
+    # GPU = every layer on the GPU: left to itself, Ollama 0.30 (llama-server's fit) reserved room for the vision
+    # projector and put 0 of 33 layers on an RTX with 6.9 GB free (2026-11-11, Fusion open) — a "GPU" model on the CPU.
+    assert load_options(Choice("qwen3.5:4b", "gpu").options) == {"num_ctx": NUM_CTX, "num_gpu": ALL_LAYERS}
     assert load_options(Choice("qwen3.5:2b", "cpu").options) == {"num_ctx": NUM_CTX, "num_gpu": 0}
     assert NUM_CTX == 4096
 
@@ -239,7 +241,7 @@ def test_warm_ups_and_requests_send_the_same_load_options():
     t = tier1(client)
     t.warm()
     t.think("x", Seen())
-    assert {json.dumps(c[3]["options"], sort_keys=True) for c in client.calls} == {json.dumps({"num_ctx": 4096})}
+    assert {json.dumps(c[3]["options"], sort_keys=True) for c in client.calls} == {json.dumps({"num_ctx": 4096, "num_gpu": ALL_LAYERS})}
 
 
 # --- a cold start never fails (Stage 07a item 2) ---------------------------------------------------------------------
