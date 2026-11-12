@@ -3,7 +3,7 @@
 import pytest
 
 from nova.brain.plan import step
-from nova.brain.risk import Scene, assess, risky_label
+from nova.brain.risk import Scene, assess, enters_text, needs_focus, risky_label
 
 NOTEPAD = Scene(app="Notepad", exe="notepad.exe", window_class="Notepad", title="notes.txt - Notepad")
 TEAMS = Scene(app="Microsoft Teams", exe="ms-teams.exe", title="Chat | Lab group | Microsoft Teams")
@@ -38,6 +38,54 @@ def test_closing_several_windows_is_confirmed():
 def test_never_types_into_password_fields():
     risk = assess(step("type_text", text="hunter2"), Scene(app="Google Chrome", password=True))
     assert risk.refuse and "password" in risk.reason
+
+
+PASSWORD_BOX = Scene(app="Google Chrome", exe="chrome.exe", password=True)
+UNCHECKED = Scene(app="Google Chrome", exe="chrome.exe", focus_known=False)
+
+
+@pytest.mark.parametrize(
+    "keys", ["ctrl+v", "shift+insert", "win+v", "ctrl+shift+v", "v+ctrl", "a", "shift+a", "7", "space", ".", "ctrl+alt+e"]
+)
+def test_keys_that_put_text_in_a_field(keys):
+    assert enters_text(keys)
+
+
+@pytest.mark.parametrize(
+    "keys",
+    ["enter", "tab", "esc", "backspace", "delete", "f5", "left", "ctrl+t", "ctrl+c", "ctrl+x", "ctrl+z", "ctrl+a",
+     "ctrl+s", "ctrl+=", "ctrl+shift+t", "alt+left", "win+d", "alt+v", "insert", "ctrl+insert"],
+)
+def test_keys_that_do_not(keys):
+    assert not enters_text(keys)
+
+
+@pytest.mark.parametrize("keys", ["ctrl+v", "shift+insert", "win+v", "a", "shift+1", "space"])
+def test_never_pastes_or_presses_characters_into_password_fields(keys):
+    risk = assess(step("press", keys=keys), PASSWORD_BOX)
+    assert risk.refuse and "password" in risk.reason
+
+
+def test_keys_that_enter_nothing_still_work_in_a_password_field():
+    for keys in ("enter", "tab", "backspace", "ctrl+a", "esc"):  # he typed it himself; Nova adds no characters
+        assert assess(step("press", keys=keys), PASSWORD_BOX) is None, keys
+
+
+def test_a_paste_asks_first_when_the_field_could_not_be_checked():
+    risk = assess(step("press", keys="ctrl+v"), UNCHECKED)
+    assert risk.confirm and risk.question == "Paste here? (I couldn't check this field)"
+    risk = assess(step("press", keys="shift+a"), UNCHECKED)
+    assert risk.confirm and "couldn't check" in risk.question
+    assert assess(step("press", keys="ctrl+t"), UNCHECKED) is None
+    assert assess(step("press", keys="ctrl+v"), NOTEPAD) is None
+
+
+def test_which_steps_need_the_focused_control_checked():
+    assert needs_focus(step("type_text", text="hi"))
+    assert needs_focus(step("press", keys="ctrl+v"))
+    assert needs_focus(step("press", keys="b"))
+    assert not needs_focus(step("press", keys="ctrl+t"))  # no UI Automation question for keys that enter nothing
+    assert not needs_focus(step("open_app", app="Notepad"))
 
 
 @pytest.mark.parametrize(
