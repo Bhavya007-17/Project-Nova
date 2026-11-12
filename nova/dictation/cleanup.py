@@ -10,6 +10,11 @@ Same small model as Tier 1 (SPEC §7.4), on the GPU only: on the CPU (Fusion has
 Measured on this laptop (qwen3.5:4b, Ollama 0.30.10): ~1.0 s per call when nothing needs fixing, ~1.25 s with a
 fix — ~0.8 s of it is Ollama's fixed per-request overhead. So the session starts a call as soon as a pause looks
 like the end of a segment (``nova.speech`` PauseCandidate) and gives up on it at a deadline.
+
+It sends Tier 1's load options and loads through Tier 1's ``Loader`` (Stage 07a): different options made Ollama
+reload the model on every switch between planner and cleanup (10-27 s each). A job first checks that the model is
+still loaded (Ollama drops it after keep_alive): if not, the segment stays rules-only and the model loads again for
+the next one — a cold model would only answer after the session gave up on it.
 """
 
 from __future__ import annotations
@@ -27,20 +32,18 @@ from typing import Any
 import jellyfish
 from rapidfuzz import fuzz
 
-from ..brain.llm import DEFAULT_URL, LLMCancelled, LLMError, Ollama, Reply
+from ..brain.llm import DEFAULT_URL, LLMCancelled, LLMError, Loader, Ollama, Reply, load_options
 from ..brain.prompt import dumps
 from ..brain.tier1 import Dialect, chatml, chatml_turn, dialect_for
 from ..config import Llm
 
 _log = logging.getLogger(__name__)
 
-NUM_CTX = 2048
 MAX_TOKENS = 80  # four fixes at most
 BEFORE_CHARS = 200
 MAX_SHARE = 0.25  # SPEC §11: more than a quarter of the words changed -> rules-only text
 ALIKE = 70.0  # sound / spelling similarity a fix needs...
 ALIKE_KNOWN = 50.0  # ...or this much when it's one of his names or already in the text before the cursor
-_WARM_TIMEOUT_S = 180.0
 
 SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -216,6 +219,7 @@ class Job:
         self.ms = 0.0
         self.started = time.perf_counter()
         self.cancelled = False
+        self.cold = False  # the model wasn't loaded: skipped (it's loading again for the next segment)
         self._done = threading.Event()
         self._client: Any = None
 
@@ -246,12 +250,16 @@ class Cleaner:
     """Warms the model when dictation starts (GPU only) and runs cleanup jobs."""
 
     def __init__(self, governor: Any, llm: Callable[[], Llm], terms: Callable[[], Sequence[str]], *,
-                 client: Callable[[], Any] | None = None, enabled: Callable[[], bool] = lambda: True) -> None:
+                 client: Callable[[], Any] | None = None, enabled: Callable[[], bool] = lambda: True,
+                 loader: Loader | None = None) -> None:
+        """``client``: a fresh client per job (cancelling a job aborts only its own request). ``loader``: Tier 1's,
+        so the model is loaded once for both."""
         self._governor = governor
         self._llm = llm
         self._terms = terms
         self._client = client or (lambda: Ollama(DEFAULT_URL))
         self._enabled = enabled
+        self._loader = loader or Loader(self._client())
         self._lock = threading.Lock()
         self._ready: Any = None  # the model choice once warm (None = rules only)
         self._warming = False
@@ -308,16 +316,10 @@ class Cleaner:
                 self._ready = None
                 _log.info("dictation cleanup: rules only (%s on the CPU)", choice.model)
                 return
-            llm = self._llm()
-            client = self._client()
-            dialect = self._dialect(client, choice.model)
-            _, static = self._prefix()
-            options = {"num_ctx": NUM_CTX, **choice.options}
-            if dialect.raw:
-                client.generate(choice.model, static, options=options, keep_alive=llm.keep_alive,
-                                timeout=_WARM_TIMEOUT_S, num_predict=1)
-            else:
-                client.load(choice.model, options=options, keep_alive=llm.keep_alive, timeout=_WARM_TIMEOUT_S)
+            load = self._load(choice)
+            load.wait()
+            if load.error:
+                raise LLMError(load.error)
             self._ready = choice
             _log.info("dictation cleanup warm: %s in %.0f ms", choice.model, (time.perf_counter() - began) * 1000)
         except LLMError as error:
@@ -329,6 +331,13 @@ class Cleaner:
         finally:
             with self._lock:
                 self._warming = False
+
+    def _load(self, choice: Any) -> Any:
+        """Load the model and read cleanup's prefix (or join the load under way, Tier 1's included). Never blocks."""
+        dialect = self._dialect(self._client(), choice.model)
+        _, static = self._prefix()
+        return self._loader.load(choice.model, options=load_options(choice.options), keep_alive=self._llm().keep_alive,
+                                 prompt=static if dialect.raw else None)
 
     def start(self, text: str, before: str) -> Job | None:
         """A cleanup job for ``text``, or None when cleanup is off / on the CPU / not warm yet."""
@@ -346,10 +355,15 @@ class Cleaner:
             job._client = client
             if job.cancelled:
                 return
+            if not self._loader.resident(choice.model):
+                job.cold = True
+                job.error = "the model wasn't loaded (loading it for the next segment)"
+                self._load(choice)
+                return
             messages, static = self._prefix()
             dialect = self._dialect(client, choice.model)
             asked = dumps(request(job.text, job.before))
-            options = {"num_ctx": NUM_CTX, **choice.options}
+            options = load_options(choice.options)
             if dialect.raw:
                 reply = client.generate(choice.model, static + chatml_turn(asked, dialect.think_block), schema=SCHEMA,
                                         options=options, keep_alive=llm.keep_alive, timeout=llm.timeout_s,

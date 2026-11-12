@@ -412,8 +412,10 @@ class Dictation:
                                   "llm_ms": round(job.ms, 1) if job.done else None, "initial": seg.initial}
         result = job.result if job.done and not job.cancelled else None
         if result is None:
+            late = not job.done  # before cancel(), which marks the job done
             job.cancel()
-            record.update(llm="late" if not job.done else "failed", llm_error=job.error or None)
+            outcome = "late" if late else ("cold" if getattr(job, "cold", False) else "failed")
+            record.update(llm=outcome, llm_error=job.error or None)
             self._write(record, seg)
             return
         if result.rejected or not result.fixes:

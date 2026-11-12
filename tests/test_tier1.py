@@ -11,7 +11,7 @@ from catalog_fixture import CATALOG
 from nova.actions.context import AppWindow, Context, Tab
 from nova.actions.native import Win
 from nova.brain import prompt
-from nova.brain.llm import LLMCancelled, LLMError, Ollama, Reply, is_cloud, reply_of
+from nova.brain.llm import NUM_CTX, LLMCancelled, LLMError, Loaded, Loader, Ollama, Reply, is_cloud, load_options, reply_of
 from nova.brain.tier1 import Dialect, Seen, Thought, Tier1, chatml, chatml_turn, dialect_for
 from nova.brain.validate import check_llm
 from nova.config import Llm
@@ -109,22 +109,44 @@ def test_thought_trace():
 
 
 class FakeOllama:
+    """One fake Ollama. ``resident``: what /api/ps lists; a warm-up / load (num_predict 1) makes its model resident
+    and waits for ``load_gate`` when one is given (a cold load in flight)."""
+
     url = "http://127.0.0.1:1"
 
-    def __init__(self, family="qwen35", text='{"kind":"ignore","steps":[],"confidence":0.9}', error=None):
+    def __init__(self, family="qwen35", text='{"kind":"ignore","steps":[],"confidence":0.9}', error=None,
+                 resident=("qwen3.5:2b-q4_K_M", "qwen3.5:4b"), load_gate=None):
         self.family = family
         self.text = text
         self.error = error
         self.calls = []
+        self.resident = set(resident)
+        self.load_gate = load_gate
+        self.load_error = None
 
     def show(self, model, timeout=5.0):
         caps = ["completion", "thinking"] if self.family == "qwen35" else ["completion"]
         return {"details": {"family": self.family}, "capabilities": caps}
 
+    def loaded(self, timeout=2.0):
+        return tuple(Loaded(name, 3 * 1024**3, 3 * 1024**3) for name in sorted(self.resident))
+
+    def _loading(self, model):
+        if self.load_gate is not None:
+            self.load_gate.wait(5)
+        if self.load_error:
+            raise self.load_error
+        self.resident.add(model)
+
     def generate(self, model, prompt_, **kw):
         self.calls.append(("generate", model, prompt_, kw))
+        if kw.get("num_predict") == 1:
+            self._loading(model)
+            return Reply("", 10.0)
         if self.error:
             raise self.error
+        if model not in self.resident:  # a request that has to load first (what timed out before)
+            self._loading(model)
         return Reply(self.text, 400.0)
 
     def chat(self, model, messages, **kw):
@@ -135,6 +157,7 @@ class FakeOllama:
 
     def load(self, model, **kw):
         self.calls.append(("load", model, kw))
+        self._loading(model)
         return 10.0
 
     def abort(self):
@@ -156,10 +179,28 @@ class FakeGovernor:
         pass
 
 
-def tier1(client, governor=None, monkeypatch=None):
-    t = Tier1(client, governor or FakeGovernor(), lambda: Llm(keep_alive="5m", timeout_s=6.0), lambda: CATALOG)
-    t._background = client  # warm-ups go to the same fake
-    return t
+def tier1(client, governor=None, warming=None):
+    """Tier 1 on a fake: its loader (warm-ups, loads) talks to the same fake."""
+    return Tier1(client, governor or FakeGovernor(), lambda: Llm(keep_alive="5m", timeout_s=6.0), lambda: CATALOG,
+                 loader=Loader(client), warming=warming or (lambda: None))
+
+
+def requests(client):
+    """The answering calls (not warm-ups / loads)."""
+    return [c for c in client.calls if c[0] in ("generate", "chat") and c[3].get("num_predict") != 1]
+
+
+def loads(client):
+    return [c for c in client.calls if c[0] == "load" or (c[0] == "generate" and c[3].get("num_predict") == 1)]
+
+
+def wait_for(condition, seconds=2.0):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if condition():
+            return True
+        time.sleep(0.01)
+    return condition()
 
 
 def test_qwen_is_rendered_here_and_sent_raw():
@@ -176,12 +217,128 @@ def test_qwen_is_rendered_here_and_sent_raw():
 
 
 def test_other_families_use_chat_and_cpu_means_no_gpu_layers():
-    client = FakeOllama("gemma4")
+    client = FakeOllama("gemma4", resident=("gemma4:e2b",))
     t = tier1(client, FakeGovernor(Choice("gemma4:e2b", "cpu")))
     t.think("open it", Seen())
     kind, _model, messages, kw = client.calls[0]
     assert kind == "chat" and messages[-1] == {"role": "user", "content": '{"said":"open it"}'}
     assert kw["options"] == {"num_ctx": 4096, "num_gpu": 0}
+
+
+# --- one model, one set of load options (Stage 07a item 1) -------------------------------------------------------------
+
+
+def test_load_options_are_the_same_for_every_caller():
+    assert load_options(Choice("qwen3.5:4b", "gpu").options) == {"num_ctx": NUM_CTX}
+    assert load_options(Choice("qwen3.5:2b", "cpu").options) == {"num_ctx": NUM_CTX, "num_gpu": 0}
+    assert NUM_CTX == 4096
+
+
+def test_warm_ups_and_requests_send_the_same_load_options():
+    client = FakeOllama("qwen35", resident=())
+    t = tier1(client)
+    t.warm()
+    t.think("x", Seen())
+    assert {json.dumps(c[3]["options"], sort_keys=True) for c in client.calls} == {json.dumps({"num_ctx": 4096})}
+
+
+# --- a cold start never fails (Stage 07a item 2) ---------------------------------------------------------------------
+
+
+def test_a_cold_request_waits_for_the_load_then_answers():
+    gate = threading.Event()
+    client = FakeOllama("qwen35", resident=(), load_gate=gate)
+    warmed = []
+    t = tier1(client, warming=lambda: warmed.append(time.monotonic()))
+    began = time.monotonic()
+    out = []
+    thread = threading.Thread(target=lambda: out.append(t.think("x", Seen())))
+    thread.start()
+    assert wait_for(lambda: warmed)
+    assert warmed[0] - began < 0.3  # the island says "Warming up…" at once
+    time.sleep(0.1)
+    assert requests(client) == [] and len(loads(client)) == 1  # no answering request while it loads
+    gate.set()
+    thread.join(2)
+    assert out and out[0].data == {"kind": "ignore", "steps": [], "confidence": 0.9} and not out[0].error
+    assert requests(client)[0][3]["timeout"] == 6.0  # the timeout covers the answer only
+    assert out[0].warm_ms >= 100 and out[0].trace()["warm_ms"] == round(out[0].warm_ms, 1)
+
+
+def test_a_warm_request_doesnt_wait_or_say_warming():
+    client = FakeOllama("qwen35")
+    warmed = []
+    t = tier1(client, warming=lambda: warmed.append(1))
+    assert t.think("x", Seen()).data is not None
+    assert warmed == [] and loads(client) == []
+
+
+def test_a_request_during_a_preload_joins_it_instead_of_loading_again():
+    gate = threading.Event()
+    client = FakeOllama("qwen35", resident=(), load_gate=gate)
+    t = tier1(client)
+    t.preload("key")
+    assert wait_for(lambda: loads(client))
+    out = []
+    threads = [threading.Thread(target=lambda: out.append(t.think("x", Seen()))) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    time.sleep(0.1)
+    gate.set()
+    for thread in threads:
+        thread.join(2)
+    assert len(out) == 2 and all(o.data is not None for o in out)
+    assert len(loads(client)) == 1  # exactly one load, no abort
+    assert ("abort",) not in client.calls
+
+
+def test_abort_while_warming_cancels_the_command_and_leaves_the_load_running():
+    gate = threading.Event()
+    client = FakeOllama("qwen35", resident=(), load_gate=gate)
+    loader = Loader(client)
+    t = Tier1(client, FakeGovernor(), lambda: Llm(), lambda: CATALOG, loader=loader)
+    out = []
+    thread = threading.Thread(target=lambda: out.append(t.think("x", Seen())))
+    thread.start()
+    assert wait_for(lambda: loads(client))
+    t.abort()
+    thread.join(2)
+    assert out and out[0].cancelled and out[0].data is None
+    assert requests(client) == []
+    assert not loader.resident("qwen3.5:2b-q4_K_M")  # still loading...
+    gate.set()
+    assert wait_for(lambda: loader.resident("qwen3.5:2b-q4_K_M"))  # ...and it finished: the next one is warm
+    assert len(loads(client)) == 1
+
+
+def test_a_load_that_fails_says_why():
+    client = FakeOllama("qwen35", resident=())
+    client.load_error = LLMError("The model qwen3.5:2b-q4_K_M isn't on this laptop — run: ollama pull qwen3.5:2b-q4_K_M")
+    thought = tier1(client).think("x", Seen())
+    assert thought.data is None and "ollama pull" in thought.error and requests(client) == []
+
+
+def test_loader_loads_each_model_once_at_a_time():
+    gate = threading.Event()
+    client = FakeOllama("qwen35", resident=(), load_gate=gate)
+    loader = Loader(client)
+    first = loader.load("m:1b", options={"num_ctx": 4096}, keep_alive="10m", prompt="prefix")
+    second = loader.load("m:1b", options={"num_ctx": 4096}, keep_alive="10m", prompt="prefix")
+    assert first is second and not first.done and not loader.resident("m:1b")
+    gate.set()
+    assert first.wait(2) and first.error == "" and loader.resident("m:1b")
+    again = loader.load("m:1b", options={"num_ctx": 4096}, keep_alive="10m")
+    assert again is not first and again.wait(2)
+    assert [c[0] for c in client.calls] == ["generate", "load"]
+    assert client.calls[0][3]["timeout"] >= 60  # a cold load can take 15-20 s: its own long deadline
+
+
+def test_resident_is_false_when_ollama_doesnt_answer():
+    class Down(FakeOllama):
+        def loaded(self, timeout=2.0):
+            raise LLMError("Ollama isn't answering")
+
+    assert not Loader(Down()).resident("qwen3.5:4b")
 
 
 def test_errors_and_garbage_become_thoughts_without_data():
@@ -214,6 +371,16 @@ def test_preload_ignores_always_listening_chatter():
             break
         time.sleep(0.01)
     assert client.calls and client.calls[0][3]["num_predict"] == 1
+
+
+def test_nova_say_preload_loads_only_a_cold_model():
+    warm = FakeOllama("qwen35")
+    tier1(warm).preload("say")
+    time.sleep(0.1)
+    assert loads(warm) == []  # resident: a warm-up would only queue in front of his request
+    cold = FakeOllama("qwen35", resident=())
+    tier1(cold).preload("say")
+    assert wait_for(lambda: loads(cold))
 
 
 def test_pinned_choice_wins():
