@@ -4,7 +4,8 @@ Rules, in order:
 1. Empty -> ignored.
 2. A key session (Copilot key / chord) or a wake session ("Nova" alone, then this) -> accepted;
    the name is stripped if he said it anyway.
-3. Starts with the wake name ("Nova, ..." / "hey Nova ...", spellings from settings) -> accepted, name stripped.
+3. Addressed to the wake name ("Nova, ..." / "um, hey Nova ..." / "please Nova, open ...", spellings from
+   settings; see ``strip_wake``) -> accepted, name stripped.
 4. Nova busy (thinking / acting), in Passthrough or asleep -> nothing else counts.
 5. Another app is using the mic (a call) or the speakers are playing -> name or key required.
 6. Follow-up window (8 s after a command ran) -> anything that starts like a command.
@@ -22,6 +23,9 @@ from dataclasses import dataclass
 _TOKEN = re.compile(r"[^\W_]+(?:['’][^\W_]+)*")
 _SEPARATORS = " \t\r\n,.:;!?-–—…\"'“”"
 _GREETINGS = frozenset({"hey", "hi", "hello", "ok", "okay", "yo", "oh"})
+_WAKE_LEADS = _GREETINGS | {"um", "uh", "uhm", "er", "erm", "hmm", "mm", "so", "well", "and"}  # skipped before the name
+_MAX_WAKE_LEADS = 4
+_WAKE_WITHIN = 3  # the name counts within the first three words after them
 
 
 def _norm(token: str) -> str:
@@ -63,15 +67,8 @@ class WakeName:
         return word in self.words or (len(word) > 2 and word[-1] in "sh" and word[:-1] in self.words)
 
 
-def strip_wake(text: str, wake: WakeName) -> str | None:
-    """The rest of ``text`` if it starts with the wake name (after up to two greetings), else None."""
-    tokens = list(_TOKEN.finditer(text))
-    i = 0
-    while i < min(2, len(tokens)) and _norm(tokens[i].group()) in _GREETINGS:
-        i += 1
-    if i >= len(tokens):
-        return None
-    end = None
+def _name_end(text: str, tokens: list[re.Match[str]], i: int, wake: WakeName) -> int | None:
+    """Where the wake name ends if it sits at token ``i`` (a one-word or several-word spelling), else None."""
     for phrase in wake.phrases:
         span = tokens[i : i + len(phrase)]
         if (
@@ -79,13 +76,32 @@ def strip_wake(text: str, wake: WakeName) -> str | None:
             and tuple(_norm(t.group()) for t in span) == phrase
             and all(not text[a.end() : b.start()].strip() for a, b in zip(span, span[1:], strict=False))
         ):
-            end = span[-1].end()
-            break
-    if end is None and wake._is_word(_norm(tokens[i].group())):
-        end = tokens[i].end()
-    if end is None:
+            return span[-1].end()
+    if i < len(tokens) and wake._is_word(_norm(tokens[i].group())):
+        return tokens[i].end()
+    return None
+
+
+def strip_wake(text: str, wake: WakeName) -> str | None:
+    """The rest of ``text`` if it is addressed to the wake name (SPEC §5), else None.
+
+    Greetings and fillers in front are skipped ("um, Nova, open Chrome"). After them the name is the first word -
+    then anything may follow, or nothing ("Nova." alone) - or the second or third word, and then only when what
+    follows starts like a command ("please Nova, open Chrome"): chatter that merely mentions the name is no wake.
+    """
+    tokens = list(_TOKEN.finditer(text))
+    i = 0
+    while i < min(_MAX_WAKE_LEADS, len(tokens)) and _norm(tokens[i].group()) in _WAKE_LEADS:
+        i += 1
+    for at in range(i, min(i + _WAKE_WITHIN, len(tokens))):
+        end = _name_end(text, tokens, at, wake)
+        if end is None:
+            continue
+        rest = text[end:].lstrip(_SEPARATORS).strip()
+        if at == i or command_words(rest) is not None:
+            return rest
         return None
-    return text[end:].lstrip(_SEPARATORS).strip()
+    return None
 
 
 # --- does it start like a command? ------------------------------------------------------------------

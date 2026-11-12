@@ -61,6 +61,63 @@ def test_not_the_wake_name(heard):
     assert strip_wake(heard, WAKE) is None
 
 
+@pytest.mark.parametrize(
+    ("heard", "rest"),
+    [
+        ("Um, Nova, open Chrome.", "open Chrome."),  # the logged misses: a filler in front of the name
+        ("Uh Nova pause", "pause"),
+        ("So, Nova, new tab", "new tab"),
+        ("Well, Nova, scroll down", "scroll down"),
+        ("And Nova, mute", "mute"),
+        ("Okay, so, um, Nova, open Notepad", "open Notepad"),
+        ("Um, Nova.", ""),
+        ("Hey, um, no va, open Chrome", "open Chrome"),  # a two-word spelling behind fillers
+    ],
+)
+def test_fillers_before_the_name_are_skipped(heard, rest):
+    assert strip_wake(heard, WakeName.of("Nova", ["no va"])) == rest
+
+
+@pytest.mark.parametrize(
+    ("heard", "rest"),
+    [
+        ("Please Nova, open Chrome", "open Chrome"),
+        ("Alright then Nova, new tab", "new tab"),
+        ("Excuse me Nova, can you open Spotify", "can you open Spotify"),
+        ("Um, quick, Nova, pause the music", "pause the music"),
+    ],
+)
+def test_the_name_as_word_two_or_three_wakes_when_a_command_follows(heard, rest):
+    assert strip_wake(heard, WAKE) == rest
+
+
+@pytest.mark.parametrize(
+    "heard",
+    [
+        "I think Nova is cool",
+        "My friend Nova opened a cafe",
+        "Is Nova listening",
+        "The new Nova update broke everything",
+        "Thanks Nova.",  # the name alone counts only at the front
+        "I told you that Nova, open Chrome trick",  # past the third word
+        "Did you ask her if Nova could open it",
+    ],
+)
+def test_chatter_that_mentions_the_name_is_not_a_wake(heard):
+    assert strip_wake(heard, WAKE) is None
+    assert not judge(heard).accepted
+
+
+def test_misheard_spellings_from_the_logs_are_on_by_default():
+    from nova.config import Settings
+
+    wake = WakeName.of("Nova", Settings().wake_spellings)
+    for heard in ("No va, open Chrome", "Noba, open Chrome", "Noma open Chrome", "um, noba, open Chrome"):
+        assert strip_wake(heard, wake) == "open Chrome", heard
+    assert strip_wake("No, value it properly", wake) is None
+    assert strip_wake("No. Va banque", wake) is None  # two sentences: not the two-word spelling
+
+
 def test_wake_name_opens_even_when_always_listening_is_off():
     decision = judge("Nova, open Chrome", always_listening=False)
     assert decision.accepted and decision.via == "wake" and decision.text == "open Chrome"

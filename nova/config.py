@@ -83,7 +83,8 @@ class Llm:
 @dataclass(frozen=True)
 class Settings:
     wake_name: str = "Nova"
-    wake_spellings: tuple[str, ...] = ()  # other ways speech-to-text writes the name
+    # Other ways speech-to-text writes the name. These three are what a week of logs held for "Nova".
+    wake_spellings: tuple[str, ...] = ("no va", "noba", "noma")
     chord: str = "ctrl+alt+n"
     triggers: Triggers = field(default_factory=Triggers)
     audio: Audio = field(default_factory=Audio)
@@ -99,8 +100,8 @@ DEFAULT_YAML = """\
 
 # Say this name to talk to Nova ("Nova, open Chrome").
 wake_name: Nova
-# Other ways speech-to-text writes the name, if Nova misses it, e.g. [Novah, no va].
-wake_spellings: []
+# Other ways speech-to-text writes the name (these were seen for "Nova"; change them with the name).
+wake_spellings: [no va, noba, noma]
 
 # Fallback chord: same hold / tap behaviour as the Copilot key.
 chord: ctrl+alt+n
