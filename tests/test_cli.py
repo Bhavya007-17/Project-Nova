@@ -73,3 +73,12 @@ def test_bench_stt_dispatch(monkeypatch):
     assert cli.main(["bench-stt"]) == 0
     assert cli.main(["bench-stt", "--live", "5"]) == 0
     assert seen == [0, 5]
+
+
+def test_record_set_dispatch(monkeypatch):
+    seen = []
+    monkeypatch.setattr("nova.recordset.main", lambda **kw: seen.append(kw) or 0)
+    assert cli.main(["record-set"]) == 0
+    assert cli.main(["record-set", "--list", "--seconds", "5", "--device", "Jabra"]) == 0
+    assert seen == [{"list_only": False, "seconds": 4.0, "device": None},
+                    {"list_only": True, "seconds": 5.0, "device": "Jabra"}]

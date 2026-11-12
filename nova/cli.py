@@ -32,6 +32,10 @@ def _parser() -> argparse.ArgumentParser:
     island.add_argument("scene", nargs="?", choices=NAMES, metavar="SCENE", help="loop one scene: " + ", ".join(NAMES))
     bench = sub.add_parser("bench-stt", help="speech-to-text accuracy (WER) and speed on the recordings")
     bench.add_argument("--live", type=int, default=0, metavar="N", help="also replay N recordings in real time through the live worker")
+    record_set = sub.add_parser("record-set", help="read 30 short commands aloud once (~3 min) for bench-stt --set")
+    record_set.add_argument("--list", action="store_true", help="only print the lines; record nothing")
+    record_set.add_argument("--seconds", type=float, default=4.0, metavar="S", help="length of each take (default 4)")
+    record_set.add_argument("--device", help="mic to use (part of its name); default: audio.device in settings.yaml")
     say = sub.add_parser("say", help="run a command from text, no mic (the whole brain + real actions)")
     say.add_argument("text")
     say.add_argument("--dry", action="store_true", help="only show the plan; do nothing")
@@ -95,6 +99,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         from .stt import bench
 
         return bench.run(live=args.live)
+    if command == "record-set":
+        from . import recordset
+
+        return recordset.main(list_only=args.list, seconds=args.seconds, device=args.device)
     if command == "say":
         from . import say
 
