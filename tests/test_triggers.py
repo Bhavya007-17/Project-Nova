@@ -10,6 +10,7 @@ from nova.bus import Bus
 from nova.config import Settings, Triggers as TriggerSettings
 from nova.events import (
     AlwaysListeningChanged,
+    AnswerHeard,
     BrainProgress,
     CommandFinished,
     ConfigChanged,
@@ -237,6 +238,26 @@ def test_enter_confirms_through_the_hook_while_the_island_asks(rig):
     r.triggers.key_event(TriggerEvent("answer", True, time.perf_counter(), "enter"))
     action = r.next(IslandAction)
     assert (action.what, action.via) == ("yes", "key")
+
+
+def speak(r, n, text, talk_s):
+    r.bus.publish(SpeechStarted(n, time.perf_counter()))
+    time.sleep(talk_s)
+    r.bus.publish(SpeechEnded(n, "silence", np.zeros(1600, np.float32), 0, 1600, 1600, time.perf_counter()))
+    r.bus.publish(FinalTranscript(n, text, text, "silence", 100.0, 200.0, 1000.0))
+
+
+def test_a_tiny_yes_does_not_answer_but_enter_and_a_real_yes_do(rig):
+    r = rig()
+    asking(r, "confirm")
+    speak(r, 2, "Yeah.", talk_s=0.1)  # a 100 ms clip: speech-to-text invents these
+    gated = r.next(Gated, where=lambda e: e.utterance == 2)
+    assert not gated.accepted and gated.via == "answer-short"
+    assert r.keys.asking == "confirm"  # still asking
+    r.triggers.key_event(TriggerEvent("answer", True, time.perf_counter(), "enter"))
+    assert r.next(IslandAction).what == "yes"
+    speak(r, 3, "Yes.", talk_s=0.5)
+    assert r.next(AnswerHeard).text == "Yes."
 
 
 def test_number_key_picks_a_choice(rig):

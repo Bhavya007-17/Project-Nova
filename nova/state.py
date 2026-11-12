@@ -46,6 +46,8 @@ CONFIRM_S = 15.0  # SPEC §6: 15 s without an answer = cancel
 CLARIFY_S = 20.0
 CLAIM_S = 1.0  # speech that started at most this long before a key press belongs to the key session
 DICTATION_SILENCE_S = 10.0  # SPEC §11: dictation ends after this long without speech
+ANSWER_MIN_S = 0.4  # a spoken answer is at least this long (speech-to-text invents "yeah" on tiny clips)
+_KEEP_SPOKEN = 8  # utterances whose start / end are remembered until their finals arrive
 
 _BUSY = frozenset({State.THINKING, State.ACTING})
 _ASKING = frozenset({State.CONFIRM, State.CLARIFY})
@@ -235,6 +237,15 @@ class Session:
 
 
 @dataclass(frozen=True)
+class Spoken:
+    """When an utterance started and ended (its final arrives later and is judged by these)."""
+
+    utterance: int
+    started: float
+    ended: float | None = None  # None: still talking
+
+
+@dataclass(frozen=True)
 class Machine:
     state: State = State.IDLE
     session: Session | None = None
@@ -242,6 +253,8 @@ class Machine:
     deadline: float | None = None  # when the current state times out
     follow_up_until: float = 0.0
     asleep: bool = False
+    spoken: tuple[Spoken, ...] = ()  # the last few utterances, oldest first
+    asked_at: float | None = None  # Confirm / Clarify: when this question appeared
 
 
 @dataclass(frozen=True)
@@ -297,6 +310,22 @@ def _speaking_mine(m: Machine) -> bool:
     return m.session is not None and m.speaking is not None and m.speaking[0] == m.session.utterance
 
 
+def spoken(m: Machine, utterance: int) -> Spoken | None:
+    return next((s for s in m.spoken if s.utterance == utterance), None)
+
+
+def not_an_answer(m: Machine, utterance: int) -> tuple[str, str] | None:
+    """Why this utterance can't answer the question on screen (SPEC §5, §14), as (reason, plain words); None = it can.
+
+    An answer began after the question appeared and lasted at least ``ANSWER_MIN_S``."""
+    said = spoken(m, utterance)
+    if said is None or m.asked_at is None or said.started < m.asked_at:
+        return "answer-early", "began before the question appeared"
+    if said.ended is None or said.ended - said.started < ANSWER_MIN_S:
+        return "answer-short", f"shorter than {round(ANSWER_MIN_S * 1000)} ms"
+    return None
+
+
 def addressing(m: Machine, utterance: int, now: float) -> Addressing:
     """What the gate should know about this utterance."""
     session = m.session if _mine(m, utterance) else None
@@ -325,7 +354,8 @@ def _power(m: Machine, e: Power) -> Step:
     if e.on and m.state is State.OFF:
         return _go(Machine(state=State.OFF, asleep=m.asleep), State.IDLE, "Nova is on")
     if not e.on and m.state is not State.OFF:
-        return _go(m, State.OFF, "Nova is off", session=None, speaking=None, deadline=None, follow_up_until=0.0)
+        return _go(m, State.OFF, "Nova is off", session=None, speaking=None, deadline=None, follow_up_until=0.0,
+                   spoken=(), asked_at=None)
     return Step(m)
 
 
@@ -392,7 +422,8 @@ def _cancel(m: Machine, e: Cancel) -> Step:
 
 
 def _speech_start(m: Machine, e: SpeechStart) -> Step:
-    m = replace(m, speaking=(e.utterance, e.at))
+    others = tuple(s for s in m.spoken if s.utterance != e.utterance)
+    m = replace(m, speaking=(e.utterance, e.at), spoken=(*others, Spoken(e.utterance, e.at))[-_KEEP_SPOKEN:])
     if m.state is State.DICTATING and not _finishing(m):
         return Step(replace(m, deadline=None))  # talking: the silence clock stops
     session = m.session
@@ -404,6 +435,10 @@ def _speech_start(m: Machine, e: SpeechStart) -> Step:
 def _speech_end(m: Machine, e: SpeechEnd) -> Step:
     if m.speaking is not None and m.speaking[0] == e.utterance:
         m = replace(m, speaking=None)
+    if e.reason == "cancel":  # no final follows
+        m = replace(m, spoken=tuple(s for s in m.spoken if s.utterance != e.utterance))
+    else:
+        m = replace(m, spoken=tuple(replace(s, ended=e.at) if s.utterance == e.utterance else s for s in m.spoken))
     if m.state is State.DICTATING:
         if not _finishing(m):
             return Step(replace(m, deadline=e.at + DICTATION_SILENCE_S))
@@ -437,7 +472,11 @@ def _heard(m: Machine, e: Heard) -> Step:
             return _idle(m, "dictation stopped", *typed, Dictation(False, "tap"))
         return Step(m, typed)
     if m.state in _ASKING:
-        return Step(m, (Answer(e.text, e.utterance),))
+        refused = not_an_answer(m, e.utterance)
+        if refused is None:
+            return Step(m, (Answer(e.text, e.utterance),))
+        heard = e.text.strip()  # Enter, the buttons and a real answer still count; this one changes nothing
+        return Step(m, (Ignored(Decision(False, refused[0], heard, heard, f"not an answer: {refused[1]}"), e.utterance),))
     mine = _mine(m, e.utterance)
     decision = decide(e.text, addressing(m, e.utterance, e.at), e.env)
     if not decision.accepted:
@@ -496,7 +535,8 @@ def _progress(m: Machine, e: Progress) -> Step:
     wait = _PROGRESS_DEADLINE.get(e.state)
     effects = (Dictation(True, e.why or "plan"),) if e.state is State.DICTATING else ()
     return _go(m, e.state, e.why or e.state.value, *effects, session=None,
-               deadline=e.at + wait if wait is not None else None)
+               deadline=e.at + wait if wait is not None else None,
+               asked_at=e.at if e.state in _ASKING else None)
 
 
 def _sleep(m: Machine, e: Sleep) -> Step:

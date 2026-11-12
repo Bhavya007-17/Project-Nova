@@ -296,10 +296,73 @@ def test_passthrough_ignores_plain_speech_and_ends_on_a_tap():
 
 def test_confirm_takes_answers_and_times_out():
     run = Run()(heard(1, "Nova, submit it", 1.0), Progress(State.CONFIRM, 1.4))
-    run(heard(2, "yes", 3.0))
+    run(SpeechStart(2, 2.2), SpeechEnd(2, "silence", 2.8), heard(2, "yes", 3.0))
     assert run.has(Answer)[0].text == "yes" and run.state is State.CONFIRM
     run(Tick(1.4 + 15.0))
     assert run.state is State.IDLE and run.has(Cancelled)[0].why == "no answer"
+
+
+# --- a yes must be a real yes (SPEC §5, §14) -----------------------------------------------------------
+
+
+def asking(kind=State.CONFIRM, at=10.0):
+    return Run()(heard(1, "Nova, send it", at - 0.5), Progress(kind, at))
+
+
+def test_a_tiny_clip_that_began_before_the_question_never_answers_it():
+    # The logged case: the Confirm appeared, and 262 ms later the final of a 224 ms clip said "Yeah."
+    run = asking(at=10.0)
+    run(SpeechStart(2, 9.95), SpeechEnd(2, "silence", 10.174), heard(2, "Yeah.", 10.262))
+    assert not run.has(Answer) and run.state is State.CONFIRM
+    assert run.has(Ignored)[0].decision.via == "answer-early"
+
+
+def test_speech_under_way_when_the_question_appears_never_answers_it():
+    run = Run()(heard(1, "Nova, send it", 9.5), SpeechStart(2, 9.8), Progress(State.CONFIRM, 10.0))
+    run(SpeechEnd(2, "silence", 11.5), heard(2, "yes that one is fine", 11.7))
+    assert not run.has(Answer) and run.has(Ignored)[0].decision.via == "answer-early"
+    assert run.state is State.CONFIRM and outputs(run.m).asking == "confirm"  # Enter / the buttons still answer
+
+
+def test_an_answer_shorter_than_400_ms_never_counts():
+    run = asking(at=10.0)
+    run(SpeechStart(2, 10.6), SpeechEnd(2, "silence", 10.9), heard(2, "Yeah.", 11.0))
+    assert not run.has(Answer) and run.has(Ignored)[0].decision.via == "answer-short"
+    assert run.state is State.CONFIRM
+
+
+def test_a_600_ms_yes_that_began_after_the_question_answers_it():
+    run = asking(at=10.0)
+    run(SpeechStart(2, 10.5), SpeechEnd(2, "silence", 11.1), heard(2, "Yes.", 11.3))
+    assert run.has(Answer)[0].text == "Yes." and not run.has(Ignored)
+
+
+def test_clarify_answers_follow_the_same_rule():
+    run = asking(State.CLARIFY, at=10.0)
+    run(SpeechStart(2, 9.9), SpeechEnd(2, "silence", 10.7), heard(2, "the second one", 10.9))
+    assert not run.has(Answer)
+    run(SpeechStart(3, 11.0), SpeechEnd(3, "silence", 11.8), heard(3, "the second one", 12.0))
+    assert run.has(Answer)[0].utterance == 3
+
+
+def test_an_utterance_nobody_saw_start_is_not_an_answer():
+    run = asking(at=10.0)(heard(7, "yes", 12.0))
+    assert not run.has(Answer) and run.has(Ignored)[0].decision.via == "answer-early"
+
+
+def test_each_question_has_its_own_clock():
+    # He answers the first question; a second one appears while his next words are already under way.
+    run = asking(State.CLARIFY, at=10.0)
+    run(SpeechStart(2, 10.5), SpeechEnd(2, "silence", 11.2), heard(2, "the first one", 11.4))
+    assert run.has(Answer)
+    run(Progress(State.ACTING, 11.5), SpeechStart(3, 11.6), Progress(State.CONFIRM, 12.0))
+    run(SpeechEnd(3, "silence", 12.4), heard(3, "okay", 12.6))
+    assert not run.has(Answer) and run.has(Ignored)[0].decision.via == "answer-early"
+
+
+def test_a_key_press_still_interrupts_a_question():
+    run = asking(at=10.0)(Press("copilot", 10.3))
+    assert run.state is State.LISTENING and run.has(Cancelled)[0].why == "superseded"
 
 
 def test_asking_arms_the_answer_keys_and_no_cancels_like_esc():
