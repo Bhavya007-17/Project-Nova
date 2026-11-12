@@ -13,3 +13,8 @@
 Before/after latency table, soak numbers, known issues.
 
 Commit `stage 11: speed + soak`.
+
+## Added 2026-11-11
+- The soak includes talk sessions: 30 min of sessions with a video playing and someone else talking. Count actions he didn't ask for (target: 0 risky, ≤ 1 safe).
+- `tier0.py` is ~1,300 lines with `parse()` at ~100: split it only if it is slowing work down, and only with the eval green before and after.
+- Session speed candidates, each measured on real session audio before it is kept: acting on words that are stable across two partial decodes (needs word timestamps and a way to take already-run words out of the final), and a learned end-of-turn check (Smart Turn v3, 8 MB, CPU) in place of the fixed 300 ms pause. Keep one only if clauses start ≥ 150 ms sooner at p50 with no extra cut-offs across his demo script.

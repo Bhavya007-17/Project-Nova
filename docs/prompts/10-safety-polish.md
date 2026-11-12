@@ -17,3 +17,8 @@ Risk tests green. A 30-min idle measurement (CPU, RAM, VRAM) in the report.
 Reboot → Nova starts on its own. Try a send/submit command → the confirm appears; say "no" → nothing happens. Open Fusion → Nova is still snappy and Fusion is unaffected.
 
 Commit `stage 10: safety + polish`. Report.
+
+## Added 2026-11-11
+- The risk audit covers the new paths: talk sessions (07b), `ui_click` and dialog labels, number tags and grid clicks, mouse verbs, `open_path`, camera, screenshot, system lock / sleep (07c).
+- Settings panel also holds: session idle time, numbers on / off and their scope, LLM runtime.
+- The brain thread can block 20–27 s on one action (`hands.py:49`, `chrome.py:48`): every wait is cancellable by voice.

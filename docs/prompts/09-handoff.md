@@ -17,3 +17,8 @@
 - "on Claude, turn on voice" → Claude's voice mode starts; talk to Claude; Nova ignores you; tap Copilot to end.
 
 Commit `stage 09: handoff`. Report (include the uia-dump findings).
+
+## Added 2026-11-11
+- Agents by voice: "Nova, have Claude research X and tell me when it's done" starts the job, shows a chip and returns at once — also from inside a talk session (07b), which stays open.
+- Done detection needs two checks in a row (stop control gone + last message unchanged for ~5 s) before the toast.
+- Today handoff plans are only described, never run (`brain.py:223`, `router.py:199`), the schema has no `attach`, and Passthrough is never entered.

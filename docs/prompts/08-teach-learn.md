@@ -19,3 +19,9 @@ Unit tests: determinism filter, matching (paraphrases match, different intents d
 2. Ask something it can't do → "Show me?" → yes → do it while narrating → "done" → Save. Ask again in other words → it replays.
 
 Commit `stage 08: teach + learn`. Report.
+
+## Added 2026-11-11 (from the audit and the Atticus study)
+- Learn only from steps whose receipt (07c) shows the change it expected. Store names, roles and menu paths — never number tags, grid cells or screen coordinates.
+- Replay checks every step's receipt. A failed step hands the request back to Tier 1 once; if that works the skill is relearned, otherwise it is marked stale.
+- "no, I meant …" / "that's wrong" right after a learned skill ran unlearns it.
+- A skill that would need a Confirm never replays silently.
