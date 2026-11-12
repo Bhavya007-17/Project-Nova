@@ -314,6 +314,14 @@ def spoken(m: Machine, utterance: int) -> Spoken | None:
     return next((s for s in m.spoken if s.utterance == utterance), None)
 
 
+def _begun_after(m: Machine, utterance: int, now: float) -> Spoken | None:
+    """The first utterance he began after ``utterance`` (the name alone) whose final hasn't arrived yet."""
+    name = spoken(m, utterance)
+    later = [s for s in m.spoken if s.utterance > utterance and now - s.started <= WAKE_WAIT_S
+             and (name is None or s.started >= name.started)]
+    return min(later, key=lambda s: s.utterance) if later else None
+
+
 def not_an_answer(m: Machine, utterance: int) -> tuple[str, str] | None:
     """Why this utterance can't answer the question on screen (SPEC §5, §14), as (reason, plain words); None = it can.
 
@@ -484,8 +492,16 @@ def _heard(m: Machine, e: Heard) -> Step:
             return _idle(m, decision.why, Ignored(decision, e.utterance))
         return Step(m, (Ignored(decision, e.utterance),))
     if decision.wake_only:
-        return _go(m, State.LISTENING, "listening for the command", Preload("wake"), Woke(decision, e.utterance),
-                   session=Session("wake"), deadline=e.at + WAKE_WAIT_S)
+        effects = (Preload("wake"), Woke(decision, e.utterance))
+        begun = _begun_after(m, e.utterance, e.at)
+        if begun is None:
+            return _go(m, State.LISTENING, "listening for the command", *effects, session=Session("wake"),
+                       deadline=e.at + WAKE_WAIT_S)
+        # He went on to the command before this final arrived: that utterance is the command.
+        session = Session("wake", begun.utterance)
+        if begun.ended is None:
+            return _go(m, State.LISTENING, "listening for the command", *effects, session=session, deadline=None)
+        return _go(m, State.THINKING, "heard you", *effects, session=session, deadline=e.at + HEARD_WAIT_S)
     command = Command(decision, e.utterance)
     if m.state is State.PASSTHROUGH:
         return Step(m, (command,))  # "Nova, ..." during voice mode runs; voice mode goes on

@@ -228,6 +228,42 @@ def test_name_alone_opens_a_session_for_the_next_utterance():
     assert decision.via == "wake" and decision.text == "I'm gonna open a restaurant"
 
 
+def test_name_alone_claims_the_command_he_already_started():
+    # Logged shape (~7 % of name-alone sessions): he starts the command 400 ms after the name; the name's final
+    # lands 50 ms later. Nothing claimed that utterance and it was dropped as "busy".
+    run = Run()(SpeechStart(1, 0.0), SpeechEnd(1, "silence", 0.45), SpeechStart(2, 0.85), heard(1, "Nova.", 0.9))
+    assert run.state is State.LISTENING and run.m.session.utterance == 2 and next_deadline(run.m) is None
+    run(SpeechEnd(2, "silence", 1.8))
+    assert run.state is State.THINKING
+    run(heard(2, "the blue folder please", 2.0))
+    decision = run.has(Command)[0].decision
+    assert decision.via == "wake" and decision.text == "the blue folder please"
+
+
+def test_name_alone_claims_a_short_command_that_already_ended():
+    run = Run()(SpeechStart(1, 0.0), SpeechEnd(1, "silence", 0.45), SpeechStart(2, 0.7), SpeechEnd(2, "silence", 1.2),
+                heard(1, "Nova.", 1.3))
+    assert run.state is State.THINKING and run.m.session.utterance == 2
+    assert next_deadline(run.m) == 1.3 + HEARD_WAIT_S
+    run(heard(2, "pause", 1.5))
+    assert run.has(Command)[0].decision.via == "wake" and not run.has(Ignored)
+
+
+def test_name_seen_in_live_words_then_a_pause_still_claims_the_command():
+    run = Run()(SpeechStart(1, 0.0), WakeHeard(1, 0.3), SpeechEnd(1, "silence", 0.45), SpeechStart(2, 0.85),
+                heard(1, "Nova.", 0.9), SpeechEnd(2, "silence", 1.8), heard(2, "new tab", 2.0))
+    assert run.has(Command)[0].decision.via == "wake"
+
+
+def test_name_alone_claims_only_fresh_speech():
+    from nova.state import Spoken
+
+    stale = Machine(spoken=(Spoken(9, 1.0, 2.0),))  # an utterance from long ago whose final never came
+    run = Run(stale)(SpeechStart(10, 30.0), SpeechEnd(10, "silence", 30.4), heard(10, "Nova.", 30.6))
+    assert run.state is State.LISTENING and run.m.session.utterance is None
+    assert next_deadline(run.m) == 30.6 + WAKE_WAIT_S
+
+
 def test_name_alone_then_nothing_times_out():
     run = Run()(heard(1, "Nova", 1.0), Tick(1.0 + WAKE_WAIT_S))
     assert run.state is State.IDLE
