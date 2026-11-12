@@ -5,29 +5,52 @@ Three numbers per set: "STT alone" decodes the whole file; "Nova path" runs the 
 gate + Silero + endpoint rules and decodes the segments it finds; "+ vocab" adds the
 vocab fix-up. ``--live N`` also plays N files through the real threaded worker in real
 time and measures how long after the end of speech the final text is ready.
+
+``--set fixtures/command-set`` scores the 30 commands from `nova record-set` instead: app names
+heard wrong, wake names missed, empty outputs, WER and decode time, per ``--backend``; with
+``--backend both`` it also applies Stage 07a's adoption rule for the name-biasing candidate.
 """
 
 from __future__ import annotations
 
+import gc
 import json
+import re
 import statistics
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 
 from .. import paths
+from ..actions.catalog import key_of, parse_aliases, short_name
 from ..audio import WavFeed, read_wav
 from ..bus import Bus
 from ..events import FinalTranscript, SpeechEnded, SpeechStarted
+from ..gate import WakeName, strip_wake
+from ..recordset import MANIFEST, Line, read_manifest
 from ..vad import FRAME, SAMPLE_RATE, EndpointRules, Endpointer, EnergyGate, Silero
 from ..vocab import Vocab, VocabFile
 from .wer import corpus_wer, word_errors
 
 CLIPPED_S = 0.25  # speech this close to the start of a file: the recorder began mid-word
+BACKENDS = ("parakeet", "sherpa")
+
+
+def load_backend(name: str):
+    """A warmed-up transcriber: ``parakeet`` (onnx-asr, greedy; Nova's default) or ``sherpa`` (the candidate)."""
+    if name == "parakeet":
+        from . import parakeet
+
+        return parakeet.load(paths.MODELS)
+    if name == "sherpa":
+        from . import sherpa
+
+        return sherpa.load(paths.MODELS)
+    raise ValueError(f"unknown backend {name!r} (parakeet or sherpa)")
 
 
 @dataclass(frozen=True)
@@ -111,12 +134,10 @@ def _wer_line(name: str, rows: Sequence[Row]) -> str:
     return f"  {name:<22}{len(rows):>5}   {wer('full')}   {wer('path')}   {wer('vocab')}"
 
 
-def run(live: int = 0, out=print) -> int:
+def run(live: int = 0, out=print, backend: str = "parakeet") -> int:
     items, others = find_items(paths.RECORDINGS)
-    from . import parakeet
-
     began = time.perf_counter()
-    stt = parakeet.load(paths.MODELS)
+    stt = load_backend(backend)
     vad = Silero(paths.MODELS / "silero" / "silero_vad.onnx")
     out(f"nova bench-stt · {stt.name} · loaded in {(time.perf_counter() - began):.1f} s (+ warm-up)")
     vocab_file = VocabFile(paths.VOCAB)
@@ -190,7 +211,9 @@ def run(live: int = 0, out=print) -> int:
                 flag = " (begins mid-word)" if r.clipped else ""
                 out(f"  {r.item.label}/{r.item.prompt} {errors}/{n}{flag}: \"{r.item.expected}\" -> \"{r.vocab}\"")
 
-    if live:
+    if live and backend != "parakeet":
+        out("\n(--live replays through Nova's own worker, which uses Parakeet: skipped for this backend)")
+    elif live:
         clean = [r.item for r in rows if not r.clipped] or [r.item for r in rows]
         picked = clean[:: max(1, len(clean) // live)][:live]
         if picked:
@@ -235,3 +258,182 @@ def _live(items: Sequence[Item], out) -> None:
     out(f"  final text after end of speech: p50 {_pct(final_ms, 50):.0f} ms · p95 {_pct(final_ms, 95):.0f} ms · max {max(final_ms, default=float('nan')):.0f}"
         f"   (n={len(finals)}; includes the 300/700 ms endpoint wait)")
     out(f"  decode p50 {_pct(stt_ms, 50):.0f} ms; decode started early in the pause for {early}/{len(finals)}")
+
+
+# --- the recorded command set (`nova record-set`) ------------------------------------------------------------
+
+_TOKEN = re.compile(r"[^\W_]+(?:['’][^\W_]+)*")
+
+
+def _name_words(text: str) -> list[str]:
+    """Words as the gate reads them: lowercase, no possessive "'s", no apostrophes."""
+    words = []
+    for match in _TOKEN.finditer(text):
+        word = match.group().lower().replace("’", "'")
+        if word.endswith("'s"):
+            word = word[:-2]
+        words.append(word.replace("'", ""))
+    return words
+
+
+def _is_url(target: str) -> bool:
+    return target.startswith(("http://", "https://"))
+
+
+def entity_keys(entity: str, aliases: Mapping[str, str]) -> frozenset[str]:
+    """Squashed spellings that make Nova act on the same thing as ``entity``: the name itself, every alias with
+    the same target, and the target app's full and vendor-less names ("Chrome" ~ "Google Chrome")."""
+    key = key_of(entity)
+    targets = {t for p, t in aliases.items() if key_of(p) == key}
+    targets |= {t for t in aliases.values() if not _is_url(t) and key in (key_of(t), key_of(short_name(t)))}
+    keys = {key} | {key_of(p) for p, t in aliases.items() if t in targets}
+    for target in targets:
+        if not _is_url(target):
+            keys |= {key_of(target), key_of(short_name(target))}
+    return frozenset(k for k in keys if k)
+
+
+def heard_entity(keys: Iterable[str], text: str) -> bool:
+    """Does a run of whole words in ``text`` squash to one of ``keys`` ("chat GPT" -> "chatgpt")?"""
+    keys = frozenset(keys)
+    words = _name_words(text)
+    for i in range(len(words)):
+        joined = ""
+        for word in words[i : i + 6]:
+            joined += word
+            if joined in keys:
+                return True
+    return False
+
+
+@dataclass(frozen=True)
+class SetResult:
+    line: Line
+    heard: str  # Nova path + vocab fix-up: the text the gate and Tier 0 would get
+    segments: tuple[str, ...]  # raw text of each decoded speech segment
+    ms: tuple[float, ...]  # decode time of each segment
+
+
+@dataclass(frozen=True)
+class SetScore:
+    items: int
+    entities: int
+    entity_errors: int
+    wake_items: int
+    wake_misses: int
+    empty: int  # decodes that returned no text
+    decodes: int
+    silent_items: int  # commands that ended with no text at all
+    wer: float
+    p50: float
+    p95: float
+    entity_misses: tuple[SetResult, ...]
+
+
+def score_set(results: Sequence[SetResult], aliases: Mapping[str, str], wake: WakeName) -> SetScore:
+    entities = errors = 0
+    misses: list[SetResult] = []
+    for result in results:
+        wrong = [e for e in result.line.entities if not heard_entity(entity_keys(e, aliases), result.heard)]
+        entities += len(result.line.entities)
+        errors += len(wrong)
+        if wrong:
+            misses.append(result)
+    ms = [m for r in results for m in r.ms]
+    return SetScore(
+        items=len(results),
+        entities=entities,
+        entity_errors=errors,
+        wake_items=sum(r.line.has_wake for r in results),
+        wake_misses=sum(r.line.has_wake and strip_wake(r.heard, wake) is None for r in results),
+        empty=sum(not text.strip() for r in results for text in r.segments),
+        decodes=sum(len(r.segments) for r in results),
+        silent_items=sum(not r.heard.strip() for r in results),
+        wer=corpus_wer((r.line.text, r.heard) for r in results),
+        p50=_pct(ms, 50),
+        p95=_pct(ms, 95),
+        entity_misses=tuple(misses),
+    )
+
+
+def adopt(base: SetScore, candidate: SetScore) -> tuple[bool, str]:
+    """Stage 07a's fixed rule: app-name errors at least halve and drop by >= 3, p95 rises <= 100 ms,
+    empty outputs don't rise."""
+    fixed = base.entity_errors - candidate.entity_errors
+    names = candidate.entity_errors * 2 <= base.entity_errors and fixed >= 3
+    slower = candidate.p95 - base.p95
+    ok = names and slower <= 100 and candidate.empty <= base.empty
+    why = (f"app-name errors {base.entity_errors} -> {candidate.entity_errors} (needs half and at least 3 fewer), "
+           f"p95 {base.p95:.0f} -> {candidate.p95:.0f} ms ({slower:+.0f}, needs <= +100), "
+           f"empty outputs {base.empty} -> {candidate.empty} (must not rise)")
+    return ok, why
+
+
+def wake_verdict(score: SetScore) -> str:
+    if not score.wake_items:
+        return "No recorded line starts with the wake name."
+    said = f"Wake name missed {score.wake_misses} of {score.wake_items}"
+    if score.wake_misses * 15 > score.wake_items:
+        return f"{said}: more than 1 in 15, so revisit the wake-name design (SPEC §4)."
+    return f"{said}: within 1 in 15."
+
+
+def find_set(folder: Path) -> list[tuple[Line, Path]]:
+    """Recorded lines of a `nova record-set` folder whose WAV is on disk."""
+    folder = Path(folder)
+    lines, recorded = read_manifest(folder / MANIFEST)
+    return [(line, folder / recorded[line.id]) for line in lines
+            if line.id in recorded and (folder / recorded[line.id]).is_file()]
+
+
+def _print_score(score: SetScore, out) -> None:
+    out(f"  app names wrong    {score.entity_errors} of {score.entities}")
+    out(f"  wake name missed   {score.wake_misses} of {score.wake_items}")
+    out(f"  empty outputs      {score.empty} of {score.decodes} decodes ({score.silent_items} commands with no text)")
+    out(f"  WER                {100 * score.wer:.1f} %  (Nova path + vocab fix-up, case / punctuation normalized)")
+    out(f"  decode             p50 {score.p50:.0f} ms · p95 {score.p95:.0f} ms  (n={score.decodes})")
+    if score.entity_misses:
+        out("  app names heard wrong:")
+        for r in score.entity_misses:
+            out(f"    {r.line.id} \"{r.line.text}\" -> \"{r.heard}\"")
+
+
+def run_set(folder: Path, backends: Sequence[str] = ("parakeet",), out=print) -> int:
+    """Score the recorded command set with each backend on the same speech segments."""
+    from ..config import ConfigStore
+
+    items = find_set(folder)
+    if not items:
+        out(f"No recorded commands in {folder}. Record them first: uv run nova record-set")
+        return 1
+    vad = Silero(paths.MODELS / "silero" / "silero_vad.onnx")
+    prepared = [(line, segment(read_wav(wav), vad)[0]) for line, wav in items]
+    vocab = VocabFile(paths.VOCAB).current()
+    aliases = parse_aliases(paths.ALIASES.read_text(encoding="utf-8-sig"))
+    settings = ConfigStore(paths.SETTINGS).load()
+    wake = WakeName.of(settings.wake_name, settings.wake_spellings)
+    out(f"nova bench-stt --set · {len(items)} recorded commands in {folder} "
+        f"({sum(line.has_wake for line, _ in items)} start with \"{settings.wake_name}\")")
+    scores: dict[str, SetScore] = {}
+    for name in backends:
+        began = time.perf_counter()
+        stt = load_backend(name)
+        out(f"\n{stt.name} · loaded in {time.perf_counter() - began:.1f} s (+ warm-up)")
+        results = []
+        for line, segments in prepared:
+            texts, ms = [], []
+            for pcm in segments:
+                t = time.perf_counter()
+                texts.append(stt.transcribe(pcm))
+                ms.append((time.perf_counter() - t) * 1000)
+            heard = vocab.correct(" ".join(t for t in texts if t)).text
+            results.append(SetResult(line, heard, tuple(texts), tuple(ms)))
+        scores[name] = score_set(results, aliases, wake)
+        _print_score(scores[name], out)
+        del stt
+        gc.collect()
+    if "parakeet" in scores and "sherpa" in scores:
+        ok, why = adopt(scores["parakeet"], scores["sherpa"])
+        out(f"\nAdopt sherpa + hotwords? {'YES' if ok else 'no'}: {why}")
+    out("\n" + wake_verdict(scores[backends[0]]))
+    return 0

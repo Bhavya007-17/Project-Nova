@@ -32,6 +32,11 @@ def _parser() -> argparse.ArgumentParser:
     island.add_argument("scene", nargs="?", choices=NAMES, metavar="SCENE", help="loop one scene: " + ", ".join(NAMES))
     bench = sub.add_parser("bench-stt", help="speech-to-text accuracy (WER) and speed on the recordings")
     bench.add_argument("--live", type=int, default=0, metavar="N", help="also replay N recordings in real time through the live worker")
+    bench.add_argument("--set", type=Path, metavar="DIR",
+                       help="score a `nova record-set` folder (app names, wake name, empties, WER, p50/p95) instead")
+    bench.add_argument("--backend", choices=("parakeet", "sherpa", "both"), default="parakeet",
+                       help="decoder: parakeet (default), sherpa (beam search + hotwords; get_models.py --sherpa), "
+                            "both (with --set: also says whether the candidate passes Stage 07a's rule)")
     record_set = sub.add_parser("record-set", help="read 30 short commands aloud once (~3 min) for bench-stt --set")
     record_set.add_argument("--list", action="store_true", help="only print the lines; record nothing")
     record_set.add_argument("--seconds", type=float, default=4.0, metavar="S", help="length of each take (default 4)")
@@ -98,7 +103,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if command == "bench-stt":
         from .stt import bench
 
-        return bench.run(live=args.live)
+        backends = bench.BACKENDS if args.backend == "both" else (args.backend,)
+        if args.set is not None:
+            return bench.run_set(args.set, backends)
+        codes = [bench.run(live=args.live, backend=backend) for backend in backends]
+        return max(codes)
     if command == "record-set":
         from . import recordset
 
