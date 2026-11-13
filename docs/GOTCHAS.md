@@ -45,6 +45,22 @@ memories aren't shared, this file is.
   speech where 1.5 didn't. Boosting every installed app (180) raised WER on "check" from 14.4 % to 19.0 %; his own
   names only (32): 14.4 % vs 13.7 % greedy onnx-asr. Its wheel brings its own `onnxruntime.dll` (1.28); it loads
   next to `onnxruntime` 1.31 in either import order (the Python package links ORT into its own `.pyd`).
+  2026-11-13, "check" session through Nova's own path (segmented, 40 recordings): sherpa + hotwords 15.7 % WER,
+  p95 196 ms; Parakeet as shipped 14.4 %, p95 156 ms; no empty outputs on either. Not adopted on that — the decision
+  waits for `nova record-set` (his voice, his app names): `nova bench-stt --set fixtures/command-set --backend both`.
+- **A Silero restarted from zero after every skipped frame misses soft speech.** The energy gate skips frames in the
+  middle of quiet words. 134 fixture recordings at −30 dB: 14 with no speech start when `skip` reset the state, 7
+  when it keeps it — the same 7 as with no gate at all (normal level: 4 → 3). The gate still skips ~55 % of frames.
+- **The padded empty-output retry belongs on finals only.** On partials it doubled the decode and held up the next
+  one: live stt p95 800 ms against 339 ms in the bench. `transcribe(pcm, retry_empty=False)` for live words.
+- **Judge the follow-up window by when he started speaking.** The text arrives 0.3–2 s after he stops; judged by
+  arrival, a command begun inside the 8 s window was rejected. Speech that began before the window opened is not a
+  follow-up either (chatter from before the command).
+- **Un-addressed speech is capped at 10 s** (no key, no session): room chatter ran to the 30 s cap 148 times in a
+  week, each one a 30 s decode. A key or the name lifts the cap, also mid-utterance.
+- **Replay before changing the gate.** A week of logged decisions (7,050) through the Stage 07a gate: accepted
+  314 → 326 (follow-up 9 → 14, name 110 → 116, always-listening 5 → 6), none that ran before is rejected now. The
+  throwaway script rebuilds each situation from the logged `via`; counts only, never the text.
 - **Recordings:** in the private voicebar sessions only "check" is clean; "quiet"/"noise" start mid-word (~46 % WER that
   says nothing about STT). `expected_text` is the WER reference. Score WER after normalizing case and punctuation.
 
@@ -123,6 +139,8 @@ memories aren't shared, this file is.
   `taskkill /F /T /PID <pid>`.
 - Bash heredocs eat backslashes on Windows (`"\\0"` became a NUL byte in a .py file): write files that contain
   backslashes with an editor tool, not heredocs.
+- Bare `python` in Git Bash can be the Microsoft Store stub: it hangs instead of failing, and `a || b` never reaches
+  `b`. Always `uv run python`. Give pytest a `timeout` when its output goes through a pipe.
 
 ## Working on someone's real laptop
 - Anything that sends keys, pastes or takes focus goes to whatever window is in front. Run focus-free checks first,

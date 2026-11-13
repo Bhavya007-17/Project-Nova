@@ -17,8 +17,8 @@ Nova says when they're done. It started as Bhavya's personal project and is now 
 | Stage | | State |
 |---|---|---|
 | 00–06 | skeleton + doctor, ears (STT), triggers, island, Windows hands + Tier 0, local brain (Tier 1), Chrome + Canvas | done |
-| 07 | dictation | done, except the LLM misheard-word fix (`nova/dictation/cleanup.py`): built and unit-tested, not working live yet (07a finishes it) |
-| 07a | fast + hearing (model never times out, ~1 s loose requests, gate fixes) | not started |
+| 07 | dictation | done; the LLM misheard-word fix (`nova/dictation/cleanup.py`) shares the planner's model since 07a — check it in the 07a live demo |
+| 07a | fast + hearing (model never times out, ~1 s loose requests, gate fixes) | built and measured; still open: the live demo, and the name-biasing decision (needs `nova record-set`, 3 min of reading) |
 | 07b | talk sessions (open the mic once, act clause by clause) | not started |
 | 07c | control anything (scroll cascade, PDFs, click by name / number / grid, camera, screenshot) | not started |
 | 08 | teach + learn ("Show me?", learned skills ⚡) | not started — island UI states exist |
@@ -44,10 +44,10 @@ Nova says when they're done. It started as Bhavya's personal project and is now 
 | Path | What lives there |
 |---|---|
 | `nova/cli.py` | every `nova …` command |
-| `nova/audio.py`, `vad.py`, `stt/`, `speech.py` | mic → Silero VAD → Parakeet → text |
+| `nova/audio.py`, `vad.py`, `stt/`, `speech.py` | mic → Silero VAD → Parakeet → text (`stt/sherpa.py`: a bench-only candidate decoder; `recordset.py`: his own test set) |
 | `nova/hook.py`, `keys.py`, `triggers.py`, `gate.py`, `state.py` | Copilot key / chord / "Nova …" / always-listening → state machine |
 | `nova/island/` (+ `qml/`) | the Dynamic-Island UI (`view.py` = pure view model) |
-| `nova/brain/` | `tier0.py` fast patterns, `tier1.py` + `llm.py` local LLM, `plan.py` schema, `validate.py`, `risk.py`, `router.py`, `executor.py` |
+| `nova/brain/` | `tier0.py` fast patterns, `tier1.py` + `llm.py` + `llama_server.py` local LLM (llama-server child, Ollama as fallback), `plan.py` schema, `validate.py`, `risk.py`, `router.py`, `executor.py` |
 | `nova/actions/` | Windows hands: apps / Start-menu catalog, windows, input, UIA, Chrome API |
 | `nova/chrome/` + `extension/` | MV3 extension + native-messaging bridge (page map, click, fill, Canvas) |
 | `nova/dictation/` | dictation session, rules, target, LLM cleanup, history |
@@ -83,7 +83,8 @@ Nova says when they're done. It started as Bhavya's personal project and is now 
 
 ## Commands
 `uv run nova` (tray app) · `nova doctor` · `nova listen [--wav f]` · `nova keys --probe` · `nova island --demo [scene]` ·
-`nova say "<text>" [--dry]` · `nova eval` · `nova bench-stt` · `nova bench-llm` · `nova latency` ·
+`nova say "<text>" [--dry]` · `nova eval` · `nova bench-stt [--set dir --backend both]` · `nova record-set` ·
+`nova bench-llm [--runtime ollama,llama-server]` · `nova latency` ·
 `nova chrome --install | --status` · `uv run pytest`
 Chrome self-test (Chrome for Testing, throwaway profile): `uv run python extension/test/selftest.py [--llm]`
 Setup on a fresh clone: `powershell -ExecutionPolicy Bypass -File scripts\setup.ps1`
