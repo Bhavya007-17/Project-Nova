@@ -266,6 +266,7 @@ class Spoken:
     utterance: int
     started: float
     ended: float | None = None  # None: still talking
+    follow_up: bool = False  # he began inside the follow-up window (or while Nova worked on his command)
 
 
 @dataclass(frozen=True)
@@ -372,9 +373,10 @@ def addressing(m: Machine, utterance: int, now: float) -> Addressing:
     session = m.session if _mine(m, utterance) else None
     named = session is not None and session.trigger == "named"  # the text itself must carry the name
     working = _working(m)
+    said = spoken(m, utterance)  # judged by when he began to speak: the text arrives 0.3-2 s after the window shut
     return Addressing(
         session=None if session is None or named else session.trigger,
-        follow_up=now < m.follow_up_until,
+        follow_up=said.follow_up if said is not None else now < m.follow_up_until,
         passthrough=m.state is State.PASSTHROUGH,
         asleep=m.asleep,
         busy=(m.state in _BUSY or m.state is State.LISTENING) and session is None and not working,
@@ -495,7 +497,8 @@ def _cancel(m: Machine, e: Cancel) -> Step:
 
 def _speech_start(m: Machine, e: SpeechStart) -> Step:
     others = tuple(s for s in m.spoken if s.utterance != e.utterance)
-    m = replace(m, speaking=(e.utterance, e.at), spoken=(*others, Spoken(e.utterance, e.at))[-_KEEP_SPOKEN:])
+    said = Spoken(e.utterance, e.at, follow_up=e.at < m.follow_up_until or _working(m))
+    m = replace(m, speaking=(e.utterance, e.at), spoken=(*others, said)[-_KEEP_SPOKEN:])
     if m.state is State.DICTATING and not _finishing(m):
         return Step(replace(m, deadline=None))  # talking: the silence clock stops
     session = m.session

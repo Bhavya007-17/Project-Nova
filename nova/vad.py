@@ -15,7 +15,7 @@ from __future__ import annotations
 import math
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -65,6 +65,16 @@ class EndpointRules:
     @property
     def tail_samples(self) -> int:
         return _samples(self.tail_ms)
+
+
+UNADDRESSED_MAX_MS = 10_000  # no key, no session: a command is short; room chatter ran to the 30 s cap 148 times
+
+
+def unaddressed(rules: EndpointRules) -> EndpointRules:
+    """``rules`` for speech nobody has addressed to Nova (yet): the same endpoints, a 10 s cap."""
+    if rules.max_ms is not None and rules.max_ms <= UNADDRESSED_MAX_MS:
+        return rules
+    return replace(rules, max_ms=UNADDRESSED_MAX_MS)
 
 
 DICTATION_RULES = EndpointRules(short_silence_ms=600, long_silence_ms=600, max_ms=None)  # SPEC §11: segments on
@@ -347,6 +357,6 @@ class Silero:
         return float(out[0, 0])
 
     def skip(self, frame: np.ndarray) -> None:
-        """The gate skipped this frame: start fresh next time, with this frame as context."""
-        self._state = self._zero_state
+        """The gate skipped this frame: it only becomes the next frame's context. The state stays — soft speech
+        hovers at the gate's threshold, and a model restarted from zero mid-word doesn't call the rest speech."""
         self._context = frame[None, -self.CONTEXT :]

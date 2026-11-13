@@ -58,10 +58,12 @@ class FakeStt:
     def __init__(self, partial_s=0.0, final_s=0.0):
         self.delays = {"nova-stt-partial": partial_s, "nova-stt-final": final_s}
         self.calls = []
+        self.retries = []
 
-    def transcribe(self, pcm):
+    def transcribe(self, pcm, *, retry_empty=True):
         lane = threading.current_thread().name
         self.calls.append((lane, len(pcm)))
+        self.retries.append((lane, retry_empty))
         time.sleep(self.delays.get(lane, 0.0))
         return f"{len(pcm) // FRAME} frames"
 
@@ -330,3 +332,15 @@ def test_no_pause_candidates_for_commands(make):
     events = [*h.collect(0.5)]
     assert any(isinstance(e, FinalTranscript) for e in events)
     assert not any(isinstance(e, PauseCandidate) for e in events)
+
+
+def test_the_padded_retry_is_for_finals_only(make):
+    """A live-word decode that comes back empty is not worth a second, padded decode (it doubled p95: 800 ms live vs
+    339 ms in the bench); the final is."""
+    stt = FakeStt()
+    h = make(stt)
+    h.source.feed(silence_ms=500)
+    h.source.feed(speech_ms=1500, silence_ms=600)
+    h.next(FinalTranscript)
+    assert {lane for lane, _ in stt.retries} == {"nova-stt-partial", "nova-stt-final"}
+    assert all(retry == (lane == "nova-stt-final") for lane, retry in stt.retries)

@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from nova.events import SpeechEnded, SpeechStarted
-from nova.vad import FRAME, EndpointRules, Endpointer, EnergyGate
+from nova.vad import FRAME, UNADDRESSED_MAX_MS, EndpointRules, Endpointer, EnergyGate, Silero, unaddressed
 
 SR = 16_000
 MS_PER_FRAME = FRAME * 1000 / SR  # 32 ms
@@ -413,3 +413,35 @@ def test_switching_back_to_commands_ends_on_the_short_pause():
     feed.speech(1000)
     feed.ep.set_rules(EndpointRules())
     assert [e for e in feed.silence(400) if isinstance(e, SpeechEnded)]
+
+
+def test_a_skipped_frame_keeps_sileros_state():
+    """Soft speech sits near the gate's threshold: frames are skipped in the middle of words. Starting Silero from
+    zero after each skip missed 28-30 of 134 recordings at -30 dB (9-10 with no gate at all)."""
+    vad = object.__new__(Silero)  # no model file in this test
+    state = np.ones((2, 1, 128), dtype=np.float32)
+    vad._state, vad._zero_state = state, np.zeros((2, 1, 128), dtype=np.float32)
+    vad._context = np.zeros((1, Silero.CONTEXT), dtype=np.float32)
+    skipped = np.arange(FRAME, dtype=np.float32)
+    vad.skip(skipped)
+    assert vad._state is state
+    assert np.array_equal(vad._context[0], skipped[-Silero.CONTEXT :])
+
+
+def test_unaddressed_speech_is_capped_at_10_s():
+    assert UNADDRESSED_MAX_MS == 10_000
+    assert unaddressed(EndpointRules()).max_ms == 10_000
+    assert unaddressed(EndpointRules(max_ms=3000)).max_ms == 3000  # a shorter cap stays
+    assert unaddressed(EndpointRules(max_ms=None)).max_ms == 10_000
+    f = Feed(unaddressed(EndpointRules()))
+    f.speech(9_900)
+    events = f.speech(200)
+    assert [e.reason for e in events] == ["cap"]
+
+
+def test_a_key_or_the_name_mid_utterance_lifts_the_cap():
+    f = Feed(EndpointRules(max_ms=3000))
+    f.speech(2000)
+    f.ep.set_rules(EndpointRules(max_ms=6000))  # he pressed the key 2 s in: it is a command now
+    assert f.speech(2000) == []
+    assert [e.reason for e in f.speech(2100)] == ["cap"]

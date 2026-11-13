@@ -41,7 +41,7 @@ from .events import (
 )
 from .log import TraceLog
 from .stt.base import Transcriber
-from .vad import DICTATION_RULES, FRAME, EndpointRules, Endpointer, EnergyGate, Silero
+from .vad import DICTATION_RULES, FRAME, EndpointRules, Endpointer, EnergyGate, Silero, unaddressed
 from .vocab import VocabFile
 
 _log = logging.getLogger(__name__)
@@ -169,7 +169,7 @@ class _Lane:
             began = time.perf_counter()
             error = None
             try:
-                text = self._stt.transcribe(job.pcm)
+                text = self._stt.transcribe(job.pcm, retry_empty=job.kind == "final")
             except Exception as exc:  # noqa: BLE001 - one bad decode must not kill the lane
                 _log.exception("speech-to-text failed")
                 text, error = "", f"{type(exc).__name__}: {exc}"
@@ -204,6 +204,7 @@ class SpeechWorker:
         self._vocab = vocab
         self._trace = trace
         self._rules = rules or EndpointRules()
+        self._idle_rules = unaddressed(self._rules)  # no key held, no session listening: capped at 10 s
         self._wake = threading.Event()
         self._ring = Ring(wake=self._wake)
         self._source: Source = (source or (lambda ring, wake: Mic(ring, wake, device)))(self._ring, self._wake)
@@ -337,9 +338,11 @@ class SpeechWorker:
 
     def _step(self) -> None:
         self._sync_source(time.perf_counter())
-        if self._dictating != self._dictation_rules:
-            self._dictation_rules = self._dictating
-            self._ep.set_rules(DICTATION_RULES if self._dictating else self._rules)
+        self._dictation_rules = self._dictating
+        addressed = self._held or self._attentive  # a key or a session: the full 30 s, also from mid-utterance on
+        wanted = DICTATION_RULES if self._dictating else (self._rules if addressed else self._idle_rules)
+        if wanted is not self._ep.rules:
+            self._ep.set_rules(wanted)
         if self._held:
             if not self._ep.held:
                 self._ep.listen_now()  # a new press: no quiet to wait for after the last release

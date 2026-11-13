@@ -59,12 +59,13 @@ class ParakeetTranscriber:
         for i in range(runs):
             self.transcribe((rng.standard_normal(SAMPLE_RATE * (1 + i % 2)) * 0.003).astype(np.float32))
 
-    def transcribe(self, pcm: np.ndarray) -> str:
+    def transcribe(self, pcm: np.ndarray, *, retry_empty: bool = True) -> str:
+        """``retry_empty=False`` for live words (partials): a second decode there only delays the next one."""
         audio = np.asarray(pcm, dtype=np.float32)
         if len(audio) < _MIN_SAMPLES:
             audio = np.pad(audio, (0, _MIN_SAMPLES - len(audio)))
         text = self._decode(audio)
-        if not text and len(audio) >= _RETRY_MIN:
+        if not text and retry_empty and len(audio) >= _RETRY_MIN:
             text = self._decode(np.concatenate((_RETRY_PAD, audio, _RETRY_PAD)))
             if text:
                 _log.info("empty decode recovered by the padded retry (%.1f s of audio)", len(audio) / SAMPLE_RATE)

@@ -634,3 +634,23 @@ def test_silence_clock_waits_for_a_sentence_already_under_way():
     assert run.state is State.DICTATING
     run(Tick(22.0))
     assert run.state is State.IDLE
+
+
+def test_the_follow_up_window_is_judged_by_when_he_started_speaking():
+    run = Run()(heard(1, "Nova, open Chrome", 1.0), Done(True, 1.2))
+    closes = 1.2 + FOLLOW_UP_S
+    run(SpeechStart(2, closes - 0.3), Tick(closes + 0.1), SpeechEnd(2, "silence", closes + 1.4),
+        heard(2, "now close Spotify", closes + 1.9))  # the text arrives 1.9 s after the window closed
+    assert run.has(Command)[0].decision.via == "follow-up"
+
+
+def test_speech_that_began_before_the_window_opened_is_not_a_follow_up():
+    run = Run()(SpeechStart(1, 0.2), heard(2, "Nova, open Chrome", 1.0), Done(True, 1.2),
+                SpeechEnd(1, "silence", 2.0), heard(1, "close Spotify", 2.5))  # chatter from before the command
+    assert run.has(Ignored)[0].decision.via == "needs-name"
+
+
+def test_speech_that_began_while_nova_worked_is_a_follow_up():
+    run = Run()(heard(1, "Nova, open Chrome", 1.0), SpeechStart(2, 1.1), Done(True, 1.2),
+                SpeechEnd(2, "silence", 1.9), heard(2, "now close Spotify", 2.1))
+    assert run.has(Command)[0].decision.via == "follow-up"
