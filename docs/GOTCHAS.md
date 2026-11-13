@@ -56,19 +56,36 @@ memories aren't shared, this file is.
 - **`/api/chat` with `think: false` ignores `format` for qwen3.5.** Nova renders ChatML itself (+ empty
   `<think></think>`) and calls `/api/generate` with `raw: true` + `format` → schema enforced from token 1
   (`nova/brain/tier1.py`).
-- **~0.75–0.85 s fixed overhead per request** (Ollama re-opens the model per call) — about half of Tier 1's time.
-  Bypassing it means talking to `llama-server` directly: a new runtime, so ask first.
+- **Ollama's API costs ~0.3 s per request and re-reads the whole prompt** (3,090 tokens every time on the GPU).
+  The `llama-server.exe` it ships (`lib/ollama`), talked to directly with `cache_prompt`, reads ~50: warm p50
+  437 vs 716 ms, p95 ~660 vs 954, cold 7.2–8.0 vs 8.5–10.6 s (2026-11-13, same GGUF / prompt / schema, 36 cases × 2).
+  Nova runs it as a child (`nova/brain/llama_server.py`, `llm.runtime`). Re-measure after an Ollama upgrade:
+  `nova bench-llm --runtime ollama,llama-server`.
+- **That llama-server finds CUDA only with `lib/ollama/cuda_v13` on `PATH` and
+  `GGML_BACKEND_PATH=…/cuda_v13/ggml-cuda.dll`** — without them it runs on the CPU and says nothing. The model is
+  the first absolute `FROM` in `ollama show --modelfile` (the second is the vision projector: leave it out).
+- **A child that holds 3 GB of VRAM must die with Nova, however Nova ends:** a job object with
+  `KILL_ON_JOB_CLOSE` (checked: `taskkill /F` on the parent → child gone, VRAM back). `atexit` alone leaks it.
+- **One command per process can't keep a child warm:** `nova say` uses Ollama when `llm.runtime` is `auto`
+  (Ollama keeps the model between runs). With the tray app's model on the GPU, `nova say` may get the CPU model.
+- **Ollama 0.30 can leave the "GPU" model on the CPU:** its fit reserved ~5.3 GB for qwen3.5's vision projector
+  and put 0 of 33 layers on an RTX with 6.9 GB free — 11–20 tokens/s, warm calls of 1.8–3.2 s. Nova sends
+  `num_gpu: 99` for the GPU choice (0 for CPU): 80 tokens/s, with or without the schema (the grammar is free).
 - **qwen3.5 is hybrid-recurrent:** it can only resume from context checkpoints. A prefix-only warm-up request
   (`num_predict: 1`) cut CPU prompt eval from 2.6 s to 0.3 s.
 - qwen3.5's Modelfile sets `presence_penalty 1.5` / `repeat_penalty 1.1` even at temp 0; Nova overrides them
   (`nova/brain/llm.py`). Compact few-shot JSON keeps grammar decoding at full speed.
 - Ollama ignores the Intel Arc iGPU unless `OLLAMA_IGPU_ENABLE=1`. Re-run `nova bench-llm` after any Ollama upgrade.
-- **A cold load outlasts the request timeout** (2026-11-11: qwen3.5:4b on the RTX loaded in 15.1 s; `llm.timeout_s` is 8).
-  Dropping the request also drops the load, so the retry starts from zero and `nova say` never warms itself.
+- **A cold load outlasts the request timeout** (qwen3.5:4b on the RTX: 7–15 s; `llm.timeout_s` is 8), and dropping
+  the request drops the load. Loading is its own step on its own client (`llm.Loader`): a cold request waits for
+  it ("Warming up…"), Esc stops the wait, never the load; the timeout covers the answer only.
 - **Two callers with different `num_ctx` make Ollama reload the model on every switch** (planner 4096 vs cleanup 2048:
   10–27 s each time in `nova.log`). One set of load options per model.
-- **Warm Tier 1 is 1.8–3.2 s in-process** (2026-11-11, GPU): `load_ms` ≈ 800 on every call, cached prefix 90–440 ms,
-  and schema-constrained JSON at only 15–20 tokens/s (34 tokens = 1.6 s). Live traces: p50 1.4 s, p90 8.0 s (timeouts).
+- **Warm Tier 1: 418 ms p50 / 669 ms p95 through llama-server, 765 / 1,159 ms through Ollama** (2026-11-13, GPU,
+  196 eval calls in-process; 1.8–3.2 s before the two fixes above). Plans correct: 259/270 on both.
+- **qwen3.5 resumed from a cached prefix isn't bit-identical to a full re-read:** a near-tie flips (one eval
+  negative: p(act) 0.38 / p(ignore) 0.29 cached, 0.32 / 0.36 re-read). Don't chase single-case eval diffs
+  between runtimes; compare totals.
 
 ## Chrome extension
 - **Branded Chrome 137+ ignores `--load-extension`**: loading `extension/` unpacked is a one-time manual step.

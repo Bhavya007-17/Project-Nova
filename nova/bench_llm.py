@@ -22,6 +22,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from . import paths
+from .brain.llama_server import gguf_path, server_args, server_env
 from .brain.llm import LLMError, Ollama
 from .brain.router import Router
 from .brain.tier1 import Tier1
@@ -360,32 +361,6 @@ def gain(ollama_p50: float, server_p50: float) -> float:
     return 1.0 - server_p50 / ollama_p50 if ollama_p50 > 0 else 0.0
 
 
-def gguf_path(modelfile: str) -> str | None:
-    """The model's own GGUF from `ollama show --modelfile` (a second FROM is the vision projector)."""
-    for line in modelfile.splitlines():
-        if line.startswith("FROM "):
-            path = line[5:].strip()
-            if Path(path).is_absolute():
-                return path
-    return None
-
-
-def server_args(exe: Path, gguf: str, *, port: int = SERVER_PORT) -> list[str]:
-    from .brain.llm import NUM_CTX
-    from .governor import ALL_LAYERS
-
-    return [str(exe), "-m", gguf, "--host", "127.0.0.1", "--port", str(port), "--no-webui", "--offline",
-            "-c", str(NUM_CTX), "-np", "1", "-ngl", str(ALL_LAYERS), "-fa", "auto", "--no-jinja",
-            "--chat-template", "chatml"]
-
-
-def server_env(lib: Path, base: dict[str, str] | None = None) -> dict[str, str]:
-    """Ollama's llama-server finds its CUDA backend only with lib/ollama/cuda_v13 on the DLL path."""
-    base = dict(os.environ if base is None else base)
-    cuda = lib / "cuda_v13"
-    return {**base, "PATH": f"{cuda};{lib};{base.get('PATH', '')}", "GGML_BACKEND_PATH": str(cuda / "ggml-cuda.dll")}
-
-
 def _is_json(text: str) -> bool:
     try:
         json.loads(text)
@@ -469,7 +444,7 @@ def _server_round(gguf: str, static: str, raws: Sequence[str]) -> list[RuntimeRo
     exe = _LIB / "llama-server.exe"
     log = (paths.LOGS / "bench-llama-server.log").open("w", encoding="utf-8")
     began = time.perf_counter()
-    proc = subprocess.Popen(server_args(exe, gguf), env=server_env(_LIB), stdout=log, stderr=subprocess.STDOUT,
+    proc = subprocess.Popen(server_args(exe, gguf, port=SERVER_PORT), env=server_env(_LIB), stdout=log, stderr=subprocess.STDOUT,
                             creationflags=subprocess.CREATE_NO_WINDOW)
     try:
         while True:

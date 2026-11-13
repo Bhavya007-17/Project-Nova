@@ -134,7 +134,7 @@ class Tier1:
         """``loader``: shared with dictation cleanup (default: its own, on a client of its own). ``warming``: called
         when a request finds the model cold and has to wait for it to load (the island's "Warming up…")."""
         self._client = client
-        self._loader = loader or Loader(Ollama(client.url))
+        self._loader = loader or Loader(client.sibling())
         self._warming = warming
         self._governor = governor
         self._settings = settings

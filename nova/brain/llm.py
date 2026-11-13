@@ -118,9 +118,15 @@ class Ollama:
                 except OSError:
                     pass
 
-    def _call(self, method: str, path: str, body: Mapping[str, Any] | None = None, timeout: float = 10.0,
-              model: str = "") -> Any:
-        conn = http.client.HTTPConnection(self._host, self._port, timeout=CONNECT_S)
+    def sibling(self) -> Ollama:
+        """Another client for the same runtime: its requests aren't dropped by this one's ``abort``."""
+        return Ollama(self.url)
+
+    def _send(self, host: str, port: int, method: str, path: str, body: Mapping[str, Any] | None, timeout: float,
+              *, who: str, down: str) -> tuple[int, Any]:
+        """One JSON request to a local server -> (status, answer). Abortable; ``down``: what to say when nobody
+        answers."""
+        conn = http.client.HTTPConnection(host, port, timeout=CONNECT_S)
         with self._lock:
             self._aborted = False
             self._active.add(conn)
@@ -128,7 +134,7 @@ class Ollama:
             try:
                 conn.connect()  # its own deadline: Windows takes ~2 s to refuse a loopback port nobody listens on
             except OSError as error:
-                raise LLMError(f"Ollama isn't answering at {self.url} — is it running?") from error
+                raise LLMError(down) from error
             if conn.sock is not None:
                 conn.sock.settimeout(timeout)
             payload = json.dumps(body).encode("utf-8") if body is not None else None
@@ -141,15 +147,20 @@ class Ollama:
         except (OSError, http.client.HTTPException) as error:
             if self._aborted:
                 raise LLMCancelled("Cancelled") from error
-            raise LLMError(f"Ollama isn't answering at {self.url} — is it running?") from error
+            raise LLMError(down) from error
         finally:
             with self._lock:
                 self._active.discard(conn)
             conn.close()
         try:
-            data = json.loads(raw.decode("utf-8")) if raw else {}
+            return status, (json.loads(raw.decode("utf-8")) if raw else {})
         except (UnicodeDecodeError, ValueError) as error:
-            raise LLMError("Ollama sent something Nova can't read.") from error
+            raise LLMError(f"{who} sent something Nova can't read.") from error
+
+    def _call(self, method: str, path: str, body: Mapping[str, Any] | None = None, timeout: float = 10.0,
+              model: str = "") -> Any:
+        status, data = self._send(self._host, self._port, method, path, body, timeout, who="Ollama",
+                                  down=f"Ollama isn't answering at {self.url} — is it running?")
         if status == 404 and model:
             raise LLMError(f"The model {model} isn't on this laptop — run: ollama pull {model}")
         if status >= 400:

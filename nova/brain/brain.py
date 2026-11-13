@@ -50,7 +50,7 @@ from ..log import TraceLog
 from ..state import CLARIFY_S, CONFIRM_S
 from .answers import pick, yes_no
 from .executor import Executor, RunResult
-from .llm import Ollama
+from .llama_server import connect
 from .plan import Plan
 from .router import Router, Settled, describe_handoff, running_apps
 from .tier1 import Tier1
@@ -281,14 +281,14 @@ class Brain:
         self._snap: Callable[[Catalog], Context] = lambda catalog: snapshot(catalog, bridge)
         self._hands = WindowsHands(catalogs.current, nova=NovaControls(self._dictation, self._listening), chrome=chrome)
         self._executor = Executor(self._hands, IslandAsker(bus, self._answers), progress=self._progress)
-        client = Ollama(settings().ollama.url)
+        client = connect(settings().ollama.url, lambda: settings().llm.runtime)
         self._governor = Governor(client, lambda: settings().llm)
         self._tier1 = Tier1(client, self._governor, lambda: settings().llm, catalogs.current,
                             warming=lambda: bus.publish(BrainProgress("warming", WARMING)))
         self._router = Router(self._tier1, page=chrome.page_rows if chrome is not None else None)
         # Dictation (Stage 07): the same model as Tier 1 cleans it up, through the same governor and loader.
         self._cleaner = Cleaner(self._governor, lambda: settings().llm, terms,
-                                client=lambda: Ollama(settings().ollama.url),
+                                client=client.sibling,
                                 enabled=lambda: settings().dictation.cleanup, loader=self._tier1.loader)
         self.dictation = Dictation(bus, self._cleaner, Target(catalogs.current, browser),
                                    History(paths.DICTATION_HISTORY), trace=trace)
