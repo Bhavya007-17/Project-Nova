@@ -71,4 +71,5 @@ One line each: what, version, why. Ask before adding anything over ~50 MB or a n
 
 ## Outside Python (already on this laptop)
 - **uv** ≥ 0.12 recommended — 0.11 makes venvs whose `pythonw.exe` is a console exe (uv #19226); `nova doctor` checks this. The first `uv` on PATH here is a pip install (Python 3.11 Scripts); a second 0.11.19 sits in `~/.local/bin`.
-- **Ollama** 0.30 — local LLM runtime (Stage 05). Only local tags are allowed; `*-cloud` tags never.
+- **Ollama** 0.30 — model store and fallback LLM runtime (Stage 05). Only local tags are allowed; `*-cloud` tags never.
+- **llama-server** (llama.cpp's server, the copy Ollama 0.30 ships in `lib/ollama`; no download, no new package) — Tier 1's runtime since Stage 07a: 437 vs 716 ms warm p50 against Ollama's API on the same model (`nova bench-llm --runtime`). `llm.runtime: auto | ollama | llama-server`.

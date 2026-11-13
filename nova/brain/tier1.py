@@ -10,6 +10,10 @@ How it talks to Ollama, per model family (measured on Ollama 0.30.10, see ``nova
 Preload (key down / wake name, SPEC §7.4): load the model the governor picks and read the static
 prefix once ("warm"), so a hybrid model like Qwen 3.5 keeps a resume point right where each
 request's own part begins; afterwards a request only reads its own ~50 tokens.
+
+Loading is apart from answering (Stage 07a): a request that finds the model cold says so (``warming``: the island's
+"Warming up…"), waits for the one shared load (``nova.brain.llm.Loader``; Esc stops the wait, never the load), and
+only then asks — the answer's timeout covers the answer alone.
 """
 
 from __future__ import annotations
@@ -27,16 +31,18 @@ from ..actions.catalog import Catalog
 from ..config import Llm
 from ..governor import Choice, Governor
 from . import prompt
-from .llm import LLMCancelled, LLMError, Ollama, Reply
+from .llm import LLMCancelled, LLMError, Load, Loader, Ollama, Reply, load_options
 
 _log = logging.getLogger(__name__)
 
-NUM_CTX = 4096
 MAX_TOKENS = 200  # the longest plan (4 steps / a 4-slot layout) is ~120 tokens; a rambling answer stops here
 CPU_PAGE_ROWS = 12  # page elements shown to the CPU model (the GPU one gets up to 40)
-PRELOAD_REASONS = frozenset({"key", "wake", "speech", "follow-up"})  # not "always": chatter never needs the LLM
+# Not "always": chatter never needs the LLM. "say": `nova say` (only loads a cold model; a warm-up of a resident one
+# would only queue in front of the request).
+PRELOAD_REASONS = frozenset({"key", "wake", "speech", "follow-up", "say"})
+_COLD_ONLY = frozenset({"say"})
 WARM_AGAIN_S = 60.0
-_WARM_TIMEOUT_S = 180.0  # a cold load + reading the prefix on the CPU
+_WAIT_STEP_S = 0.05  # how often a request waiting for a load checks for Esc
 
 
 @dataclass(frozen=True)
@@ -104,9 +110,12 @@ class Thought:
     reply: Reply | None = None
     ms: float = 0.0  # wall time, choosing the model included
     cancelled: bool = False
+    warm_ms: float = 0.0  # of ``ms``: waiting for the model to load (0 = it was resident)
 
     def trace(self) -> dict[str, Any]:
         out: dict[str, Any] = {"llm_ms": round(self.ms, 1)}
+        if self.warm_ms:
+            out["warm_ms"] = round(self.warm_ms, 1)
         if self.choice is not None:
             out.update(model=self.choice.model, device=self.choice.device)
         if self.reply is not None:
@@ -120,9 +129,13 @@ class Thought:
 
 class Tier1:
     def __init__(self, client: Ollama, governor: Governor, settings: Callable[[], Llm],
-                 catalog: Callable[[], Catalog], *, clock: Callable[[], float] = time.monotonic) -> None:
+                 catalog: Callable[[], Catalog], *, loader: Loader | None = None,
+                 warming: Callable[[], None] = lambda: None, clock: Callable[[], float] = time.monotonic) -> None:
+        """``loader``: shared with dictation cleanup (default: its own, on a client of its own). ``warming``: called
+        when a request finds the model cold and has to wait for it to load (the island's "Warming up…")."""
         self._client = client
-        self._background = Ollama(client.url)  # preloads: Esc aborts a command's call, never a warm-up
+        self._loader = loader or Loader(client.sibling())
+        self._warming = warming
         self._governor = governor
         self._settings = settings
         self._catalog = catalog
@@ -134,10 +147,15 @@ class Tier1:
         self._warmed: dict[Choice, float] = {}
         self._preloading = False
         self._pinned: Choice | None = None
+        self._cancel = threading.Event()  # Esc while a request waits for a load
 
     @property
     def governor(self) -> Governor:
         return self._governor
+
+    @property
+    def loader(self) -> Loader:
+        return self._loader
 
     @property
     def llm(self) -> Llm:
@@ -167,7 +185,21 @@ class Tier1:
 
     @staticmethod
     def _options(choice: Choice) -> dict[str, Any]:
-        return {"num_ctx": NUM_CTX, **choice.options}
+        return load_options(choice.options)
+
+    def _load(self, choice: Choice, llm: Llm) -> Load:
+        """Load ``choice`` and read the static prefix (or join the load under way)."""
+        dialect = self._dialect(choice.model)
+        _, static = self._static(self._catalog())
+        return self._loader.load(choice.model, options=self._options(choice), keep_alive=llm.keep_alive,
+                                 prompt=static if dialect.raw else None)
+
+    def _await(self, load: Load) -> bool:
+        """Wait for ``load``; False when Esc came first (the load goes on: the next request finds the model warm)."""
+        while not load.wait(_WAIT_STEP_S):
+            if self._cancel.is_set():
+                return False
+        return True
 
     # --- planning ---------------------------------------------------------------------------------------------
 
@@ -177,12 +209,27 @@ class Tier1:
         """``page``: the ranked page elements, one line each (``nova.chrome.pagemap.llm_rows``), when he points at
         the page."""
         began = time.perf_counter()
+        self._cancel.clear()
         catalog = catalog or self._catalog()
         llm = self._settings()
+        warm_ms = 0.0
         try:
             choice = choice or self._pinned or self._governor.choose()
             dialect = self._dialect(choice.model)
             messages, static = self._static(catalog)
+            if not self._loader.resident(choice.model):
+                self._warming()
+                waited = time.perf_counter()
+                load = self._load(choice, llm)
+                ready = self._await(load)
+                warm_ms = (time.perf_counter() - waited) * 1000
+                if not ready:
+                    raise LLMCancelled("Cancelled")
+                if load.error:
+                    raise LLMError(load.error)
+                self._warmed[choice] = self._clock()
+                _log.info("LLM loaded for a request: %s on the %s, waited %.0f ms", choice.model,
+                          choice.device.upper(), warm_ms)
             listed = [name for name in prompt.relevant_apps(text, catalog, seen.open_apps) if name not in seen.open_apps]
             if page and choice.device == "cpu":
                 page = page[:CPU_PAGE_ROWS]  # every row is ~20 tokens: the CPU reads them ~10x slower
@@ -199,32 +246,30 @@ class Tier1:
                                           timeout=llm.timeout_s, num_predict=MAX_TOKENS)
             self._governor.used()
         except LLMCancelled:
-            return Thought(error="Cancelled", choice=choice, ms=(time.perf_counter() - began) * 1000, cancelled=True)
+            return Thought(error="Cancelled", choice=choice, ms=(time.perf_counter() - began) * 1000, cancelled=True,
+                           warm_ms=warm_ms)
         except LLMError as error:
-            return Thought(error=str(error), choice=choice, ms=(time.perf_counter() - began) * 1000)
+            return Thought(error=str(error), choice=choice, ms=(time.perf_counter() - began) * 1000, warm_ms=warm_ms)
         ms = (time.perf_counter() - began) * 1000
         try:
             data = json.loads(reply.text)
         except ValueError:
             _log.warning("tier 1 answer wasn't JSON: %r", reply.text[:200])
-            return Thought(error="The local model's answer wasn't a plan.", choice=choice, reply=reply, ms=ms)
-        return Thought(data, choice=choice, reply=reply, ms=ms)
+            return Thought(error="The local model's answer wasn't a plan.", choice=choice, reply=reply, ms=ms,
+                           warm_ms=warm_ms)
+        return Thought(data, choice=choice, reply=reply, ms=ms, warm_ms=warm_ms)
 
     # --- preload --------------------------------------------------------------------------------------------------
 
     def warm(self, choice: Choice | None = None) -> float:
-        """Load the model and read the static prefix once. Blocking; returns ms."""
+        """Load the model and read the static prefix once (or wait for the load under way). Blocking; returns ms.
+        Raises LLMError when it can't."""
         began = time.perf_counter()
         choice = choice or self._pinned or self._governor.choose(fresh=True)
-        llm = self._settings()
-        dialect = self._dialect(choice.model)
-        _, static = self._static(self._catalog())
-        if dialect.raw:
-            self._background.generate(choice.model, static, options=self._options(choice), keep_alive=llm.keep_alive,
-                                      timeout=_WARM_TIMEOUT_S, num_predict=1)
-        else:
-            self._background.load(choice.model, options=self._options(choice), keep_alive=llm.keep_alive,
-                                  timeout=_WARM_TIMEOUT_S)
+        load = self._load(choice, self._settings())
+        load.wait()
+        if load.error:
+            raise LLMError(load.error)
         self._warmed[choice] = self._clock()
         return (time.perf_counter() - began) * 1000
 
@@ -244,6 +289,8 @@ class Tier1:
             last = self._warmed.get(choice)
             if last is not None and self._clock() - last < WARM_AGAIN_S:
                 return
+            if reason in _COLD_ONLY and self._loader.resident(choice.model):
+                return
             ms = self.warm(choice)
             _log.info("LLM warm (%s): %s on the %s in %.0f ms", reason, choice.model, choice.device.upper(), ms)
         except LLMError as error:
@@ -255,6 +302,8 @@ class Tier1:
                 self._preloading = False
 
     def abort(self) -> None:
+        """Esc / superseded: drop the command's request, or stop it waiting for a load (the load itself goes on)."""
+        self._cancel.set()
         self._client.abort()
 
     def close(self) -> None:

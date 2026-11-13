@@ -30,6 +30,8 @@ llm:
   gpu_model: qwen3.5:4b          # on the RTX when it has room
   cpu_model: qwen3.5:2b-q4_K_M   # when the GPU is busy (Fusion) or device is cpu
   device: auto             # auto | gpu | cpu
+  runtime: auto            # auto | ollama | llama-server. auto = the llama-server that comes with Ollama
+                           # (about 0.3 s faster per request); Ollama itself when that can't start
   keep_alive: 10m          # unload the model after this long unused
   headroom_gb: 1.0         # GPU only if the model + this much VRAM is free
   timeout_s: 8.0

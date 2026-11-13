@@ -2,7 +2,9 @@
 
 from nova.config import Settings, Triggers
 from nova.events import (
+    WARMING,
     AlwaysListeningChanged,
+    BrainProgress,
     Asking,
     ConfigChanged,
     CommandFinished,
@@ -266,3 +268,34 @@ def test_dictating_shows_what_was_typed_and_what_was_saved_instead():
     view = reduce(view, DictationTyped(6, "secret", False, "That's a password field · Saved"))
     assert view.words == "That's a password field · Saved"
     assert reduce(feed(READY), DictationTyped(1, "x")).words == ""  # not dictating: nothing to show
+
+
+# --- a cold model (Stage 07a) -------------------------------------------------------------------------------
+
+
+def test_a_cold_model_says_warming_up_instead_of_his_words():
+    view = feed(READY, go("idle", "listening"), final(1, "make this bigger"), go("listening", "thinking"),
+                gated(1, "make this bigger"))
+    assert view.words == "make this bigger"
+    view = reduce(view, BrainProgress("warming", WARMING))
+    assert view.state == "thinking" and view.words == WARMING and view.final and view.warming
+    view = reduce(view, gated(1, "make this bigger"))  # late events don't hide it
+    assert view.words == WARMING
+    view = feed(view, go("thinking", "acting"))
+    assert not view.warming
+
+
+def test_warming_that_arrives_before_thinking_still_shows():
+    view = feed(READY, BrainProgress("warming", WARMING), go("idle", "thinking"), gated(4, "open the thing"))
+    assert view.state == "thinking" and view.words == WARMING
+
+
+def test_the_next_command_doesnt_inherit_warming():
+    view = feed(READY, go("idle", "thinking"), BrainProgress("warming", WARMING), go("thinking", "done"),
+                go("done", "thinking"), gated(2, "open notepad"))
+    assert view.words == "open notepad" and not view.warming
+
+
+def test_other_brain_progress_leaves_the_view_alone():
+    view = feed(READY, go("idle", "thinking"), gated(1, "x y"))
+    assert reduce(view, BrainProgress("acting")) == view

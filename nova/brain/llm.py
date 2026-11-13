@@ -25,6 +25,11 @@ from urllib.parse import urlsplit
 
 DEFAULT_URL = "http://127.0.0.1:11434"
 CONNECT_S = 3.0
+# One set of load options for every caller (SPEC §7.4): Ollama reloads the model (10-27 s) whenever a request's
+# num_ctx / num_gpu differ from the loaded copy's, so the planner and dictation cleanup must send the same ones.
+NUM_CTX = 4096
+LOAD_TIMEOUT_S = 180.0  # a cold load (15-20 s on the RTX, longer on the CPU) + reading the prompt prefix
+_PS_TIMEOUT_S = 1.0
 # Greedy and unpenalized: some models ship presence/repeat penalties (Qwen 3.5: 1.5 / 1.1) that bend JSON at temp 0.
 SAMPLING = {"temperature": 0, "top_k": 1, "repeat_penalty": 1.0, "presence_penalty": 0.0, "frequency_penalty": 0.0}
 
@@ -41,6 +46,11 @@ def is_cloud(name: str) -> bool:
     """`gemma4:31b-cloud`, `qwen3.5:cloud`: run on Ollama's servers. Nova never uses them."""
     tag = name.strip().rpartition(":")[2]
     return tag == "cloud" or tag.endswith("-cloud")
+
+
+def load_options(device_options: Mapping[str, Any]) -> dict[str, Any]:
+    """The load options every request for a model sends (``device_options``: the governor's GPU / CPU choice)."""
+    return {"num_ctx": NUM_CTX, **device_options}
 
 
 @dataclass(frozen=True)
@@ -108,9 +118,15 @@ class Ollama:
                 except OSError:
                     pass
 
-    def _call(self, method: str, path: str, body: Mapping[str, Any] | None = None, timeout: float = 10.0,
-              model: str = "") -> Any:
-        conn = http.client.HTTPConnection(self._host, self._port, timeout=CONNECT_S)
+    def sibling(self) -> Ollama:
+        """Another client for the same runtime: its requests aren't dropped by this one's ``abort``."""
+        return Ollama(self.url)
+
+    def _send(self, host: str, port: int, method: str, path: str, body: Mapping[str, Any] | None, timeout: float,
+              *, who: str, down: str) -> tuple[int, Any]:
+        """One JSON request to a local server -> (status, answer). Abortable; ``down``: what to say when nobody
+        answers."""
+        conn = http.client.HTTPConnection(host, port, timeout=CONNECT_S)
         with self._lock:
             self._aborted = False
             self._active.add(conn)
@@ -118,7 +134,7 @@ class Ollama:
             try:
                 conn.connect()  # its own deadline: Windows takes ~2 s to refuse a loopback port nobody listens on
             except OSError as error:
-                raise LLMError(f"Ollama isn't answering at {self.url} — is it running?") from error
+                raise LLMError(down) from error
             if conn.sock is not None:
                 conn.sock.settimeout(timeout)
             payload = json.dumps(body).encode("utf-8") if body is not None else None
@@ -131,15 +147,20 @@ class Ollama:
         except (OSError, http.client.HTTPException) as error:
             if self._aborted:
                 raise LLMCancelled("Cancelled") from error
-            raise LLMError(f"Ollama isn't answering at {self.url} — is it running?") from error
+            raise LLMError(down) from error
         finally:
             with self._lock:
                 self._active.discard(conn)
             conn.close()
         try:
-            data = json.loads(raw.decode("utf-8")) if raw else {}
+            return status, (json.loads(raw.decode("utf-8")) if raw else {})
         except (UnicodeDecodeError, ValueError) as error:
-            raise LLMError("Ollama sent something Nova can't read.") from error
+            raise LLMError(f"{who} sent something Nova can't read.") from error
+
+    def _call(self, method: str, path: str, body: Mapping[str, Any] | None = None, timeout: float = 10.0,
+              model: str = "") -> Any:
+        status, data = self._send(self._host, self._port, method, path, body, timeout, who="Ollama",
+                                  down=f"Ollama isn't answering at {self.url} — is it running?")
         if status == 404 and model:
             raise LLMError(f"The model {model} isn't on this laptop — run: ollama pull {model}")
         if status >= 400:
@@ -215,3 +236,86 @@ class Ollama:
         self._check(model)
         data = self._call("POST", "/api/show", {"model": model}, timeout, model)
         return data if isinstance(data, dict) else {}
+
+
+# --- loading, apart from answering (SPEC §7.4) ------------------------------------------------------------------------
+
+
+class Load:
+    """One model load: ``wait`` for it; ``error`` says why it failed ("" = loaded)."""
+
+    def __init__(self, model: str) -> None:
+        self.model = model
+        self.error = ""
+        self.ms = 0.0
+        self._done = threading.Event()
+
+    @property
+    def done(self) -> bool:
+        return self._done.is_set()
+
+    def wait(self, timeout: float | None = None) -> bool:
+        return self._done.wait(timeout)
+
+
+class Loader:
+    """Loads a model once for every caller (Tier 1, dictation cleanup, preloads) on its own client, so an Esc that
+    aborts a command never aborts a load: a cold load (15 s+) outlasts any answer's timeout, and Ollama drops a load
+    whose request went away — the next request then starts from zero. While a model loads, callers wait on the same
+    ``Load``; a second load of it is never started."""
+
+    def __init__(self, client: Any, *, timeout: float = LOAD_TIMEOUT_S) -> None:
+        self._client = client
+        self._timeout = timeout
+        self._lock = threading.Lock()
+        self._loads: dict[str, Load] = {}  # in flight
+
+    @property
+    def url(self) -> str:
+        return str(getattr(self._client, "url", ""))
+
+    def resident(self, model: str) -> bool:
+        """``model`` is loaded and not being (re)loaded by Nova right now (Ollama's /api/ps: ~3 ms)."""
+        with self._lock:
+            if model in self._loads:
+                return False
+        try:
+            rows = self._client.loaded(timeout=_PS_TIMEOUT_S)
+        except LLMError:
+            return False
+        return any(row.name == model for row in rows)
+
+    def loading(self, model: str) -> Load | None:
+        with self._lock:
+            return self._loads.get(model)
+
+    def load(self, model: str, *, options: Mapping[str, Any], keep_alive: str, prompt: str | None = None) -> Load:
+        """Start loading ``model`` — reading ``prompt`` once, so a hybrid model like Qwen 3.5 keeps a resume point at
+        its end — or join the load of it already under way. Never blocks."""
+        with self._lock:
+            current = self._loads.get(model)
+            if current is not None:
+                return current
+            job = Load(model)
+            self._loads[model] = job
+        threading.Thread(target=self._run, args=(job, dict(options), keep_alive, prompt), name="nova-llm-load",
+                         daemon=True).start()
+        return job
+
+    def _run(self, job: Load, options: dict[str, Any], keep_alive: str, prompt: str | None) -> None:
+        began = time.perf_counter()
+        try:
+            if prompt is not None:
+                self._client.generate(job.model, prompt, options=options, keep_alive=keep_alive,
+                                      timeout=self._timeout, num_predict=1)
+            else:
+                self._client.load(job.model, options=options, keep_alive=keep_alive, timeout=self._timeout)
+        except LLMError as error:
+            job.error = str(error)
+        except Exception as error:  # noqa: BLE001 - a load must never take a thread down silently
+            job.error = f"Loading {job.model} failed: {type(error).__name__}"
+        finally:
+            job.ms = (time.perf_counter() - began) * 1000
+            with self._lock:
+                self._loads.pop(job.model, None)
+            job._done.set()

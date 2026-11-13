@@ -49,6 +49,10 @@ def _parser() -> argparse.ArgumentParser:
     bench_llm.add_argument("--devices", default="gpu,cpu", help="comma list of gpu, cpu, arc (default gpu,cpu)")
     bench_llm.add_argument("--cpu-cases", type=int, default=40, metavar="N", help="cases timed on CPU / Arc (default 40)")
     bench_llm.add_argument("--save", action="store_true", help="write the recommended models to settings.yaml")
+    bench_llm.add_argument("--runtime", metavar="LIST",
+                           help="compare runtimes on the GPU model instead, e.g. ollama,llama-server")
+    bench_llm.add_argument("--cases", type=int, default=36, metavar="N", help="--runtime: warm cases (default 36)")
+    bench_llm.add_argument("--rounds", type=int, default=2, metavar="N", help="--runtime: back-to-back rounds")
     sub.add_parser("latency", help="p50/p95 per command type from the logs")
     chrome = sub.add_parser("chrome", help="Chrome extension: --install registers its native host (then load it once)")
     what = chrome.add_mutually_exclusive_group(required=True)
@@ -111,6 +115,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if command == "bench-llm":
         from . import bench_llm
 
+        if args.runtime:
+            names = tuple(r.strip() for r in args.runtime.split(",") if r.strip())
+            return bench_llm.runtimes(names, cases=args.cases, rounds=args.rounds)
         devices = tuple(d.strip() for d in args.devices.split(",") if d.strip())
         return bench_llm.main(tuple(args.models), devices=devices, cpu_cases=args.cpu_cases, save=args.save)
     if command == "chrome":

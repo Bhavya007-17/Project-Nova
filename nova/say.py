@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 from . import paths
 from .actions import native
@@ -20,7 +20,7 @@ from .actions.context import snapshot
 from .actions.hands import NovaControls, WindowsHands
 from .brain.brain import Command, handle
 from .brain.executor import Executor
-from .brain.llm import Ollama
+from .brain.llama_server import connect
 from .brain.router import Router, describe_handoff, running_apps
 from .actions.chrome import Chrome, ChromeHands
 from .brain.tier1 import Tier1
@@ -30,7 +30,7 @@ from .dictation.cleanup import Cleaner
 from .dictation.history import History
 from .dictation.session import Dictation
 from .dictation.target import Target
-from .events import BrainProgress, CommandFinished
+from .events import WARMING, BrainProgress, CommandFinished
 from .governor import Governor
 from .log import TraceLog
 from .vocab import VocabFile
@@ -77,14 +77,27 @@ def _catalog_store() -> CatalogStore:
     return store
 
 
-def brain_parts(catalogs: CatalogStore) -> tuple[Router, Tier1]:
-    """The router with Tier 1 behind it, from settings.yaml (shared with `nova eval`)."""
+def one_shot_runtime(runtime: str) -> str:
+    """`nova say` is one command per process, and a llama-server child ends with its process: every run would load
+    the model again (7 s). Ollama keeps it loaded between runs, so ``auto`` means Ollama here."""
+    return "ollama" if runtime == "auto" else runtime
+
+
+def brain_parts(catalogs: CatalogStore, *, warming: Callable[[], None] = lambda: None,
+                one_shot: bool = False) -> tuple[Router, Tier1]:
+    """The router with Tier 1 behind it, from settings.yaml (shared with `nova eval`). ``warming``: a request found
+    the model cold and waits for it to load. ``one_shot``: see ``one_shot_runtime``."""
     config = ConfigStore(paths.SETTINGS)
     config.load()
-    client = Ollama(config.settings.ollama.url)
+    runtime = (lambda: one_shot_runtime(config.settings.llm.runtime)) if one_shot else         (lambda: config.settings.llm.runtime)
+    client = connect(config.settings.ollama.url, runtime)
     governor = Governor(client, lambda: config.settings.llm)
-    tier1 = Tier1(client, governor, lambda: config.settings.llm, catalogs.current)
+    tier1 = Tier1(client, governor, lambda: config.settings.llm, catalogs.current, warming=warming)
     return Router(tier1), tier1
+
+
+def _warming() -> None:
+    print(f"  ({WARMING} the local model is loading)", flush=True)
 
 
 def _bridge(wait: float) -> Bridge | None:
@@ -105,8 +118,9 @@ def main(text: str, *, dry: bool = False, chrome_wait: float = 0.0) -> int:
     started = time.perf_counter()
     store = _catalog_store()
     catalog = store.current()
+    router, _tier1 = brain_parts(store, warming=_warming, one_shot=True)
+    _tier1.preload("say")  # a cold model starts loading now, while the screen is read (as the tray app's key-down)
     native.com_init()
-    router, _tier1 = brain_parts(store)
     interactive = sys.stdin is not None and sys.stdin.isatty()
     asker = ConsoleAsker(interactive)
     if dry:
@@ -135,8 +149,9 @@ def main(text: str, *, dry: bool = False, chrome_wait: float = 0.0) -> int:
     config.load()
     vocab = VocabFile(paths.VOCAB)
     cleaner = Cleaner(_tier1.governor, lambda: config.settings.llm, lambda: vocab.current().terms,
-                      client=lambda: Ollama(config.settings.ollama.url),
-                      enabled=lambda: config.settings.dictation.cleanup)
+                      client=lambda: connect(config.settings.ollama.url,
+                                             lambda: one_shot_runtime(config.settings.llm.runtime)),
+                      enabled=lambda: config.settings.dictation.cleanup, loader=_tier1.loader)
     history = History(paths.DICTATION_HISTORY)
     dictation = Dictation(None, cleaner, Target(store.current, chrome.chrome if chrome is not None else None),
                           history, trace=trace)

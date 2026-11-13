@@ -8,7 +8,7 @@ import pytest
 from nova.actions.native import ActionError
 from nova.bus import Bus
 from nova.dictation import session as session_module
-from nova.dictation.cleanup import Cleaned
+from nova.dictation.cleanup import Cleaned, Job
 from nova.dictation.history import Entry, History
 from nova.dictation.session import Dictation
 from nova.dictation.target import Landed, Spot
@@ -258,6 +258,55 @@ def test_a_late_answer_is_dropped(rig, monkeypatch):
     assert r.dictation.drain(5, fixes=True)
     cleaner.gate.set()
     assert r.target.doc == "We should meat at noon."
+
+
+class FakeTrace:
+    def __init__(self):
+        self.records = []
+
+    def write(self, **record):
+        self.records.append(record)
+
+
+def _fix_records(tmp_path, cleaner, monkeypatch):
+    monkeypatch.setattr(session_module, "FIX_GIVE_UP_S", 0.05)
+    bus, trace = Bus(), FakeTrace()
+    dictation = Dictation(bus, cleaner, FakeTarget(), History(tmp_path / "h.jsonl"), trace=trace)
+    dictation.start()
+    try:
+        bus.publish(DictationChanged(True, "double-tap", 0.0))
+        bus.publish(DictatedText(1, "We should meat at noon.", 0.0))
+        assert dictation.drain(5, fixes=True)
+    finally:
+        dictation.close()
+    return [r for r in trace.records if r["kind"] == "dictation_fix"]
+
+
+def test_a_late_fix_is_logged_late_not_failed(tmp_path, monkeypatch):
+    class Slow(FakeCleaner):
+        def start(self, text, before):
+            self.started.append((text, before))
+            return Job(text, before)  # the real job: the model never answers in time (cancel marks it done)
+
+    records = _fix_records(tmp_path, Slow(), monkeypatch)
+    assert [r["llm"] for r in records] == ["late"]
+
+
+def test_a_job_on_a_cold_model_is_logged_cold(tmp_path, monkeypatch):
+    class ColdJob(FakeJob):
+        cold = True
+        error = "the model wasn't loaded (loading it for the next segment)"
+
+        def wait(self, timeout):
+            return None
+
+    class ColdCleaner(FakeCleaner):
+        def start(self, text, before):
+            self.started.append((text, before))
+            return ColdJob(text, None)
+
+    records = _fix_records(tmp_path, ColdCleaner(), monkeypatch)
+    assert [r["llm"] for r in records] == ["cold"]
 
 
 def test_short_segments_skip_the_model(rig):

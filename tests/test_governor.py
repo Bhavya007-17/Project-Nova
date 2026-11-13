@@ -1,7 +1,7 @@
 """The resource governor (SPEC §15): GPU or CPU model from free VRAM, one Nova model at a time, unload on exit."""
 
 from nova.config import Llm
-from nova.governor import Choice, Governor, decide
+from nova.governor import ALL_LAYERS, Choice, Governor, decide
 
 GB = 1024**3
 LLM = Llm(gpu_model="big:4b", cpu_model="small:2b", device="auto", headroom_gb=1.0)
@@ -28,7 +28,7 @@ def test_model_already_on_the_gpu_keeps_running_there():
 def test_device_setting_wins():
     assert decide(Llm(gpu_model="big:4b", cpu_model="small:2b", device="cpu"), free_gb=7.0, need_gb=1.0).device == "cpu"
     forced = decide(Llm(gpu_model="big:4b", cpu_model="small:2b", device="gpu"), free_gb=0.1, need_gb=3.5)
-    assert forced.device == "gpu" and forced.model == "big:4b" and forced.options == {}
+    assert forced.device == "gpu" and forced.model == "big:4b" and forced.options == {"num_gpu": ALL_LAYERS}
 
 
 def test_simulated_low_vram():
