@@ -374,7 +374,7 @@ class ChromeHands:
         if element and last is not None and last.find(element) is not None:
             return s  # Tier 1 pointed at an element of the map it was shown
         description = str(s.get("description") or "")
-        self.chrome.front()
+        # No window comes forward here: the risk check and any Confirm run after this (``run`` brings Chrome up).
         view = self.chrome.page_map(words=tuple(pagemap.words(description)), sections=s.action == "scroll_to")
         scored = pagemap.rank(view.elements, description, now=self._now().replace(tzinfo=None), kind=_KIND[s.action],
                               viewport=view.viewport)
@@ -465,6 +465,8 @@ class ChromeHands:
     def run(self, s: Step) -> Outcome:
         self._need()
         a = s.args
+        if s.action in _KIND:
+            self.chrome.front()  # he watches it happen; only now, after the risk check and his yes
         match s.action:
             case "page_click":
                 return self._click(s)

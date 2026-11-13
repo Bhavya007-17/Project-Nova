@@ -5,7 +5,7 @@ import pytest
 from catalog_fixture import CATALOG
 
 from nova.brain.tier0 import Tier0Resolver
-from nova.gate import Addressing, Env, StubResolver, WakeName, command_words, decide, strip_wake
+from nova.gate import Addressing, Env, StubResolver, WakeName, command_words, decide, is_stop, strip_wake
 
 APPS = ["Google Chrome", "Spotify", "Notepad", "Calculator", "Autodesk Fusion", "Claude", "Word", "Excel",
         "Visual Studio Code", "Microsoft Teams", "Camera", "Web Server for Chrome", "Outlook (classic)"]
@@ -59,6 +59,63 @@ def test_wake_name_is_found_and_stripped(heard, rest):
 )
 def test_not_the_wake_name(heard):
     assert strip_wake(heard, WAKE) is None
+
+
+@pytest.mark.parametrize(
+    ("heard", "rest"),
+    [
+        ("Um, Nova, open Chrome.", "open Chrome."),  # the logged misses: a filler in front of the name
+        ("Uh Nova pause", "pause"),
+        ("So, Nova, new tab", "new tab"),
+        ("Well, Nova, scroll down", "scroll down"),
+        ("And Nova, mute", "mute"),
+        ("Okay, so, um, Nova, open Notepad", "open Notepad"),
+        ("Um, Nova.", ""),
+        ("Hey, um, no va, open Chrome", "open Chrome"),  # a two-word spelling behind fillers
+    ],
+)
+def test_fillers_before_the_name_are_skipped(heard, rest):
+    assert strip_wake(heard, WakeName.of("Nova", ["no va"])) == rest
+
+
+@pytest.mark.parametrize(
+    ("heard", "rest"),
+    [
+        ("Please Nova, open Chrome", "open Chrome"),
+        ("Alright then Nova, new tab", "new tab"),
+        ("Excuse me Nova, can you open Spotify", "can you open Spotify"),
+        ("Um, quick, Nova, pause the music", "pause the music"),
+    ],
+)
+def test_the_name_as_word_two_or_three_wakes_when_a_command_follows(heard, rest):
+    assert strip_wake(heard, WAKE) == rest
+
+
+@pytest.mark.parametrize(
+    "heard",
+    [
+        "I think Nova is cool",
+        "My friend Nova opened a cafe",
+        "Is Nova listening",
+        "The new Nova update broke everything",
+        "Thanks Nova.",  # the name alone counts only at the front
+        "I told you that Nova, open Chrome trick",  # past the third word
+        "Did you ask her if Nova could open it",
+    ],
+)
+def test_chatter_that_mentions_the_name_is_not_a_wake(heard):
+    assert strip_wake(heard, WAKE) is None
+    assert not judge(heard).accepted
+
+
+def test_misheard_spellings_from_the_logs_are_on_by_default():
+    from nova.config import Settings
+
+    wake = WakeName.of("Nova", Settings().wake_spellings)
+    for heard in ("No va, open Chrome", "Noba, open Chrome", "Noma open Chrome", "um, noba, open Chrome"):
+        assert strip_wake(heard, wake) == "open Chrome", heard
+    assert strip_wake("No, value it properly", wake) is None
+    assert strip_wake("No. Va banque", wake) is None  # two sentences: not the two-word spelling
 
 
 def test_wake_name_opens_even_when_always_listening_is_off():
@@ -223,18 +280,91 @@ def test_always_listening_off_ignores_plain_commands():
     assert not decision.accepted and decision.via == "off"
 
 
-def test_speakers_or_another_app_on_the_mic_require_the_name():
-    playing = judge("open spotify", speakers=True)
-    assert not playing.accepted and playing.via == "speakers"
+def test_another_app_on_the_mic_requires_the_name():
     call = judge("open spotify", mic_busy="Teams.exe")
     assert not call.accepted and call.via == "mic-busy" and "Teams" in call.why
-    assert not judge("snap it left", Addressing(follow_up=True), speakers=True).accepted
+    assert judge("pause", mic_busy="Teams.exe", speakers=True).via == "mic-busy"  # a call: not even media words
+    assert judge("pause the music", Addressing(follow_up=True), mic_busy="Teams.exe").via == "mic-busy"
+
+
+# --- while the speakers play (SPEC §5): a video must not be able to act, but "pause" has to work ---------------
+
+
+@pytest.mark.parametrize(
+    "heard", ["pause", "Pause.", "pause the music", "skip this song", "volume down", "mute", "turn it down a bit"]
+)
+def test_media_and_volume_always_pass_while_the_speakers_play(heard, resolver):
+    decision = judge(heard, speakers=True, resolver=resolver)
+    assert decision.accepted and decision.via == "always" and decision.safe_only, decision
+    assert judge(heard, Addressing(follow_up=True), speakers=True, resolver=resolver).accepted
+
+
+@pytest.mark.parametrize("heard", ["open spotify", "switch to Google Chrome", "new tab", "scroll down", "go back"])
+def test_safe_actions_pass_over_the_speakers_only_in_the_follow_up_window(heard, resolver):
+    outside = judge(heard, speakers=True, resolver=resolver)  # a video saying it must do nothing
+    assert not outside.accepted and outside.via == "speakers", outside
+    inside = judge(heard, Addressing(follow_up=True), speakers=True, resolver=resolver)
+    assert inside.accepted and inside.via == "follow-up" and inside.safe_only, inside
+
+
+@pytest.mark.parametrize(
+    "heard", ["type hello world", "click the first link", "close this tab", "close Claude", "press enter",
+              "search for lofi hip hop", "start dictation", "pause and close Claude"]
+)
+def test_everything_else_needs_the_name_or_key_while_the_speakers_play(heard, resolver):
+    inside = judge(heard, Addressing(follow_up=True), speakers=True, resolver=resolver)
+    assert not inside.accepted and inside.via == "speakers", inside
+    assert not judge(heard, speakers=True, resolver=resolver).accepted
+    assert judge(f"Nova, {heard}", speakers=True, resolver=resolver).accepted
+    assert judge(heard, Addressing(session="copilot"), speakers=True, resolver=resolver).accepted
+
+
+def test_a_command_with_more_than_media_in_it_is_not_a_media_command(resolver):
+    decision = judge("pause and open spotify", speakers=True, resolver=resolver)
+    assert not decision.accepted
+
+
+def test_chatter_over_the_speakers_is_just_chatter(resolver):
+    decision = judge("and that is why the mitochondria matter", speakers=True, resolver=resolver)
+    assert not decision.accepted and decision.via == "not-command"  # the speakers rule blocked nothing here
+
+
+def test_the_follow_up_window_is_unchanged_when_nothing_plays():
+    decision = judge("type hello world", Addressing(follow_up=True))
+    assert decision.accepted and decision.via == "follow-up" and not decision.safe_only
 
 
 def test_passthrough_asleep_and_busy_ignore_plain_commands():
     assert judge("open spotify", Addressing(passthrough=True)).via == "passthrough"
     assert judge("open spotify", Addressing(asleep=True)).via == "asleep"
     assert judge("open spotify", Addressing(busy=True)).via == "busy"
+
+
+def test_while_nova_works_on_a_command_the_follow_up_rule_applies():
+    working = Addressing(working=True)
+    decision = judge("type hello world", working)
+    assert decision.accepted and decision.via == "follow-up"
+    assert judge("open spotify", working).accepted
+    assert not judge("we should go", working).accepted
+    assert judge("type hello world", working, speakers=True).via == "speakers"
+    assert judge("open spotify", working, mic_busy="Teams.exe").via == "mic-busy"
+    assert judge("open spotify", Addressing(busy=True)).via == "busy"  # a session still waits for its own words
+
+
+@pytest.mark.parametrize(
+    "heard", ["stop", "Stop.", "cancel", "Cancel that.", "um, stop it please", "Nova, stop", "hey Nova cancel",
+              "never mind", "wait", "hold on"]
+)
+def test_stop_words(heard):
+    assert is_stop(heard, WAKE)
+
+
+@pytest.mark.parametrize(
+    "heard", ["", "stop the music", "we should stop by the store later", "don't stop", "cancel my subscription",
+              "wait for me", "stop listening", "Nova"]
+)
+def test_not_stop_words(heard):
+    assert not is_stop(heard, WAKE)
 
 
 def test_unknown_app_is_not_resolvable():

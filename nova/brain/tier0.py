@@ -1279,7 +1279,8 @@ class Tier0Resolver:
         safe = all(_safe(s, words) for s in plan.steps)
         first = plan.steps[0]
         target = first.get("app") or first.get("target") or _site_name(first)
-        return Resolved(_FAMILIES.get(first.action, first.action), target, safe)
+        media = all(s.action in ("media", "volume") for s in plan.steps)
+        return Resolved(_FAMILIES.get(first.action, first.action), target, safe, media)
 
 
 def safe_plan(plan: Plan, text: str) -> bool:

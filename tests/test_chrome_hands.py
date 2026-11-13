@@ -9,8 +9,9 @@ from catalog_fixture import CATALOG
 from nova.actions.apps import Outcome
 from nova.actions.chrome import ChromeHands, PageRows
 from nova.actions.native import ActionError
-from nova.brain.executor import Pick
-from nova.brain.plan import Step, step
+from nova.brain.executor import Executor, Pick
+from nova.brain.plan import Plan, Step, step
+from nova.brain.risk import Scene
 from nova.chrome import canvas
 from nova.chrome.bridge import TabInfo
 from nova.chrome.pagemap import Element, PageView
@@ -102,11 +103,75 @@ PAGE = (Element("0:1", "button", "Sign in", section="header"), Element("0:2", "b
         Element("0:7", "searchbox", "Search", editable=True, search=True))
 
 
+def test_resolving_never_brings_chrome_forward():
+    # Resolve runs before the risk check and any Confirm: nothing may take focus yet (SPEC §2, §14).
+    h = hands(elements=PAGE)
+    assert h.resolve(step("page_click", description="submit assignment"), None).get("label") == "Submit Assignment"
+    h.resolve(step("page_click", description="sign in button"), None)  # a question with two candidates
+    h.resolve(step("page_fill", description="search", text="thermo"), None)
+    assert h.chrome.fronted == 0
+
+
+def test_chrome_comes_forward_only_when_the_page_step_runs():
+    h = hands(elements=PAGE)
+    h.run(step("page_click", description="thermodynamics hw 5", element="0:3", label="Thermodynamics HW 5"))
+    assert h.chrome.fronted == 1 and h.chrome.clicks == [("0:3", "Thermodynamics HW 5")]
+    h.run(step("page_fill", description="search", text="thermo", element="0:7", label="Search"))
+    assert h.chrome.fronted == 2
+    h.run(step("page_read", what="page"))  # reading needs no window in front
+    assert h.chrome.fronted == 2
+
+
+class _PageHands:
+    """ChromeHands as the executor sees them, on a Canvas page."""
+
+    def __init__(self, chrome_hands):
+        self.chrome_hands = chrome_hands
+
+    def resolve(self, s, ctx):
+        return self.chrome_hands.resolve(s, ctx)
+
+    def scene(self, s, ctx):
+        return Scene(app="Google Chrome", exe="chrome.exe", url="https://canvas.vt.edu/courses/11/assignments/1")
+
+    def label(self, s):
+        return self.chrome_hands.label(s) or s.action
+
+    def run(self, s, ctx):
+        return self.chrome_hands.run(s)
+
+
+class _Asker:
+    def __init__(self, answer, log):
+        self.answer, self.log = answer, log
+
+    def confirm(self, question):
+        self.log.append(("confirm", question))
+        return self.answer
+
+    def choose(self, question, choices):
+        return None
+
+
+@pytest.mark.parametrize("answer", [True, False])
+def test_a_risky_click_is_confirmed_before_chrome_takes_focus(answer):
+    h = hands(elements=PAGE)
+    log = []
+    front = h.chrome.front
+    h.chrome.front = lambda tab=None: (log.append(("front", "")), front(tab))[1]
+    plan = Plan("act", (step("page_click", description="the submit assignment button"),))
+    result = Executor(_PageHands(h), _Asker(answer, log)).run(plan, None)
+    if answer:
+        assert [kind for kind, _ in log] == ["confirm", "front"] and result.ok
+    else:
+        assert [kind for kind, _ in log] == ["confirm"] and result.cancelled and not h.chrome.clicks
+    assert log[0][1] == "Click “Submit Assignment” on Canvas?"
+
+
 def test_a_clear_match_becomes_that_element():
     h = hands(elements=PAGE)
     resolved = h.resolve(step("page_click", description="sign in"), None)
     assert resolved == step("page_click", description="sign in", element="0:1", label="Sign in")
-    assert h.chrome.fronted == 1
     resolved = h.resolve(step("page_click", description="the blue button at the bottom submit"), None)
     assert resolved.get("label") == "Submit Assignment" and resolved.get("submits") is True
 

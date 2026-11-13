@@ -46,7 +46,7 @@ from .events import (
     SpeechStarted,
     StateChanged,
 )
-from .gate import Env, StubResolver, WakeName, strip_wake
+from .gate import Decision, Env, StubResolver, WakeName, strip_wake
 from .keys import Cancel, Gestures, TriggerEvent, TriggerKeys, parse_chord
 from .log import TraceLog
 from .state import (
@@ -56,6 +56,7 @@ from .state import (
     Dictated,
     Dictation,
     Done,
+    Dropped,
     DropUtterance,
     EndUtterance,
     Heard,
@@ -65,6 +66,7 @@ from .state import (
     Power,
     Preload,
     Progress,
+    Queued,
     Sleep,
     SpeechEnd,
     SpeechStart,
@@ -157,7 +159,10 @@ class Triggers:
         self._peaks: dict[int, list[float]] = {}
         self._recording: dict[int, list[str]] = {}
         self._wake_seen: list[int] = []
-        self._unsubscribe = [bus.subscribe(kind, self._queue.put) for kind in _SUBSCRIBED]
+        self._note: CommandFinished | None = None  # the last island note published from here
+        self._unsubscribe = [
+            bus.subscribe(kind, self._finished if kind is CommandFinished else self._queue.put) for kind in _SUBSCRIBED
+        ]
         self._thread = threading.Thread(target=self._run, name="nova-triggers", daemon=True)
 
     # --- any thread ------------------------------------------------------------------------------
@@ -383,6 +388,13 @@ class Triggers:
             bus.publish(PreloadHint(effect.reason, now))
         elif isinstance(effect, (Command, Ignored, Woke)):
             self._gated(effect, now)
+        elif isinstance(effect, Queued):  # logged now; the brain and the island hear of it when its turn comes
+            self._trace_gate(effect.utterance, effect.decision, queued=True)
+        elif isinstance(effect, Dropped):
+            self._trace_gate(effect.utterance, effect.decision, accepted=False, via="dropped", why=effect.why)
+            if effect.stale:
+                self._note = CommandFinished(False, f"Skipped “{_cut(effect.decision.text)}” — it waited too long")
+                bus.publish(self._note)  # the island's result line (not a result of the running command)
         elif isinstance(effect, Answer):
             bus.publish(AnswerHeard(effect.utterance, effect.text, now))
         elif isinstance(effect, Dictated):
@@ -396,12 +408,24 @@ class Triggers:
 
     def _gated(self, effect: Command | Ignored | Woke, now: float) -> None:
         d = effect.decision
-        if self._trace is not None:
-            self._trace.write(
-                kind="gate", utterance=effect.utterance, accepted=d.accepted, via=d.via, why=d.why,
-                safe_only=d.safe_only, text=d.heard,
-            )
+        if not (isinstance(effect, Command) and effect.waited is not None):  # a queued one was logged when accepted
+            self._trace_gate(effect.utterance, d)
         self._bus.publish(Gated(effect.utterance, d.accepted, d.via, d.text, d.heard, d.why, d.safe_only, d.wake_only, now))
+
+    def _trace_gate(self, utterance: int, d: Decision, **changes: object) -> None:
+        if self._trace is not None:
+            record = {"accepted": d.accepted, "via": d.via, "why": d.why, "safe_only": d.safe_only, "text": d.heard}
+            self._trace.write(kind="gate", utterance=utterance, **{**record, **changes})
+
+    def _finished(self, event: CommandFinished) -> None:
+        """From the bus: the brain's results go to the state machine; the controller's own island notes don't."""
+        if event is not self._note:
+            self._queue.put(event)
+
+
+def _cut(text: str, limit: int = 32) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
 def stub_brain(bus: Bus) -> Callable[[], None]:

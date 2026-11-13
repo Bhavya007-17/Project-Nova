@@ -1,5 +1,7 @@
 """Nova's state machine (SPEC §5): key gestures + speech + finals -> states and effects."""
 
+import pytest
+
 from nova.gate import Env, StubResolver, WakeName
 from nova.keys import Cancel, DoubleTap, Press, Release
 from nova.state import (
@@ -8,6 +10,8 @@ from nova.state import (
     DONE_S,
     FOLLOW_UP_S,
     HEARD_WAIT_S,
+    QUEUE_MAX,
+    QUEUE_MAX_AGE_S,
     TAP_WAIT_S,
     WAKE_WAIT_S,
     Answer,
@@ -16,6 +20,7 @@ from nova.state import (
     Dictated,
     Dictation,
     Done,
+    Dropped,
     DropUtterance,
     EndUtterance,
     Heard,
@@ -25,6 +30,7 @@ from nova.state import (
     Power,
     Preload,
     Progress,
+    Queued,
     Sleep,
     SpeechEnd,
     SpeechStart,
@@ -228,6 +234,42 @@ def test_name_alone_opens_a_session_for_the_next_utterance():
     assert decision.via == "wake" and decision.text == "I'm gonna open a restaurant"
 
 
+def test_name_alone_claims_the_command_he_already_started():
+    # Logged shape (~7 % of name-alone sessions): he starts the command 400 ms after the name; the name's final
+    # lands 50 ms later. Nothing claimed that utterance and it was dropped as "busy".
+    run = Run()(SpeechStart(1, 0.0), SpeechEnd(1, "silence", 0.45), SpeechStart(2, 0.85), heard(1, "Nova.", 0.9))
+    assert run.state is State.LISTENING and run.m.session.utterance == 2 and next_deadline(run.m) is None
+    run(SpeechEnd(2, "silence", 1.8))
+    assert run.state is State.THINKING
+    run(heard(2, "the blue folder please", 2.0))
+    decision = run.has(Command)[0].decision
+    assert decision.via == "wake" and decision.text == "the blue folder please"
+
+
+def test_name_alone_claims_a_short_command_that_already_ended():
+    run = Run()(SpeechStart(1, 0.0), SpeechEnd(1, "silence", 0.45), SpeechStart(2, 0.7), SpeechEnd(2, "silence", 1.2),
+                heard(1, "Nova.", 1.3))
+    assert run.state is State.THINKING and run.m.session.utterance == 2
+    assert next_deadline(run.m) == 1.3 + HEARD_WAIT_S
+    run(heard(2, "pause", 1.5))
+    assert run.has(Command)[0].decision.via == "wake" and not run.has(Ignored)
+
+
+def test_name_seen_in_live_words_then_a_pause_still_claims_the_command():
+    run = Run()(SpeechStart(1, 0.0), WakeHeard(1, 0.3), SpeechEnd(1, "silence", 0.45), SpeechStart(2, 0.85),
+                heard(1, "Nova.", 0.9), SpeechEnd(2, "silence", 1.8), heard(2, "new tab", 2.0))
+    assert run.has(Command)[0].decision.via == "wake"
+
+
+def test_name_alone_claims_only_fresh_speech():
+    from nova.state import Spoken
+
+    stale = Machine(spoken=(Spoken(9, 1.0, 2.0),))  # an utterance from long ago whose final never came
+    run = Run(stale)(SpeechStart(10, 30.0), SpeechEnd(10, "silence", 30.4), heard(10, "Nova.", 30.6))
+    assert run.state is State.LISTENING and run.m.session.utterance is None
+    assert next_deadline(run.m) == 30.6 + WAKE_WAIT_S
+
+
 def test_name_alone_then_nothing_times_out():
     run = Run()(heard(1, "Nova", 1.0), Tick(1.0 + WAKE_WAIT_S))
     assert run.state is State.IDLE
@@ -256,12 +298,114 @@ def test_follow_up_window_lasts_8_seconds():
     assert run.has(Ignored)[0].decision.via == "needs-name"
 
 
-def test_busy_takes_only_the_name():
-    run = Run()(heard(1, "Nova, open Chrome", 1.0))
-    run(heard(2, "open spotify", 1.5))
-    assert run.has(Ignored)[0].decision.via == "busy"
-    run(heard(3, "Nova, pause", 1.8))
-    assert run.has(Command) and run.has(Cancelled)[0].why == "superseded"
+# --- never drop him: what passes the gate while Nova is busy runs next (SPEC §5) ---------------------------
+
+
+def busy(at=1.0):
+    """ "Nova, open Chrome" was accepted and the brain is acting on it."""
+    return Run()(heard(1, "Nova, open Chrome", at), Progress(State.ACTING, at + 0.1))
+
+
+def test_a_command_said_while_nova_is_busy_runs_next():
+    run = busy()(SpeechStart(2, 1.2), SpeechEnd(2, "silence", 1.9), heard(2, "maximize it", 2.1))
+    assert run.has(Queued)[0].decision.text == "maximize it"
+    assert not run.has(Command) and not run.has(Cancelled) and not run.has(Ignored)
+    assert run.state is State.ACTING  # the running command is not disturbed
+    run(Done(True, 2.5, "Opened Chrome"))
+    command = run.has(Command)[0]
+    assert run.state is State.THINKING and command.utterance == 2 and command.waited == pytest.approx(0.6)
+    run(Progress(State.ACTING, 2.6), Done(True, 2.9, "Maximized"))
+    assert run.state is State.DONE and run.m.queue == ()
+
+
+def test_queued_commands_run_in_order():
+    run = busy()(heard(2, "maximize it", 1.5), heard(3, "open spotify", 1.8))
+    assert [w.utterance for w in run.m.queue] == [2, 3]
+    run(Done(True, 2.0))
+    assert run.has(Command)[0].utterance == 2
+    run(Done(True, 2.5))
+    assert run.has(Command)[0].utterance == 3
+    run(Done(True, 3.0))
+    assert run.state is State.DONE and not run.has(Command)
+
+
+def test_a_queued_command_older_than_10_s_is_dropped_with_a_note():
+    run = busy()(SpeechStart(2, 1.2), SpeechEnd(2, "silence", 1.9), heard(2, "maximize it", 2.1))
+    run(Done(True, 1.9 + QUEUE_MAX_AGE_S + 0.5, "Opened Chrome"))
+    dropped = run.has(Dropped)[0]
+    assert dropped.utterance == 2 and dropped.stale and not run.has(Command)
+    assert run.state is State.DONE and run.m.queue == ()
+
+
+def test_a_stale_command_is_skipped_and_a_fresh_one_behind_it_runs():
+    run = busy()(heard(2, "maximize it", 1.5), heard(3, "open spotify", 9.0))
+    run(Done(True, 12.0))
+    assert [d.utterance for d in run.has(Dropped)] == [2] and run.has(Command)[0].utterance == 3
+
+
+@pytest.mark.parametrize("said", ["stop", "Stop.", "Cancel.", "cancel that", "um, stop it", "Nova, stop", "never mind", "Wait."])
+def test_stop_while_busy_aborts_the_action_and_clears_the_queue(said):
+    run = busy()(heard(2, "maximize it", 1.5), heard(3, said, 1.8))
+    assert run.state is State.IDLE and run.has(Cancelled)[0].why == "stop"
+    assert [d.utterance for d in run.has(Dropped)] == [2] and run.m.queue == ()
+    assert not run.has(Command)
+    run(Done(True, 2.0))  # a late result of the stopped command changes nothing
+    assert run.state is State.IDLE and not run.has(Command)
+
+
+def test_a_sentence_with_stop_in_it_is_not_a_stop():
+    run = busy()(heard(2, "we should stop by the store later", 1.5))
+    assert run.state is State.ACTING and not run.has(Cancelled)
+
+
+def test_the_name_still_interrupts_and_replaces_what_was_waiting():
+    run = busy()(heard(2, "maximize it", 1.5), heard(3, "Nova, pause", 1.8))
+    assert run.has(Cancelled)[0].why == "superseded" and run.has(Command)[0].utterance == 3
+    assert [d.utterance for d in run.has(Dropped)] == [2] and run.m.queue == ()
+    run(Done(True, 2.2))
+    assert run.state is State.DONE and not run.has(Command)
+
+
+def test_the_key_still_interrupts_and_replaces_what_was_waiting():
+    run = busy()(heard(2, "maximize it", 1.5), Press("copilot", 1.8))
+    assert run.state is State.LISTENING and run.has(Cancelled)[0].why == "superseded"
+    assert [d.utterance for d in run.has(Dropped)] == [2] and run.m.queue == ()
+
+
+def test_a_failed_command_stops_the_queue():
+    run = busy()(heard(2, "maximize it", 1.5), Done(False, 2.0, "Chrome didn't open"))
+    assert run.state is State.ERROR and [d.utterance for d in run.has(Dropped)] == [2] and not run.has(Command)
+
+
+def test_esc_clears_the_queue():
+    run = busy()(heard(2, "maximize it", 1.5), Cancel(1.8))
+    assert run.state is State.IDLE and run.has(Dropped) and run.m.queue == ()
+
+
+def test_a_command_that_was_not_one_after_all_lets_the_next_run():
+    run = Run()(heard(1, "Nova, do the thing", 1.0), heard(2, "open spotify", 1.5))
+    run(Progress(State.IDLE, 1.8, "not a command"))
+    assert run.state is State.THINKING and run.has(Command)[0].utterance == 2
+
+
+def test_a_question_keeps_the_queue_and_a_no_drops_it():
+    run = busy()(heard(2, "maximize it", 1.5), Progress(State.CONFIRM, 1.7))
+    assert [w.utterance for w in run.m.queue] == [2]
+    run(Progress(State.IDLE, 3.0, "Cancelled"))  # he said no
+    assert run.state is State.IDLE and run.has(Dropped) and run.m.queue == ()
+
+
+def test_the_queue_is_small():
+    run = busy()
+    for n in range(2, 2 + QUEUE_MAX):
+        run(heard(n, "open spotify", 1.5))
+    run(heard(99, "open spotify", 1.6))
+    assert len(run.m.queue) == QUEUE_MAX and run.has(Ignored)[0].decision.via == "busy"
+
+
+def test_chatter_while_busy_is_still_ignored():
+    run = busy()(heard(2, "did you close the door", 1.5))
+    assert run.has(Ignored)[0].decision.via == "not-command" and run.m.queue == ()
 
 
 def test_chatter_during_a_key_session_cannot_take_it_over():
@@ -296,10 +440,73 @@ def test_passthrough_ignores_plain_speech_and_ends_on_a_tap():
 
 def test_confirm_takes_answers_and_times_out():
     run = Run()(heard(1, "Nova, submit it", 1.0), Progress(State.CONFIRM, 1.4))
-    run(heard(2, "yes", 3.0))
+    run(SpeechStart(2, 2.2), SpeechEnd(2, "silence", 2.8), heard(2, "yes", 3.0))
     assert run.has(Answer)[0].text == "yes" and run.state is State.CONFIRM
     run(Tick(1.4 + 15.0))
     assert run.state is State.IDLE and run.has(Cancelled)[0].why == "no answer"
+
+
+# --- a yes must be a real yes (SPEC §5, §14) -----------------------------------------------------------
+
+
+def asking(kind=State.CONFIRM, at=10.0):
+    return Run()(heard(1, "Nova, send it", at - 0.5), Progress(kind, at))
+
+
+def test_a_tiny_clip_that_began_before_the_question_never_answers_it():
+    # The logged case: the Confirm appeared, and 262 ms later the final of a 224 ms clip said "Yeah."
+    run = asking(at=10.0)
+    run(SpeechStart(2, 9.95), SpeechEnd(2, "silence", 10.174), heard(2, "Yeah.", 10.262))
+    assert not run.has(Answer) and run.state is State.CONFIRM
+    assert run.has(Ignored)[0].decision.via == "answer-early"
+
+
+def test_speech_under_way_when_the_question_appears_never_answers_it():
+    run = Run()(heard(1, "Nova, send it", 9.5), SpeechStart(2, 9.8), Progress(State.CONFIRM, 10.0))
+    run(SpeechEnd(2, "silence", 11.5), heard(2, "yes that one is fine", 11.7))
+    assert not run.has(Answer) and run.has(Ignored)[0].decision.via == "answer-early"
+    assert run.state is State.CONFIRM and outputs(run.m).asking == "confirm"  # Enter / the buttons still answer
+
+
+def test_an_answer_shorter_than_400_ms_never_counts():
+    run = asking(at=10.0)
+    run(SpeechStart(2, 10.6), SpeechEnd(2, "silence", 10.9), heard(2, "Yeah.", 11.0))
+    assert not run.has(Answer) and run.has(Ignored)[0].decision.via == "answer-short"
+    assert run.state is State.CONFIRM
+
+
+def test_a_600_ms_yes_that_began_after_the_question_answers_it():
+    run = asking(at=10.0)
+    run(SpeechStart(2, 10.5), SpeechEnd(2, "silence", 11.1), heard(2, "Yes.", 11.3))
+    assert run.has(Answer)[0].text == "Yes." and not run.has(Ignored)
+
+
+def test_clarify_answers_follow_the_same_rule():
+    run = asking(State.CLARIFY, at=10.0)
+    run(SpeechStart(2, 9.9), SpeechEnd(2, "silence", 10.7), heard(2, "the second one", 10.9))
+    assert not run.has(Answer)
+    run(SpeechStart(3, 11.0), SpeechEnd(3, "silence", 11.8), heard(3, "the second one", 12.0))
+    assert run.has(Answer)[0].utterance == 3
+
+
+def test_an_utterance_nobody_saw_start_is_not_an_answer():
+    run = asking(at=10.0)(heard(7, "yes", 12.0))
+    assert not run.has(Answer) and run.has(Ignored)[0].decision.via == "answer-early"
+
+
+def test_each_question_has_its_own_clock():
+    # He answers the first question; a second one appears while his next words are already under way.
+    run = asking(State.CLARIFY, at=10.0)
+    run(SpeechStart(2, 10.5), SpeechEnd(2, "silence", 11.2), heard(2, "the first one", 11.4))
+    assert run.has(Answer)
+    run(Progress(State.ACTING, 11.5), SpeechStart(3, 11.6), Progress(State.CONFIRM, 12.0))
+    run(SpeechEnd(3, "silence", 12.4), heard(3, "okay", 12.6))
+    assert not run.has(Answer) and run.has(Ignored)[0].decision.via == "answer-early"
+
+
+def test_a_key_press_still_interrupts_a_question():
+    run = asking(at=10.0)(Press("copilot", 10.3))
+    assert run.state is State.LISTENING and run.has(Cancelled)[0].why == "superseded"
 
 
 def test_asking_arms_the_answer_keys_and_no_cancels_like_esc():

@@ -341,6 +341,8 @@ class SpeechWorker:
             self._dictation_rules = self._dictating
             self._ep.set_rules(DICTATION_RULES if self._dictating else self._rules)
         if self._held:
+            if not self._ep.held:
+                self._ep.listen_now()  # a new press: no quiet to wait for after the last release
             self._ep.held = True  # a press takes effect before this audio is read...
         if self._source.is_open:
             self._read_audio()

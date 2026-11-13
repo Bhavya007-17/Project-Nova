@@ -16,7 +16,7 @@ import enum
 from dataclasses import dataclass, replace
 
 from .dictation.rules import split_stop
-from .gate import Addressing, Decision, Env, decide
+from .gate import Addressing, Decision, Env, decide, is_stop
 from .keys import Cancel, DoubleTap, Press, Release
 
 
@@ -46,9 +46,15 @@ CONFIRM_S = 15.0  # SPEC §6: 15 s without an answer = cancel
 CLARIFY_S = 20.0
 CLAIM_S = 1.0  # speech that started at most this long before a key press belongs to the key session
 DICTATION_SILENCE_S = 10.0  # SPEC §11: dictation ends after this long without speech
+ANSWER_MIN_S = 0.4  # a spoken answer is at least this long (speech-to-text invents "yeah" on tiny clips)
+QUEUE_MAX_AGE_S = 10.0  # a command that waited longer than this for its turn is dropped: the screen has moved on
+QUEUE_MAX = 4  # commands waiting behind the running one
+NOTE_S = 3.0  # Done stays up this long when it also says a waiting command was skipped
+_KEEP_SPOKEN = 8  # utterances whose start / end are remembered until their finals arrive
 
 _BUSY = frozenset({State.THINKING, State.ACTING})
 _ASKING = frozenset({State.CONFIRM, State.CLARIFY})
+_RUNNING = _BUSY | _ASKING  # a command is with the brain (when no session is waiting for its own words)
 _CANCELLABLE = frozenset({State.LISTENING, State.THINKING, State.ACTING, State.CONFIRM, State.CLARIFY, State.TEACHING})
 _ESC = _CANCELLABLE | {State.DICTATING}
 _KEY_STARTS = frozenset({State.IDLE, State.DONE, State.ERROR}) | _BUSY | _ASKING
@@ -166,6 +172,25 @@ class Preload:
 class Command:
     decision: Decision
     utterance: int
+    waited: float | None = None  # it was queued behind another command for this long (s)
+
+
+@dataclass(frozen=True)
+class Queued:
+    """Accepted while Nova was busy: it runs when the command before it is done (a ``Command`` follows then)."""
+
+    decision: Decision
+    utterance: int
+
+
+@dataclass(frozen=True)
+class Dropped:
+    """A queued command that will not run. stale: it waited too long (the island says so)."""
+
+    decision: Decision
+    utterance: int
+    why: str
+    stale: bool = False
 
 
 @dataclass(frozen=True)
@@ -215,8 +240,8 @@ class PassthroughEnded:
 
 
 Effect = (
-    Transition | EndUtterance | DropUtterance | Preload | Command | Ignored | Woke | Answer | Dictated | Dictation
-    | Cancelled | PassthroughEnded
+    Transition | EndUtterance | DropUtterance | Preload | Command | Queued | Dropped | Ignored | Woke | Answer
+    | Dictated | Dictation | Cancelled | PassthroughEnded
 )
 
 
@@ -235,6 +260,24 @@ class Session:
 
 
 @dataclass(frozen=True)
+class Spoken:
+    """When an utterance started and ended (its final arrives later and is judged by these)."""
+
+    utterance: int
+    started: float
+    ended: float | None = None  # None: still talking
+
+
+@dataclass(frozen=True)
+class Waiting:
+    """A command accepted while another one ran, waiting for its turn."""
+
+    decision: Decision
+    utterance: int
+    since: float  # when he finished saying it
+
+
+@dataclass(frozen=True)
 class Machine:
     state: State = State.IDLE
     session: Session | None = None
@@ -242,6 +285,9 @@ class Machine:
     deadline: float | None = None  # when the current state times out
     follow_up_until: float = 0.0
     asleep: bool = False
+    spoken: tuple[Spoken, ...] = ()  # the last few utterances, oldest first
+    asked_at: float | None = None  # Confirm / Clarify: when this question appeared
+    queue: tuple[Waiting, ...] = ()  # commands behind the running one, in order (only while one runs)
 
 
 @dataclass(frozen=True)
@@ -297,35 +343,91 @@ def _speaking_mine(m: Machine) -> bool:
     return m.session is not None and m.speaking is not None and m.speaking[0] == m.session.utterance
 
 
+def spoken(m: Machine, utterance: int) -> Spoken | None:
+    return next((s for s in m.spoken if s.utterance == utterance), None)
+
+
+def _begun_after(m: Machine, utterance: int, now: float) -> Spoken | None:
+    """The first utterance he began after ``utterance`` (the name alone) whose final hasn't arrived yet."""
+    name = spoken(m, utterance)
+    later = [s for s in m.spoken if s.utterance > utterance and now - s.started <= WAKE_WAIT_S
+             and (name is None or s.started >= name.started)]
+    return min(later, key=lambda s: s.utterance) if later else None
+
+
+def not_an_answer(m: Machine, utterance: int) -> tuple[str, str] | None:
+    """Why this utterance can't answer the question on screen (SPEC §5, §14), as (reason, plain words); None = it can.
+
+    An answer began after the question appeared and lasted at least ``ANSWER_MIN_S``."""
+    said = spoken(m, utterance)
+    if said is None or m.asked_at is None or said.started < m.asked_at:
+        return "answer-early", "began before the question appeared"
+    if said.ended is None or said.ended - said.started < ANSWER_MIN_S:
+        return "answer-short", f"shorter than {round(ANSWER_MIN_S * 1000)} ms"
+    return None
+
+
 def addressing(m: Machine, utterance: int, now: float) -> Addressing:
     """What the gate should know about this utterance."""
     session = m.session if _mine(m, utterance) else None
     named = session is not None and session.trigger == "named"  # the text itself must carry the name
+    working = _working(m)
     return Addressing(
         session=None if session is None or named else session.trigger,
         follow_up=now < m.follow_up_until,
         passthrough=m.state is State.PASSTHROUGH,
         asleep=m.asleep,
-        busy=(m.state in _BUSY or m.state is State.LISTENING) and session is None,
+        busy=(m.state in _BUSY or m.state is State.LISTENING) and session is None and not working,
+        working=working,
     )
+
+
+def _working(m: Machine) -> bool:
+    """Thinking / acting on a command (not: waiting for the final of a session's own words)."""
+    return m.state in _BUSY and m.session is None
 
 
 def step(m: Machine, event: object) -> Step:
     if isinstance(event, Power):
-        return _power(m, event)
+        return _settled(_power(m, event))
     if m.state is State.OFF:
         return Step(m)
     handler = _HANDLERS.get(type(event))
     if handler is None:
         raise TypeError(f"not a state-machine input: {event!r}")
-    return handler(m, event)
+    return _settled(handler(m, event))
+
+
+def _settled(result: Step) -> Step:
+    """Commands wait only behind a running one: once nothing runs (stopped, failed, replaced by a key press, Off)
+    whatever is still waiting is dropped, never run later against a screen that has moved on."""
+    m = result.machine
+    if not m.queue or (m.state in _RUNNING and m.session is None):
+        return result
+    dropped = tuple(Dropped(w.decision, w.utterance, "the command before it didn't finish") for w in m.queue)
+    return Step(replace(m, queue=()), (*result.effects, *dropped))
+
+
+def _next_up(m: Machine, at: float) -> tuple[Waiting | None, tuple[Waiting, ...], tuple[Dropped, ...]]:
+    """The running command is done: (who runs now, who still waits, who waited too long)."""
+    fresh = tuple(w for w in m.queue if at - w.since <= QUEUE_MAX_AGE_S)
+    stale = tuple(Dropped(w.decision, w.utterance, f"waited over {QUEUE_MAX_AGE_S:.0f} s", stale=True)
+                  for w in m.queue if at - w.since > QUEUE_MAX_AGE_S)
+    return (fresh[0] if fresh else None), fresh[1:], stale
+
+
+def _start(m: Machine, nxt: Waiting, rest: tuple[Waiting, ...], stale: tuple[Dropped, ...], at: float, why: str,
+           **changes) -> Step:
+    return _go(m, State.THINKING, why, *stale, Command(nxt.decision, nxt.utterance, waited=at - nxt.since),
+               session=None, queue=rest, deadline=at + HEARD_WAIT_S, **changes)
 
 
 def _power(m: Machine, e: Power) -> Step:
     if e.on and m.state is State.OFF:
         return _go(Machine(state=State.OFF, asleep=m.asleep), State.IDLE, "Nova is on")
     if not e.on and m.state is not State.OFF:
-        return _go(m, State.OFF, "Nova is off", session=None, speaking=None, deadline=None, follow_up_until=0.0)
+        return _go(m, State.OFF, "Nova is off", session=None, speaking=None, deadline=None, follow_up_until=0.0,
+                   spoken=(), asked_at=None)
     return Step(m)
 
 
@@ -392,7 +494,8 @@ def _cancel(m: Machine, e: Cancel) -> Step:
 
 
 def _speech_start(m: Machine, e: SpeechStart) -> Step:
-    m = replace(m, speaking=(e.utterance, e.at))
+    others = tuple(s for s in m.spoken if s.utterance != e.utterance)
+    m = replace(m, speaking=(e.utterance, e.at), spoken=(*others, Spoken(e.utterance, e.at))[-_KEEP_SPOKEN:])
     if m.state is State.DICTATING and not _finishing(m):
         return Step(replace(m, deadline=None))  # talking: the silence clock stops
     session = m.session
@@ -404,6 +507,10 @@ def _speech_start(m: Machine, e: SpeechStart) -> Step:
 def _speech_end(m: Machine, e: SpeechEnd) -> Step:
     if m.speaking is not None and m.speaking[0] == e.utterance:
         m = replace(m, speaking=None)
+    if e.reason == "cancel":  # no final follows
+        m = replace(m, spoken=tuple(s for s in m.spoken if s.utterance != e.utterance))
+    else:
+        m = replace(m, spoken=tuple(replace(s, ended=e.at) if s.utterance == e.utterance else s for s in m.spoken))
     if m.state is State.DICTATING:
         if not _finishing(m):
             return Step(replace(m, deadline=e.at + DICTATION_SILENCE_S))
@@ -437,21 +544,47 @@ def _heard(m: Machine, e: Heard) -> Step:
             return _idle(m, "dictation stopped", *typed, Dictation(False, "tap"))
         return Step(m, typed)
     if m.state in _ASKING:
-        return Step(m, (Answer(e.text, e.utterance),))
+        refused = not_an_answer(m, e.utterance)
+        if refused is None:
+            return Step(m, (Answer(e.text, e.utterance),))
+        heard = e.text.strip()  # Enter, the buttons and a real answer still count; this one changes nothing
+        return Step(m, (Ignored(Decision(False, refused[0], heard, heard, f"not an answer: {refused[1]}"), e.utterance),))
     mine = _mine(m, e.utterance)
+    working = _working(m)
+    if working and is_stop(e.text, e.env.wake):  # "stop" / "cancel": abort what runs, forget what waits
+        heard = e.text.strip()
+        return _idle(m, "stopped", Cancelled("stop"),
+                     Ignored(Decision(False, "stop", heard, heard, "stopped the running command"), e.utterance))
     decision = decide(e.text, addressing(m, e.utterance, e.at), e.env)
     if not decision.accepted:
         if mine:
             return _idle(m, decision.why, Ignored(decision, e.utterance))
         return Step(m, (Ignored(decision, e.utterance),))
+    if working and decision.via in ("follow-up", "always"):  # no name, no key: it waits its turn (SPEC §5)
+        if len(m.queue) >= QUEUE_MAX:
+            full = Decision(False, "busy", decision.text, decision.heard, "too many commands already waiting")
+            return Step(m, (Ignored(full, e.utterance),))
+        said = spoken(m, e.utterance)
+        since = said.ended if said is not None and said.ended is not None else e.at
+        return Step(replace(m, queue=(*m.queue, Waiting(decision, e.utterance, since))), (Queued(decision, e.utterance),))
     if decision.wake_only:
-        return _go(m, State.LISTENING, "listening for the command", Preload("wake"), Woke(decision, e.utterance),
-                   session=Session("wake"), deadline=e.at + WAKE_WAIT_S)
+        effects = (Preload("wake"), Woke(decision, e.utterance))
+        begun = _begun_after(m, e.utterance, e.at)
+        if begun is None:
+            return _go(m, State.LISTENING, "listening for the command", *effects, session=Session("wake"),
+                       deadline=e.at + WAKE_WAIT_S)
+        # He went on to the command before this final arrived: that utterance is the command.
+        session = Session("wake", begun.utterance)
+        if begun.ended is None:
+            return _go(m, State.LISTENING, "listening for the command", *effects, session=session, deadline=None)
+        return _go(m, State.THINKING, "heard you", *effects, session=session, deadline=e.at + HEARD_WAIT_S)
     command = Command(decision, e.utterance)
     if m.state is State.PASSTHROUGH:
         return Step(m, (command,))  # "Nova, ..." during voice mode runs; voice mode goes on
     superseded = (Cancelled("superseded"),) if m.state in _BUSY and not mine else ()
-    return _go(m, State.THINKING, decision.why, *superseded, command, session=None, deadline=e.at + HEARD_WAIT_S)
+    replaced = tuple(Dropped(w.decision, w.utterance, "replaced by a new command") for w in m.queue)
+    return _go(m, State.THINKING, decision.why, *superseded, *replaced, command, session=None, queue=(),
+               deadline=e.at + HEARD_WAIT_S)
 
 
 def _tick(m: Machine, e: Tick) -> Step:
@@ -478,15 +611,26 @@ def _done(m: Machine, e: Done) -> Step:
                    deadline=e.at + ERROR_S)
     if m.state not in _BUSY and m.state not in _ASKING:
         return Step(m)
-    state, wait = (State.DONE, max(DONE_S, min(e.hold, MAX_HOLD_S))) if e.ok else (State.ERROR, ERROR_S)
     why = e.detail or ("done" if e.ok else "failed")
-    return _go(m, state, why, session=None, deadline=e.at + wait, follow_up_until=e.at + FOLLOW_UP_S)
+    if not e.ok:  # what waited was said for a screen this command didn't produce: it is dropped (see _settled)
+        return _go(m, State.ERROR, why, session=None, deadline=e.at + ERROR_S, follow_up_until=e.at + FOLLOW_UP_S)
+    nxt, rest, stale = _next_up(m, e.at)
+    if nxt is not None:
+        return _start(m, nxt, rest, stale, e.at, why, follow_up_until=e.at + FOLLOW_UP_S)
+    wait = max(DONE_S, min(e.hold, MAX_HOLD_S), NOTE_S if stale else 0.0)
+    return _go(m, State.DONE, why, *stale, session=None, queue=(), deadline=e.at + wait,
+               follow_up_until=e.at + FOLLOW_UP_S)
 
 
 def _progress(m: Machine, e: Progress) -> Step:
     if e.state not in _PROGRESS.get(m.state, ()):
         return Step(m)
     if e.state is State.IDLE:
+        if m.state is State.THINKING and m.queue:  # not a command after all: the next one's turn
+            nxt, rest, stale = _next_up(m, e.at)
+            if nxt is not None:
+                return _start(m, nxt, rest, stale, e.at, e.why or "done")
+            return _idle(replace(m, queue=()), e.why or "done", *stale)
         effects: tuple[Effect, ...] = ()
         if m.state is State.PASSTHROUGH:
             effects = (PassthroughEnded(e.why or "voice mode closed"),)
@@ -496,7 +640,8 @@ def _progress(m: Machine, e: Progress) -> Step:
     wait = _PROGRESS_DEADLINE.get(e.state)
     effects = (Dictation(True, e.why or "plan"),) if e.state is State.DICTATING else ()
     return _go(m, e.state, e.why or e.state.value, *effects, session=None,
-               deadline=e.at + wait if wait is not None else None)
+               deadline=e.at + wait if wait is not None else None,
+               asked_at=e.at if e.state in _ASKING else None)
 
 
 def _sleep(m: Machine, e: Sleep) -> Step:

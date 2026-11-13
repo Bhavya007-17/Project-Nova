@@ -4,13 +4,17 @@ Rules, in order:
 1. Empty -> ignored.
 2. A key session (Copilot key / chord) or a wake session ("Nova" alone, then this) -> accepted;
    the name is stripped if he said it anyway.
-3. Starts with the wake name ("Nova, ..." / "hey Nova ...", spellings from settings) -> accepted, name stripped.
-4. Nova busy (thinking / acting), in Passthrough or asleep -> nothing else counts.
-5. Another app is using the mic (a call) or the speakers are playing -> name or key required.
+3. Addressed to the wake name ("Nova, ..." / "um, hey Nova ..." / "please Nova, open ...", spellings from
+   settings; see ``strip_wake``) -> accepted, name stripped.
+4. A session waiting for its own words, Passthrough or asleep -> nothing else counts. (While Nova thinks or acts
+   on a command, 6 and 7 still apply; the state machine queues what passes and "stop" / "cancel" aborts.)
+5. Another app is using the mic (a call) -> name or key required.
 6. Follow-up window (8 s after a command ran) -> anything that starts like a command.
 7. Always-listening -> starts like a command, resolves (stub until Stage 04: a page / media / volume
    command, or a command verb + a known app or site), and is safe without the name. Typing,
    clicking, closing and searching an unnamed engine need the name or the key.
+While the speakers play, 6 and 7 are narrower (a video must not act, but "pause" has to work): the follow-up
+window takes only what resolves and is safe, always-listening only media and volume commands.
 """
 
 from __future__ import annotations
@@ -22,6 +26,9 @@ from dataclasses import dataclass
 _TOKEN = re.compile(r"[^\W_]+(?:['’][^\W_]+)*")
 _SEPARATORS = " \t\r\n,.:;!?-–—…\"'“”"
 _GREETINGS = frozenset({"hey", "hi", "hello", "ok", "okay", "yo", "oh"})
+_WAKE_LEADS = _GREETINGS | {"um", "uh", "uhm", "er", "erm", "hmm", "mm", "so", "well", "and"}  # skipped before the name
+_MAX_WAKE_LEADS = 4
+_WAKE_WITHIN = 3  # the name counts within the first three words after them
 
 
 def _norm(token: str) -> str:
@@ -63,15 +70,8 @@ class WakeName:
         return word in self.words or (len(word) > 2 and word[-1] in "sh" and word[:-1] in self.words)
 
 
-def strip_wake(text: str, wake: WakeName) -> str | None:
-    """The rest of ``text`` if it starts with the wake name (after up to two greetings), else None."""
-    tokens = list(_TOKEN.finditer(text))
-    i = 0
-    while i < min(2, len(tokens)) and _norm(tokens[i].group()) in _GREETINGS:
-        i += 1
-    if i >= len(tokens):
-        return None
-    end = None
+def _name_end(text: str, tokens: list[re.Match[str]], i: int, wake: WakeName) -> int | None:
+    """Where the wake name ends if it sits at token ``i`` (a one-word or several-word spelling), else None."""
     for phrase in wake.phrases:
         span = tokens[i : i + len(phrase)]
         if (
@@ -79,13 +79,32 @@ def strip_wake(text: str, wake: WakeName) -> str | None:
             and tuple(_norm(t.group()) for t in span) == phrase
             and all(not text[a.end() : b.start()].strip() for a, b in zip(span, span[1:], strict=False))
         ):
-            end = span[-1].end()
-            break
-    if end is None and wake._is_word(_norm(tokens[i].group())):
-        end = tokens[i].end()
-    if end is None:
+            return span[-1].end()
+    if i < len(tokens) and wake._is_word(_norm(tokens[i].group())):
+        return tokens[i].end()
+    return None
+
+
+def strip_wake(text: str, wake: WakeName) -> str | None:
+    """The rest of ``text`` if it is addressed to the wake name (SPEC §5), else None.
+
+    Greetings and fillers in front are skipped ("um, Nova, open Chrome"). After them the name is the first word -
+    then anything may follow, or nothing ("Nova." alone) - or the second or third word, and then only when what
+    follows starts like a command ("please Nova, open Chrome"): chatter that merely mentions the name is no wake.
+    """
+    tokens = list(_TOKEN.finditer(text))
+    i = 0
+    while i < min(_MAX_WAKE_LEADS, len(tokens)) and _norm(tokens[i].group()) in _WAKE_LEADS:
+        i += 1
+    for at in range(i, min(i + _WAKE_WITHIN, len(tokens))):
+        end = _name_end(text, tokens, at, wake)
+        if end is None:
+            continue
+        rest = text[end:].lstrip(_SEPARATORS).strip()
+        if at == i or command_words(rest) is not None:
+            return rest
         return None
-    return text[end:].lstrip(_SEPARATORS).strip()
+    return None
 
 
 # --- does it start like a command? ------------------------------------------------------------------
@@ -126,6 +145,24 @@ def command_words(text: str) -> tuple[str, ...] | None:
     if i < len(words) and words[i] in _VERBS:
         return tuple(words[i:])
     return None
+
+
+_STOPS = frozenset({
+    ("stop",), ("cancel",), ("abort",), ("wait",), ("stop", "it"), ("stop", "that"), ("cancel", "it"),
+    ("cancel", "that"), ("never", "mind"), ("nevermind",), ("hold", "on"),
+})
+
+
+def is_stop(text: str, wake: WakeName) -> bool:
+    """Is this only "stop" / "cancel" / "wait" (the name or fillers in front, "please" behind)? While Nova is
+    busy that aborts the running command (SPEC §5); a sentence with "stop" in it doesn't."""
+    rest = strip_wake(text, wake) if wake.enabled else None
+    words = _words(text if rest is None else rest)
+    while words and words[0] in _FILLERS:
+        words = words[1:]
+    while words and words[-1] in ("please", "now"):
+        words = words[:-1]
+    return tuple(words) in _STOPS
 
 
 # --- stub resolver (Stage 04 replaces it with Tier 0 + the app catalog) ------------------------------
@@ -189,6 +226,7 @@ class Resolved:
     action: str  # open | close | window | type | press | click | dictation | search | nav | tab | scroll | media | volume | listening
     target: str | None  # the known app / site, "active" for "this window", None for page / media commands
     safe: bool  # may run from always-listening, without the name or the key
+    media: bool = False  # nothing in it but media and volume: runs even while the speakers play
 
 
 class StubResolver:
@@ -234,7 +272,7 @@ class StubResolver:
                 phrase = phrase[: -len(tail) - 1]
         for action, pattern in _TEMPLATES:
             if pattern.fullmatch(phrase):
-                return Resolved(action, None, safe=True)
+                return Resolved(action, None, safe=True, media=action in ("media", "volume"))
         for verb, action in _VERB_ACTIONS:
             if words[: len(verb)] == verb:
                 after = words[len(verb) :]
@@ -292,7 +330,8 @@ class Addressing:
     follow_up: bool = False  # within 8 s of a command that ran
     passthrough: bool = False  # Claude / ChatGPT voice mode is listening to him
     asleep: bool = False  # "stop listening": only the name or the key count
-    busy: bool = False  # thinking / acting on the last command
+    busy: bool = False  # a key / wake session is waiting for its own words: this isn't them
+    working: bool = False  # thinking / acting on a command: what passes now runs next (the state machine queues it)
 
 
 @dataclass(frozen=True)
@@ -338,18 +377,25 @@ def decide(text: str, addressing: Addressing, env: Env) -> Decision:
     if rest is not None:
         return Decision(True, "wake", rest, heard, f"starts with {name}")
     if addressing.busy:
-        return ignored("busy", f"busy with the last command: say {name} or use the key")
+        return ignored("busy", f"listening for something else: say {name} or use the key")
     if addressing.passthrough:
         return ignored("passthrough", f"voice mode is on: say {name} or use the key")
     if addressing.asleep:
         return ignored("asleep", f"asleep: say {name} or use the key")
     if env.mic_busy:
         return ignored("mic-busy", f"{env.mic_busy} is using the mic: say {name} or use the key")
-    if env.speakers:
-        return ignored("speakers", f"the speakers are playing: say {name} or use the key")
+    over_speakers = ignored("speakers", f"the speakers are playing: say {name} or use the key")
     words = command_words(heard)
-    if addressing.follow_up and words is not None:
-        return Decision(True, "follow-up", heard, heard, "follow-up window")
+    # While Nova works on his command he is still talking to it: the follow-up window is already open.
+    if (addressing.follow_up or addressing.working) and words is not None:
+        if not env.speakers:
+            return Decision(True, "follow-up", heard, heard, "follow-up window")
+        # What the speakers say can't type, click or close: only what strict Tier 0 calls safe gets through.
+        resolved = env.resolver.resolve(words)
+        if resolved is None or not resolved.safe:
+            return over_speakers
+        return Decision(True, "follow-up", heard, heard, "follow-up window, speakers playing: safe actions only",
+                        safe_only=True)
     if not env.always_listening:
         return ignored("off", "always-listening is off")
     if words is None:
@@ -359,5 +405,7 @@ def decide(text: str, addressing: Addressing, env: Env) -> Decision:
         return ignored("unresolved", "no known app, site or page command in it")
     if not resolved.safe:
         return ignored("needs-name", f"{resolved.action} needs {name} or the key")
+    if env.speakers and not resolved.media:
+        return over_speakers  # "pause" and "volume down" have to work over a video; a video can't open apps
     target = f" {resolved.target}" if resolved.target and resolved.target != "active" else ""
     return Decision(True, "always", heard, heard, f"{resolved.action}{target}", safe_only=True)
