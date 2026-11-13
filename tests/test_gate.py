@@ -280,12 +280,58 @@ def test_always_listening_off_ignores_plain_commands():
     assert not decision.accepted and decision.via == "off"
 
 
-def test_speakers_or_another_app_on_the_mic_require_the_name():
-    playing = judge("open spotify", speakers=True)
-    assert not playing.accepted and playing.via == "speakers"
+def test_another_app_on_the_mic_requires_the_name():
     call = judge("open spotify", mic_busy="Teams.exe")
     assert not call.accepted and call.via == "mic-busy" and "Teams" in call.why
-    assert not judge("snap it left", Addressing(follow_up=True), speakers=True).accepted
+    assert judge("pause", mic_busy="Teams.exe", speakers=True).via == "mic-busy"  # a call: not even media words
+    assert judge("pause the music", Addressing(follow_up=True), mic_busy="Teams.exe").via == "mic-busy"
+
+
+# --- while the speakers play (SPEC §5): a video must not be able to act, but "pause" has to work ---------------
+
+
+@pytest.mark.parametrize(
+    "heard", ["pause", "Pause.", "pause the music", "skip this song", "volume down", "mute", "turn it down a bit"]
+)
+def test_media_and_volume_always_pass_while_the_speakers_play(heard, resolver):
+    decision = judge(heard, speakers=True, resolver=resolver)
+    assert decision.accepted and decision.via == "always" and decision.safe_only, decision
+    assert judge(heard, Addressing(follow_up=True), speakers=True, resolver=resolver).accepted
+
+
+@pytest.mark.parametrize("heard", ["open spotify", "switch to Google Chrome", "new tab", "scroll down", "go back"])
+def test_safe_actions_pass_over_the_speakers_only_in_the_follow_up_window(heard, resolver):
+    outside = judge(heard, speakers=True, resolver=resolver)  # a video saying it must do nothing
+    assert not outside.accepted and outside.via == "speakers", outside
+    inside = judge(heard, Addressing(follow_up=True), speakers=True, resolver=resolver)
+    assert inside.accepted and inside.via == "follow-up" and inside.safe_only, inside
+
+
+@pytest.mark.parametrize(
+    "heard", ["type hello world", "click the first link", "close this tab", "close Claude", "press enter",
+              "search for lofi hip hop", "start dictation", "pause and close Claude"]
+)
+def test_everything_else_needs_the_name_or_key_while_the_speakers_play(heard, resolver):
+    inside = judge(heard, Addressing(follow_up=True), speakers=True, resolver=resolver)
+    assert not inside.accepted and inside.via == "speakers", inside
+    assert not judge(heard, speakers=True, resolver=resolver).accepted
+    assert judge(f"Nova, {heard}", speakers=True, resolver=resolver).accepted
+    assert judge(heard, Addressing(session="copilot"), speakers=True, resolver=resolver).accepted
+
+
+def test_a_command_with_more_than_media_in_it_is_not_a_media_command(resolver):
+    decision = judge("pause and open spotify", speakers=True, resolver=resolver)
+    assert not decision.accepted
+
+
+def test_chatter_over_the_speakers_is_just_chatter(resolver):
+    decision = judge("and that is why the mitochondria matter", speakers=True, resolver=resolver)
+    assert not decision.accepted and decision.via == "not-command"  # the speakers rule blocked nothing here
+
+
+def test_the_follow_up_window_is_unchanged_when_nothing_plays():
+    decision = judge("type hello world", Addressing(follow_up=True))
+    assert decision.accepted and decision.via == "follow-up" and not decision.safe_only
 
 
 def test_passthrough_asleep_and_busy_ignore_plain_commands():

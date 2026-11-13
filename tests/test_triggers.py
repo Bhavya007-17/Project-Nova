@@ -157,6 +157,12 @@ def test_speakers_playing_need_the_name(rig):
     assert not gated.accepted and gated.via == "speakers"
 
 
+def test_pause_works_over_playing_speakers(rig):
+    r = rig(detector=FakeDetector(peak=0.3))
+    gated = r.say("pause the music", talk_s=0.35)
+    assert gated.accepted and gated.via == "always" and gated.safe_only
+
+
 def test_always_listening_command_and_chatter(rig):
     r = rig()
     assert r.say("open spotify").accepted

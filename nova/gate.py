@@ -7,11 +7,13 @@ Rules, in order:
 3. Addressed to the wake name ("Nova, ..." / "um, hey Nova ..." / "please Nova, open ...", spellings from
    settings; see ``strip_wake``) -> accepted, name stripped.
 4. Nova busy (thinking / acting), in Passthrough or asleep -> nothing else counts.
-5. Another app is using the mic (a call) or the speakers are playing -> name or key required.
+5. Another app is using the mic (a call) -> name or key required.
 6. Follow-up window (8 s after a command ran) -> anything that starts like a command.
 7. Always-listening -> starts like a command, resolves (stub until Stage 04: a page / media / volume
    command, or a command verb + a known app or site), and is safe without the name. Typing,
    clicking, closing and searching an unnamed engine need the name or the key.
+While the speakers play, 6 and 7 are narrower (a video must not act, but "pause" has to work): the follow-up
+window takes only what resolves and is safe, always-listening only media and volume commands.
 """
 
 from __future__ import annotations
@@ -205,6 +207,7 @@ class Resolved:
     action: str  # open | close | window | type | press | click | dictation | search | nav | tab | scroll | media | volume | listening
     target: str | None  # the known app / site, "active" for "this window", None for page / media commands
     safe: bool  # may run from always-listening, without the name or the key
+    media: bool = False  # nothing in it but media and volume: runs even while the speakers play
 
 
 class StubResolver:
@@ -250,7 +253,7 @@ class StubResolver:
                 phrase = phrase[: -len(tail) - 1]
         for action, pattern in _TEMPLATES:
             if pattern.fullmatch(phrase):
-                return Resolved(action, None, safe=True)
+                return Resolved(action, None, safe=True, media=action in ("media", "volume"))
         for verb, action in _VERB_ACTIONS:
             if words[: len(verb)] == verb:
                 after = words[len(verb) :]
@@ -361,11 +364,17 @@ def decide(text: str, addressing: Addressing, env: Env) -> Decision:
         return ignored("asleep", f"asleep: say {name} or use the key")
     if env.mic_busy:
         return ignored("mic-busy", f"{env.mic_busy} is using the mic: say {name} or use the key")
-    if env.speakers:
-        return ignored("speakers", f"the speakers are playing: say {name} or use the key")
+    over_speakers = ignored("speakers", f"the speakers are playing: say {name} or use the key")
     words = command_words(heard)
     if addressing.follow_up and words is not None:
-        return Decision(True, "follow-up", heard, heard, "follow-up window")
+        if not env.speakers:
+            return Decision(True, "follow-up", heard, heard, "follow-up window")
+        # What the speakers say can't type, click or close: only what strict Tier 0 calls safe gets through.
+        resolved = env.resolver.resolve(words)
+        if resolved is None or not resolved.safe:
+            return over_speakers
+        return Decision(True, "follow-up", heard, heard, "follow-up window, speakers playing: safe actions only",
+                        safe_only=True)
     if not env.always_listening:
         return ignored("off", "always-listening is off")
     if words is None:
@@ -375,5 +384,7 @@ def decide(text: str, addressing: Addressing, env: Env) -> Decision:
         return ignored("unresolved", "no known app, site or page command in it")
     if not resolved.safe:
         return ignored("needs-name", f"{resolved.action} needs {name} or the key")
+    if env.speakers and not resolved.media:
+        return over_speakers  # "pause" and "volume down" have to work over a video; a video can't open apps
     target = f" {resolved.target}" if resolved.target and resolved.target != "active" else ""
     return Decision(True, "always", heard, heard, f"{resolved.action}{target}", safe_only=True)
