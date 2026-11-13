@@ -10,7 +10,7 @@ Rules, in order:
    on a command, 6 and 7 still apply; the state machine queues what passes and "stop" / "cancel" aborts.)
 5. Another app is using the mic (a call) -> name or key required.
 6. Follow-up window (8 s after a command ran) -> anything that starts like a command.
-7. Always-listening -> starts like a command, resolves (stub until Stage 04: a page / media / volume
+7. Always-listening -> starts like a command, resolves in strict Tier 0 (a page / media / volume
    command, or a command verb + a known app or site), and is safe without the name. Typing,
    clicking, closing and searching an unnamed engine need the name or the key.
 While the speakers play, 6 and 7 are narrower (a video must not act, but "pause" has to work): the follow-up
@@ -20,8 +20,9 @@ window takes only what resolves and is safe, always-listening only media and vol
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import Protocol
 
 _TOKEN = re.compile(r"[^\W_]+(?:['’][^\W_]+)*")
 _SEPARATORS = " \t\r\n,.:;!?-–—…\"'“”"
@@ -165,60 +166,11 @@ def is_stop(text: str, wake: WakeName) -> bool:
     return tuple(words) in _STOPS
 
 
-# --- stub resolver (Stage 04 replaces it with Tier 0 + the app catalog) ------------------------------
-
-SITES = (
-    "YouTube", "Gmail", "Google", "Google Docs", "Google Drive", "Google Calendar", "GitHub", "Canvas",
-    "Reddit", "Wikipedia", "Netflix", "LinkedIn", "Amazon", "ChatGPT",
-)
-ALIASES = {  # short name -> Start-menu name; used only if that app is installed
-    "chrome": "Google Chrome", "vs code": "Visual Studio Code", "vscode": "Visual Studio Code",
-    "fusion": "Autodesk Fusion", "teams": "Microsoft Teams", "edge": "Microsoft Edge",
-    "explorer": "File Explorer", "powerpoint": "PowerPoint",
-}
-
-_VERB_ACTIONS = sorted(
-    [
-        (("open",), "open"), (("launch",), "open"), (("start",), "open"), (("run",), "open"),
-        (("switch", "to"), "open"), (("go", "to"), "open"), (("take", "me", "to"), "open"),
-        (("bring", "up"), "open"), (("bring",), "open"), (("pull", "up"), "open"), (("pull",), "open"),
-        (("fire", "up"), "open"), (("boot", "up"), "open"), (("focus",), "open"), (("focus", "on"), "open"),
-        (("navigate", "to"), "open"), (("jump", "to"), "open"),
-        (("close",), "close"), (("quit",), "close"), (("exit",), "close"), (("kill",), "close"),
-        (("shut", "down"), "close"), (("get", "rid", "of"), "close"),
-        (("minimize",), "window"), (("minimise",), "window"), (("maximize",), "window"),
-        (("maximise",), "window"), (("restore",), "window"), (("snap",), "window"), (("move",), "window"),
-        (("put",), "window"), (("make",), "window"),
-        (("type",), "type"), (("write",), "type"), (("press",), "press"), (("hit",), "press"),
-        (("click",), "click"), (("search",), "search"),
-        (("start", "dictation"), "dictation"), (("start", "dictating"), "dictation"),
-    ],
-    key=lambda pair: len(pair[0]),
-    reverse=True,
-)
-_NEEDS_NO_TARGET = frozenset({"type", "press", "click", "dictation"})  # always need the name or the key
-_LEADING = frozenset({"the", "a", "an", "my", "up"})
-_DEICTIC = frozenset({"it", "this", "that"})
-_DEICTIC_NOUNS = frozenset({"window", "tab", "app"})
-_TRAILING = ("please", "for me", "now", "thanks", "thank you")
-
-_TEMPLATES = tuple(
-    (action, re.compile(pattern))
-    for action, pattern in (
-        ("nav", r"(go )?(back|forward)( (a|one) page)?|(reload|refresh)( (the|this))?( (page|tab))?"),
-        ("tab", r"((open )?(a )?new|(go to )?(the )?(next|previous|last)) tab|reopen( the)?( last)?( closed?)? tab"
-                r"|(open )?(a )?new window"),
-        ("scroll", r"scroll( (up|down|left|right))?( (a bit|a little|a lot|more|some|all the way))?"
-                   r"( (back )?to the (top|bottom|end|start|beginning))?"),
-        ("media", r"(play|pause|resume|unpause)( (the )?(music|song|video|track|playback|it|this))?"
-                  r"|skip( (the|this) (song|track|video))?|(next|previous) (song|track|video)"
-                  r"|stop the (music|song|video|playback)"),
-        ("volume", r"(mute|unmute)( (the )?(sound|audio|volume|it|this))?|(volume|sound) (up|down)"
-                   r"|turn( (it|the volume|the sound|the music))? (up|down)( (a bit|a little|a lot))?"
-                   r"|turn (up|down) the (volume|sound|music)"),
-        ("listening", r"stop listening( (for now|for a bit|for a while))?|go to sleep|stop dictation"),
-    )
-)
+# --- the always-listening resolver ---------------------------------------------------------------------------------
+#
+# What un-addressed speech may do is decided by strict Tier 0 (``nova.brain.tier0.Tier0Resolver``): the same parser
+# that will plan the command, on the real app catalog. The gate only needs this much of it, and stays pure: the
+# resolver is handed its catalog and running-apps snapshot, it never fetches one.
 
 
 @dataclass(frozen=True)
@@ -227,96 +179,25 @@ class Resolved:
     target: str | None  # the known app / site, "active" for "this window", None for page / media commands
     safe: bool  # may run from always-listening, without the name or the key
     media: bool = False  # nothing in it but media and volume: runs even while the speakers play
+    text: str | None = None  # what to act on instead of his words (a bare "next" while music plays = "next track")
 
 
-class StubResolver:
-    """Known app / site names + page-command templates. Immutable: ``with_names`` returns a new one."""
-
-    def __init__(
-        self,
-        names: Iterable[str] = (),
-        sites: Iterable[str] = SITES,
-        aliases: Mapping[str, str] = ALIASES,
-    ) -> None:
-        self._sources = (tuple(names), tuple(sites), dict(aliases))
-        known: dict[tuple[str, ...], str] = {}
-        installed = {tuple(_plain(name)): name for name in self._sources[0]}
-        for name in (*self._sources[0], *self._sources[1]):
-            key = tuple(_plain(name))
-            if key:
-                known.setdefault(key, name)
-        for alias, target in self._sources[2].items():
-            if tuple(_plain(target)) in installed:
-                known.setdefault(tuple(_plain(alias)), target)
-        self._known = known
-        self._longest = max((len(key) for key in known), default=0)
-
+class Resolver(Protocol):
     @property
-    def count(self) -> int:
-        return len(self._known)
+    def count(self) -> int: ...
 
-    def with_names(self, names: Iterable[str]) -> StubResolver:
-        return StubResolver(names, self._sources[1], self._sources[2])
+    def resolve(self, words: tuple[str, ...], *, media: bool = False) -> Resolved | None:
+        """``media``: something is playing, so a bare "next" / "stop" means the player."""
+        ...
 
-    def _name_at(self, words: tuple[str, ...]) -> str | None:
-        for n in range(min(self._longest, len(words)), 0, -1):
-            name = self._known.get(words[:n])
-            if name is not None:
-                return name
+
+class NoResolver:
+    """Until the app catalog is read: nothing resolves, so nothing runs without the name or the key."""
+
+    count = 0
+
+    def resolve(self, words: tuple[str, ...], *, media: bool = False) -> Resolved | None:
         return None
-
-    def resolve(self, words: tuple[str, ...]) -> Resolved | None:
-        phrase = " ".join(words)
-        for tail in _TRAILING:
-            if phrase.endswith(" " + tail):
-                phrase = phrase[: -len(tail) - 1]
-        for action, pattern in _TEMPLATES:
-            if pattern.fullmatch(phrase):
-                return Resolved(action, None, safe=True, media=action in ("media", "volume"))
-        for verb, action in _VERB_ACTIONS:
-            if words[: len(verb)] == verb:
-                after = words[len(verb) :]
-                break
-        else:
-            return None
-        rest = after
-        if action in _NEEDS_NO_TARGET:
-            return Resolved(action, None, safe=False)
-        if action == "search":
-            site = self._search_site(rest)
-            return Resolved("search", site, safe=site is not None)
-        skipped = 0
-        while skipped < 2 and rest[:1] and rest[0] in _LEADING:
-            rest, skipped = rest[1:], skipped + 1
-        target = self._name_at(rest)
-        if target is not None:
-            return Resolved(action, target, safe=action != "close")
-        if action in ("window", "close") and _points_at_window(after):
-            return Resolved(action, "active", safe=action == "window")
-        return None
-
-    def _search_site(self, rest: tuple[str, ...]) -> str | None:
-        if rest[:1] == ("on",):
-            rest = rest[1:]
-        site = self._name_at(rest)
-        if site is None and "on" in rest:
-            after = rest[len(rest) - rest[::-1].index("on") :]
-            site = self._name_at(after)
-        return site
-
-
-def _plain(name: str) -> list[str]:
-    return re.findall(r"[a-z0-9]+", name.lower().replace("'", "").replace("’", ""))
-
-
-def _points_at_window(after_verb: tuple[str, ...]) -> bool:
-    """ "it" / "this" / "this window" / "the window" / "the current tab"."""
-    if after_verb[:1] and after_verb[0] in _DEICTIC:
-        return True
-    head = after_verb[:3]
-    return any(word in _DEICTIC_NOUNS for word in head) and head[:1] != () and head[0] in (
-        "the", "this", "that", "current", "active"
-    )
 
 
 # --- the decision -------------------------------------------------------------------------------------
@@ -340,7 +221,7 @@ class Env:
 
     wake: WakeName
     always_listening: bool
-    resolver: StubResolver
+    resolver: Resolver
     mic_busy: str | None = None  # another app recording (a call): its name
     speakers: bool = False  # the speakers played audio while this was said
 
@@ -391,16 +272,16 @@ def decide(text: str, addressing: Addressing, env: Env) -> Decision:
         if not env.speakers:
             return Decision(True, "follow-up", heard, heard, "follow-up window")
         # What the speakers say can't type, click or close: only what strict Tier 0 calls safe gets through.
-        resolved = env.resolver.resolve(words)
+        resolved = env.resolver.resolve(words, media=True)
         if resolved is None or not resolved.safe:
             return over_speakers
-        return Decision(True, "follow-up", heard, heard, "follow-up window, speakers playing: safe actions only",
-                        safe_only=True)
+        return Decision(True, "follow-up", resolved.text or heard, heard,
+                        "follow-up window, speakers playing: safe actions only", safe_only=True)
     if not env.always_listening:
         return ignored("off", "always-listening is off")
     if words is None:
         return ignored("not-command", "doesn't start like a command")
-    resolved = env.resolver.resolve(words)
+    resolved = env.resolver.resolve(words, media=env.speakers)
     if resolved is None:
         return ignored("unresolved", "no known app, site or page command in it")
     if not resolved.safe:
@@ -408,4 +289,4 @@ def decide(text: str, addressing: Addressing, env: Env) -> Decision:
     if env.speakers and not resolved.media:
         return over_speakers  # "pause" and "volume down" have to work over a video; a video can't open apps
     target = f" {resolved.target}" if resolved.target and resolved.target != "active" else ""
-    return Decision(True, "always", heard, heard, f"{resolved.action}{target}", safe_only=True)
+    return Decision(True, "always", resolved.text or heard, heard, f"{resolved.action}{target}", safe_only=True)

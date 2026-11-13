@@ -20,7 +20,7 @@ import threading
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 from .bus import Bus
 from .config import Settings
@@ -46,7 +46,7 @@ from .events import (
     SpeechStarted,
     StateChanged,
 )
-from .gate import Decision, Env, StubResolver, WakeName, strip_wake
+from .gate import Decision, Env, NoResolver, Resolver, WakeName, strip_wake
 from .keys import Cancel, Gestures, TriggerEvent, TriggerKeys, parse_chord
 from .log import TraceLog
 from .state import (
@@ -102,13 +102,8 @@ class Detector(Protocol):
 
 
 @dataclass(frozen=True)
-class _Names:
-    names: tuple[str, ...]
-
-
-@dataclass(frozen=True)
 class _Resolver:
-    resolver: object
+    resolver: Resolver
 
 
 _STOP = object()
@@ -136,8 +131,10 @@ class Triggers:
         detector: Callable[[], Detector] | None = _audio_detector,
         trace: TraceLog | None = None,
         clock: Callable[[], float] = time.perf_counter,
-        names: Iterable[str] = (),
+        running: Callable[[], Iterable[str]] | None = None,
     ) -> None:
+        """``running``: the apps running now (a ~1 ms snapshot), taken here for each final and handed to the
+        resolver, so the gate stays pure."""
         self._bus = bus
         self._speech = speech
         self._keys = keys
@@ -148,7 +145,9 @@ class Triggers:
         self._queue: queue.SimpleQueue[object] = queue.SimpleQueue()
         self._machine = Machine()
         self._gestures = Gestures()
-        self._resolver = StubResolver(names)
+        self._resolver: Resolver = NoResolver()  # until the app catalog is read
+        self._running = running
+        self._running_failed = False
         self._settings = settings
         self._always = settings.triggers.always_listening
         self._wake = WakeName.of(settings.wake_name)
@@ -181,12 +180,8 @@ class Triggers:
         """From inside the hook callback: hand over only."""
         self._queue.put(event)
 
-    def set_names(self, names: Iterable[str]) -> None:
-        """Known app names (Start menu) for the always-listening stub resolver."""
-        self._queue.put(_Names(tuple(names)))
-
-    def set_resolver(self, resolver: object) -> None:
-        """The always-listening resolver (Stage 04: strict Tier 0 against the app catalog)."""
+    def set_resolver(self, resolver: Resolver) -> None:
+        """The always-listening resolver: strict Tier 0 against the app catalog."""
         self._queue.put(_Resolver(resolver))
 
     @property
@@ -278,8 +273,6 @@ class Triggers:
         elif isinstance(item, IslandAction):
             if item.what == "no" and outputs(self._machine).asking:
                 self._feed(Cancel(now, "No"), now)  # the island's No = Esc; Yes / a choice is the brain's
-        elif isinstance(item, _Names):
-            self._resolver = self._resolver.with_names(item.names)
         elif isinstance(item, _Resolver):
             self._resolver = item.resolver
         elif isinstance(item, SleepRequested):
@@ -353,9 +346,23 @@ class Triggers:
         peaks = self._peaks.pop(utterance, [])
         recording = sorted(set(self._recording.pop(utterance, [])))
         return Env(
-            self._wake, self._always, self._resolver,
+            self._wake, self._always, self._seen(),
             mic_busy=", ".join(recording) or None, speakers=speakers_playing(peaks),
         )
+
+    def _seen(self) -> Resolver:
+        """The resolver with a snapshot of the apps running now (when it can use one)."""
+        seeing = getattr(self._resolver, "seeing", None)
+        if self._running is None or seeing is None:
+            return self._resolver
+        try:
+            running = frozenset(self._running())
+        except Exception:  # noqa: BLE001 - the gate still works, just without knowing what is open
+            if not self._running_failed:
+                self._running_failed = True
+                _log.warning("running apps unavailable: always-listening resolves without them", exc_info=True)
+            running = frozenset()
+        return seeing(running)
 
     def _feed(self, event: object, now: float) -> None:
         before = outputs(self._machine)
@@ -426,6 +433,20 @@ class Triggers:
 def _cut(text: str, limit: int = 32) -> str:
     text = " ".join(text.split())
     return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def running_now(catalogs: Any) -> Callable[[], frozenset[str]]:
+    """The running-apps provider for ``Triggers`` (0.4-0.9 ms a call after the first): the catalog names of the
+    open top-level windows. ``catalogs``: anything with ``current() -> Catalog``."""
+    from .actions import native  # imported now, not on the first final
+    from .actions.context import snapshot
+    from .brain.router import running_apps
+
+    def running() -> frozenset[str]:
+        native.com_init()  # once per thread
+        return running_apps(snapshot(catalogs.current()))
+
+    return running
 
 
 def stub_brain(bus: Bus) -> Callable[[], None]:

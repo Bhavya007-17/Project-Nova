@@ -2,23 +2,21 @@
 
 import pytest
 
-from catalog_fixture import CATALOG
+from catalog_fixture import CATALOG, ROWS
 
+from nova.actions.catalog import DEFAULT_ALIASES, Catalog, apps_from_rows, parse_aliases
 from nova.brain.tier0 import Tier0Resolver
-from nova.gate import Addressing, Env, StubResolver, WakeName, command_words, decide, is_stop, strip_wake
+from nova.gate import Addressing, Env, NoResolver, WakeName, command_words, decide, is_stop, strip_wake
 
-APPS = ["Google Chrome", "Spotify", "Notepad", "Calculator", "Autodesk Fusion", "Claude", "Word", "Excel",
-        "Visual Studio Code", "Microsoft Teams", "Camera", "Web Server for Chrome", "Outlook (classic)"]
-RESOLVER = StubResolver(APPS)
+# Always-listening resolves through strict Tier 0 + a catalog like this laptop's.
+RESOLVER = Tier0Resolver(CATALOG)
 WAKE = WakeName.of("Nova", ["Noah va"])
 IDLE = Addressing()
-# The always-listening lists run through the Stage 02 stub and through strict Tier 0 + a catalog like this laptop's.
-RESOLVERS = {"stub": RESOLVER, "tier0": Tier0Resolver(CATALOG)}
 
 
-@pytest.fixture(params=sorted(RESOLVERS))
-def resolver(request):
-    return RESOLVERS[request.param]
+@pytest.fixture
+def resolver():
+    return RESOLVER
 
 
 def env(**kw):
@@ -367,17 +365,84 @@ def test_not_stop_words(heard):
     assert not is_stop(heard, WAKE)
 
 
-def test_unknown_app_is_not_resolvable():
+def test_an_app_in_the_catalog_resolves_and_one_that_is_not_does_not():
     decision = judge("open fortnite")
     assert not decision.accepted and decision.via == "unresolved"
-    assert decide("open fortnite", IDLE, env(resolver=RESOLVER.with_names(APPS + ["Fortnite"]))).accepted
+    row = {"Name": "Fortnite", "AppID": "Epic.Fortnite", "Exe": r"C:\Games\Fortnite.exe", "Args": ""}
+    bigger = Catalog(apps_from_rows([*ROWS, row]), parse_aliases(DEFAULT_ALIASES))
+    decision = judge("open fortnite", resolver=Tier0Resolver(bigger))
+    assert decision.accepted and decision.via == "always" and decision.why == "open Fortnite"
 
 
 def test_resolver_needs_whole_names_not_common_words():
     assert not judge("open code").accepted  # "code" is a word, not "Visual Studio Code"
     assert not judge("open server").accepted
-    assert judge("open teams").accepted  # stub alias for Microsoft Teams
+    assert judge("open teams").accepted  # catalog alias for Microsoft Teams
     assert judge("open outlook classic").accepted  # "(classic)" punctuation dropped
+
+
+# --- bare media words (SPEC §5): "next" / "previous" / "stop" mean the player only while something plays ---------
+
+
+@pytest.mark.parametrize(
+    ("heard", "meant"),
+    [("next", "next track"), ("Next.", "next track"), ("previous", "previous track"), ("stop", "pause"),
+     ("Stop.", "pause"), ("um, next", "next track")],
+)
+def test_a_bare_media_word_counts_while_the_speakers_play(heard, meant):
+    decision = judge(heard, speakers=True)
+    assert decision.accepted and decision.via == "always" and decision.safe_only, decision
+    assert decision.text == meant and decision.heard == heard.strip()
+
+
+@pytest.mark.parametrize("heard", ["next", "Next.", "previous", "stop", "Stop."])
+def test_a_bare_media_word_is_nothing_while_nothing_plays(heard):
+    decision = judge(heard)
+    assert not decision.accepted and decision.via == "unresolved", decision
+
+
+@pytest.mark.parametrize(
+    "heard", ["next time we should go", "next please", "stop it", "previous owners left it", "stop by later",
+              "next week maybe"]
+)
+def test_a_sentence_with_a_media_word_in_it_is_not_a_bare_media_word(heard):
+    for speakers in (False, True):
+        decision = judge(heard, speakers=speakers)
+        assert not decision.accepted and decision.text == heard, decision
+
+
+def test_a_bare_media_word_in_the_follow_up_window_over_the_speakers_is_rewritten_too():
+    decision = judge("next", Addressing(follow_up=True), speakers=True)
+    assert decision.accepted and decision.via == "follow-up" and decision.safe_only
+    assert decision.text == "next track" and decision.heard == "next"
+    assert judge("next", Addressing(follow_up=True)).text == "next"  # nothing plays: his words, as before
+
+
+@pytest.mark.parametrize("heard", ["pause", "skip", "pause the music", "skip this song", "next song"])
+def test_pause_and_skip_keep_working_with_or_without_the_speakers(heard):
+    for speakers in (False, True):
+        decision = judge(heard, speakers=speakers)
+        assert decision.accepted and decision.via == "always" and decision.text == heard, (speakers, decision)
+
+
+# --- before the catalog is read ------------------------------------------------------------------------------------
+
+
+def test_no_resolver_accepts_nothing_without_the_name_or_the_key():
+    for heard in ("open spotify", "pause", "new tab", "volume up"):
+        assert judge(heard, resolver=NoResolver()).via == "unresolved"
+        assert not judge(heard, resolver=NoResolver(), speakers=True).accepted
+    assert judge("Nova, open Chrome", resolver=NoResolver()).accepted
+    assert judge("open spotify", Addressing(session="copilot"), resolver=NoResolver()).accepted
+    assert NoResolver().count == 0
+
+
+def test_seeing_returns_a_new_resolver_and_leaves_the_old_one_alone():
+    seen = RESOLVER.seeing(["Spotify"])
+    assert seen is not RESOLVER and isinstance(seen, Tier0Resolver)
+    assert seen._running == frozenset({"Spotify"}) and RESOLVER._running == frozenset()
+    assert seen.count == RESOLVER.count
+    assert seen.seeing([])._running == frozenset() and seen._running == frozenset({"Spotify"})
 
 
 def test_command_words():

@@ -27,6 +27,10 @@ from nova.events import (
     SpeechStarted,
     StateChanged,
 )
+from catalog_fixture import CATALOG
+
+from nova.brain.tier0 import Tier0Resolver
+from nova.gate import Resolved
 from nova.keys import TriggerEvent, TriggerKeys
 from nova.triggers import Triggers, stub_brain
 
@@ -77,8 +81,11 @@ class FakeDetector:
         pass
 
 
+RESOLVER = Tier0Resolver(CATALOG)
+
+
 class Rig:
-    def __init__(self, settings=None, detector=None, names=("Spotify", "Google Chrome"), clock=time.perf_counter):
+    def __init__(self, settings=None, detector=None, resolver=RESOLVER, clock=time.perf_counter, running=None):
         self.bus = Bus()
         self.events = queue.Queue()
         self.bus.subscribe(object, self.events.put)
@@ -86,7 +93,9 @@ class Rig:
         self.keys = TriggerKeys()
         self.detector = detector or FakeDetector()
         self.triggers = Triggers(self.bus, self.speech, settings or Settings(), keys=self.keys,
-                                 detector=lambda: self.detector, names=names, clock=clock)
+                                 detector=lambda: self.detector, clock=clock, running=running)
+        if resolver is not None:
+            self.triggers.set_resolver(resolver)  # queued: handled before anything said
         self.triggers.start()
         self.utterance = 0
 
@@ -163,6 +172,12 @@ def test_pause_works_over_playing_speakers(rig):
     assert gated.accepted and gated.via == "always" and gated.safe_only
 
 
+def test_a_bare_next_over_playing_speakers_skips_the_track(rig):
+    r = rig(detector=FakeDetector(peak=0.3))
+    gated = r.say("next", talk_s=0.35)
+    assert gated.accepted and gated.via == "always" and gated.text == "next track" and gated.heard == "next"
+
+
 def test_always_listening_command_and_chatter(rig):
     r = rig()
     assert r.say("open spotify").accepted
@@ -221,11 +236,63 @@ def test_double_tap_requests_dictation(rig):
     assert ("dictating", True) in r.speech.drain()  # speech is cut on dictation pauses now
 
 
-def test_names_arrive_later(rig):
-    r = rig(names=())
+def test_the_catalog_arrives_later(rig):
+    r = rig(resolver=None)  # before the catalog is read nothing resolves
+    assert r.triggers.known_names == 0
     assert r.say("open spotify").via == "unresolved"
-    r.triggers.set_names(["Spotify"])
-    assert r.say("open spotify").accepted
+    r.triggers.set_resolver(RESOLVER)
+    assert r.say("open spotify").via == "always"
+    assert r.triggers.known_names == RESOLVER.count
+
+
+class RunningResolver:
+    """Resolves "open <app>" only while that app is in the snapshot it was handed."""
+
+    count = 1
+
+    def __init__(self, running=frozenset()):
+        self.running = frozenset(running)
+
+    def seeing(self, running):
+        return RunningResolver(running)
+
+    def resolve(self, words, *, media=False):
+        app = " ".join(words[1:])
+        return Resolved("open", app, safe=True) if words[:1] == ("open",) and app in self.running else None
+
+
+def test_each_final_is_judged_against_a_fresh_running_apps_snapshot(rig):
+    snapshots = [frozenset(), frozenset({"zorblax"})]
+    calls = []
+
+    def running():
+        calls.append(1)
+        return snapshots[min(len(calls), len(snapshots)) - 1]
+
+    r = rig(resolver=RunningResolver(), running=running)
+    assert r.say("open zorblax").via == "unresolved"
+    assert r.say("open zorblax").accepted
+    assert len(calls) == 2  # one snapshot per final
+
+
+def test_no_snapshot_is_taken_for_a_resolver_that_cannot_use_one(rig):
+    calls = []
+    r = rig(resolver=None, running=lambda: calls.append(1) or ())
+    assert r.say("open spotify").via == "unresolved"
+    assert calls == []
+
+
+def test_a_running_apps_provider_that_raises_never_breaks_the_gate(rig, caplog):
+    def broken():
+        raise OSError("no windows today")
+
+    r = rig(running=broken)
+    with caplog.at_level("WARNING", logger="nova.triggers"):
+        assert not r.say("we should switch to the other lab").accepted
+        assert r.say("open zorblax").via == "unresolved"
+        assert r.say("open spotify").via == "always"  # resolved against an empty snapshot
+    warnings = [rec for rec in caplog.records if rec.name == "nova.triggers" and rec.levelname == "WARNING"]
+    assert len(warnings) == 1  # logged once, not per final
 
 
 def asking(r, kind):

@@ -1,11 +1,15 @@
 """The router (SPEC §7): Tier 0 -> skills (stub) -> Tier 1 -> checked plan; questions settled before acting."""
 
+import pytest
+
 from catalog_fixture import CATALOG
 
 from nova.actions.context import Context
 from nova.brain.plan import Plan, step
 from nova.brain.router import Router, describe_handoff
+from nova.brain.tier0 import Tier0Resolver
 from nova.brain.tier1 import Thought
+from nova.gate import Addressing, Env, WakeName, decide
 
 EMPTY = Context(None, (), (), None, False, 0.0)
 
@@ -212,6 +216,31 @@ def test_otherwise_tier_1_sees_the_same_page_once():
         step("page_click", description="the blue one", element="0:4", label="Help"),)
     assert fetched == ["press the blue one"] and tier1.pages == [["1 button: Sign in", "2 link: Help"]]
     assert routed.page_ms == 9.0
+
+
+def test_always_listening_never_asks_the_llm_about_a_guess_or_an_unsafe_plan():
+    for text in ("open foam", "close notepad", "type hello world", "click the first link"):
+        tier1 = FakeTier1()
+        routed = route(text, tier1, strict=True, via="always")
+        assert tier1.calls == [] and routed.plan is None and routed.tier == "none", text
+
+
+@pytest.mark.parametrize("speakers", [False, True])
+@pytest.mark.parametrize(
+    "heard",
+    ["open spotify", "pause", "next", "stop", "new tab", "volume up", "open foam", "close notepad",
+     "can you get canvas up for me", "open the zorblax", "type hello world", "um next please"],
+)
+def test_speech_nobody_addressed_to_nova_never_reaches_tier_1(heard, speakers):
+    """SPEC §5: what the gate lets through un-addressed is safe-only, and safe-only routes stay on Tier 0."""
+    env = Env(WakeName.of("Nova"), True, Tier0Resolver(CATALOG), speakers=speakers)
+    decision = decide(heard, Addressing(), env)
+    if not decision.accepted:
+        return  # nothing reaches the brain at all
+    assert decision.via == "always" and decision.safe_only
+    tier1 = FakeTier1()
+    routed = route(decision.text, tier1, strict=decision.safe_only, via=decision.via)
+    assert tier1.calls == [] and routed.tier == "0" and routed.plan is not None and routed.plan.kind == "act"
 
 
 def test_always_listening_never_reads_the_page():

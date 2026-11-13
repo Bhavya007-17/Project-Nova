@@ -1262,25 +1262,39 @@ _FAMILIES = {"open_app": "open", "switch_app": "open", "open_url": "open", "clos
              "page_fill": "type", "scroll_to": "scroll", "canvas_due": "canvas", "canvas_open_item": "click"}
 
 
-class Tier0Resolver:
-    """The gate's always-listening resolver (SPEC §5): strict Tier 0 against the real catalog."""
+# One word that means the player only while something is playing (the gate knows when), and what runs for it.
+# "stop" pauses: he can take it back, and a video that says "stop" has done no harm.
+BARE_MEDIA = {"next": "next track", "previous": "previous track", "stop": "pause"}
 
-    def __init__(self, catalog: Catalog) -> None:
+
+class Tier0Resolver:
+    """The gate's always-listening resolver (SPEC §5): strict Tier 0 against the real catalog and the apps that are
+    running. Immutable and pure: both are handed in (``seeing`` returns a new one), nothing is fetched here."""
+
+    def __init__(self, catalog: Catalog, running: Iterable[str] = ()) -> None:
         self._catalog = catalog
+        self._running = frozenset(running)
 
     @property
     def count(self) -> int:
         return len(self._catalog.apps)
 
-    def resolve(self, words: tuple[str, ...]) -> Resolved | None:
-        plan = parse(" ".join(words), self._catalog, strict=True)
+    def seeing(self, running: Iterable[str]) -> Tier0Resolver:
+        """The same resolver with this snapshot of the running apps."""
+        return Tier0Resolver(self._catalog, running)
+
+    def resolve(self, words: tuple[str, ...], *, media: bool = False) -> Resolved | None:
+        """``media``: something is playing, so a bare "next" / "previous" / "stop" is for the player."""
+        said = " ".join(words)
+        meant = BARE_MEDIA.get(said) if media else None
+        plan = parse(meant or said, self._catalog, strict=True, running=self._running)
         if plan is None or plan.kind != "act":
             return None
         safe = all(_safe(s, words) for s in plan.steps)
         first = plan.steps[0]
         target = first.get("app") or first.get("target") or _site_name(first)
-        media = all(s.action in ("media", "volume") for s in plan.steps)
-        return Resolved(_FAMILIES.get(first.action, first.action), target, safe, media)
+        only_media = all(s.action in ("media", "volume") for s in plan.steps)
+        return Resolved(_FAMILIES.get(first.action, first.action), target, safe, only_media, text=meant)
 
 
 def safe_plan(plan: Plan, text: str) -> bool:

@@ -2,7 +2,10 @@
 
 import pytest
 
-from nova.gate import Env, StubResolver, WakeName
+from catalog_fixture import CATALOG
+
+from nova.brain.tier0 import Tier0Resolver
+from nova.gate import Env, WakeName
 from nova.keys import Cancel, DoubleTap, Press, Release
 from nova.state import (
     CLAIM_S,
@@ -43,7 +46,7 @@ from nova.state import (
     step,
 )
 
-ENV = Env(WakeName.of("Nova"), True, StubResolver(["Google Chrome", "Spotify", "Notepad"]))
+ENV = Env(WakeName.of("Nova"), True, Tier0Resolver(CATALOG))
 
 
 class Run:
