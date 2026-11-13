@@ -7,7 +7,7 @@ import pytest
 
 from nova.brain.llm import LLMError, Loaded, Loader, Reply, load_options
 from nova.config import Llm
-from nova.dictation.cleanup import Cleaned, Cleaner, apply_fixes, parse_fixes, prefix, request
+from nova.dictation.cleanup import Cleaned, Cleaner, apply_fixes, guard, parse_fixes, prefix, request
 from nova.governor import Choice
 
 TERMS = ("CroLabs", "ROS2", "MuJoCo", "Claude", "Canvas")
@@ -66,6 +66,50 @@ def test_a_heard_phrase_that_isnt_there_is_skipped():
 
 def test_ambiguous_heard_word_is_skipped():
     assert fixed("Their cat and their dog.", [("their", "there")]).text == "Their cat and their dog."
+
+
+# --- the output guards (Stage 07a item 9): any one -> the rules-only text ---------------------------------------------
+
+
+def test_guard_more_words_than_heard_plus_an_eighth():
+    heard = "one two three four five six seven eight"
+    assert guard(heard, heard + " nine") == ""  # 8 + 1/8 * 8 = 9 words allowed
+    assert "more words" in guard(heard, heard + " nine ten")
+
+
+def test_guard_changed_negations():
+    assert "negation" in guard("I can make it on Friday.", "I can't make it on Friday.")
+    assert "negation" in guard("We did not ship it.", "We did ship it.")
+    assert guard("I don't think so.", "I doesn't think so.") == ""  # still one negation
+
+
+def test_guard_fewer_than_a_third_of_the_words_kept():
+    assert "kept" in guard("alpha beta gamma delta epsilon zeta", "alpha theta iota kappa lambda mu")
+    assert guard("alpha beta gamma delta epsilon zeta", "alpha beta gamma theta iota kappa") == ""
+
+
+def test_guard_more_than_three_unfamiliar_new_words():
+    heard = "we will meet the team at the lab after class on monday morning to test it"
+    four = "we will meet the crew at the shop after lunch on tuesday morning to test it"
+    assert "new words" in guard(heard, four)
+    three = "we will meet the crew at the shop after lunch on monday morning to test it"
+    assert guard(heard, three) == ""
+    assert guard(heard, four, terms=("crew", "shop", "lunch", "tuesday")) == ""  # his names aren't unfamiliar
+    assert guard(heard, four, before="The crew, the shop, lunch, Tuesday.") == ""  # nor is what's before the cursor
+
+
+def test_a_sound_alike_that_flips_the_meaning_is_thrown_out():
+    # "want" -> "won't" sounds alike (same metaphone) and passed the old guard
+    cleaned = fixed("I want to go to the lab today.", [("want", "won't")])
+    assert cleaned.text == "I want to go to the lab today." and "negation" in cleaned.rejected
+    cleaned = fixed("I can make it on Friday.", [("can", "can't")])
+    assert cleaned.text == "I can make it on Friday." and cleaned.fixes == ()
+
+
+def test_fixes_that_each_add_a_word_add_too_many():
+    cleaned = fixed("We need alot of time and alot of help.", [("alot of time", "a lot of time"),
+                                                              ("alot of help", "a lot of help")])
+    assert "more words" in cleaned.rejected and cleaned.text == "We need alot of time and alot of help."
 
 
 def test_parse_fixes_is_forgiving():

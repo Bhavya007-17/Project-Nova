@@ -5,6 +5,8 @@ The model doesn't rewrite the text: it lists the words speech-to-text misheard (
 extended. The guard throws the model's answer out (the rules-only text is typed) when a fix isn't a sound-alike
 of what was heard (unless it's one of his names or a word already in the text before the cursor), adds words, or
 when more than a quarter of the words would change (one fix is always allowed, so short sentences can be fixed).
+Then ``guard`` checks the whole result: no more than an eighth more words, the same number of negations, a third of
+his words kept, at most 3 new words that aren't his names or already in the text.
 
 Same small model as Tier 1 (SPEC §7.4), on the GPU only: on the CPU (Fusion has the GPU) dictation is rules-only.
 Measured on this laptop (qwen3.5:4b, Ollama 0.30.10): ~1.0 s per call when nothing needs fixing, ~1.25 s with a
@@ -169,6 +171,39 @@ def _cased(heard: str, meant: str, term: str | None) -> str:
     return meant
 
 
+_NEGATIONS = frozenset({"not", "no", "never", "none", "nothing", "nobody", "nowhere", "neither", "nor", "cannot",
+                        "without"})
+
+
+def _negations(words: Sequence[str]) -> int:
+    return sum(1 for w in words if w.lower() in _NEGATIONS or w.lower().endswith(("n't", "n’t")))
+
+
+def guard(heard: str, cleaned: str, *, terms: Sequence[str] = (), before: str = "") -> str:
+    """Why ``cleaned`` can't replace ``heard`` ("" = it can). Each check alone sends the rules-only text (Stage 07a):
+    more words than heard + 1/8; a negation added or dropped ("want" -> "won't" sounds alike); under a third of his
+    words kept; more than 3 new words that aren't his names or already before the cursor."""
+    said, out = _words(heard), _words(cleaned)
+    if len(out) > len(said) + len(said) / 8:
+        return f"more words than heard ({len(out)} for {len(said)})"
+    if _negations(said) != _negations(out):
+        return "changed a negation"
+    left = [w.lower() for w in out]
+    kept = 0
+    for word in said:
+        if word.lower() in left:
+            left.remove(word.lower())
+            kept += 1
+    if said and kept < len(said) / 3:
+        return f"kept too few of his words ({kept} of {len(said)})"
+    familiar = {w.lower() for w in said} | {w.lower() for w in _words(before)}
+    familiar |= {w.lower() for term in terms for w in _words(term)}
+    new = [w for w in out if w.lower() not in familiar]
+    if len(new) > 3:
+        return f"too many new words ({len(new)})"
+    return ""
+
+
 def apply_fixes(text: str, fixes: Sequence[tuple[str, str]], *, terms: Sequence[str] = (), before: str = "") -> Cleaned:
     """``text`` with the model's fixes, or unchanged with the reason when the guard says no."""
     known_words = {w.lower() for w in _words(before)}
@@ -201,6 +236,9 @@ def apply_fixes(text: str, fixes: Sequence[tuple[str, str]], *, terms: Sequence[
     out = text
     for start, end, replacement, *_ in sorted(edits, reverse=True):
         out = out[:start] + replacement + out[end:]
+    why = guard(text, out, terms=terms, before=before)
+    if why:
+        return Cleaned(text, rejected=why)
     return Cleaned(out, tuple((said, meant) for *_, said, meant in sorted(edits)))
 
 
