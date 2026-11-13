@@ -87,6 +87,7 @@ class View:
     file_always: bool = True  # what settings.yaml says: a tray toggle lasts until the file changes
     off: bool = False  # Nova is off: hidden even when pinned
     warming: bool = False  # thinking, but the local model is cold and loading first: "Warming up…" instead of words
+    under: str = ""  # while warming: his command, shown again once the model is loaded
 
     @property
     def accent(self) -> str:
@@ -155,12 +156,20 @@ def _session(view: View) -> View:
     """A new listening session: forget the last one's content."""
     return replace(
         view, words="", final=False, fresh=0, windowed=False, utterance=None, note="", steps=(), step=0,
-        result="", icon="", question="", choices=(),
+        result="", icon="", question="", choices=(), under="",
     )
 
 
 def _warming(view: View) -> View:
-    return replace(view, words=WARMING, final=True, fresh=0, windowed=False)
+    under = view.under if view.words == WARMING else view.words
+    return replace(view, words=WARMING, under=under, final=True, fresh=0, windowed=False)
+
+
+def _warmed(view: View) -> View:
+    """Loaded: the model answers now — his words again (the thinking face)."""
+    if view.state != "thinking":
+        return replace(view, warming=False, under="")
+    return replace(view, warming=False, under="", words=view.under, final=True, fresh=0, windowed=False)
 
 
 def _resting(view: View) -> str:
@@ -175,7 +184,7 @@ def _state(view: View, event: StateChanged) -> View:
     if new == view.state:
         return view
     if new != "thinking" and view.warming:
-        view = replace(view, warming=False)  # loaded (or gone): the next command starts clean
+        view = replace(view, warming=False, under="")  # loaded (or gone): the next command starts clean
     if new == "listening":
         view = _session(view)
     elif new == "dictating":
@@ -224,10 +233,14 @@ def reduce(view: View, event: object) -> View:
     if isinstance(event, Gated):
         if state == "listening" and event.wake_only:
             return replace(view, words="", final=False, fresh=0, windowed=False, utterance=None)
-        if state == "thinking" and event.accepted and not event.wake_only and event.text and not view.warming:
+        if state == "thinking" and event.accepted and not event.wake_only and event.text:
+            if view.warming:
+                return replace(view, under=event.text)  # shown once the model is loaded
             return _words(view, event.text, event.utterance, final=True)
         return view
     if isinstance(event, BrainProgress):
+        if event.state == "thinking" and view.warming:
+            return _warmed(view)
         if event.state != "warming":
             return view  # the state machine turns the rest into StateChanged
         view = replace(view, warming=True)

@@ -179,10 +179,10 @@ class FakeGovernor:
         pass
 
 
-def tier1(client, governor=None, warming=None):
+def tier1(client, governor=None, warming=None, warmed=None, loader=None):
     """Tier 1 on a fake: its loader (warm-ups, loads) talks to the same fake."""
     return Tier1(client, governor or FakeGovernor(), lambda: Llm(keep_alive="5m", timeout_s=6.0), lambda: CATALOG,
-                 loader=Loader(client), warming=warming or (lambda: None))
+                 loader=loader or Loader(client), warming=warming or (lambda: None), warmed=warmed or (lambda: None))
 
 
 def requests(client):
@@ -318,6 +318,58 @@ def test_a_load_that_fails_says_why():
     client.load_error = LLMError("The model qwen3.5:2b-q4_K_M isn't on this laptop — run: ollama pull qwen3.5:2b-q4_K_M")
     thought = tier1(client).think("x", Seen())
     assert thought.data is None and "ollama pull" in thought.error and requests(client) == []
+
+
+def test_warmed_is_said_once_when_the_load_is_done_before_the_answer():
+    gate = threading.Event()
+    client = FakeOllama("qwen35", resident=(), load_gate=gate)
+    said = []
+    t = tier1(client, warming=lambda: said.append("warming"),
+              warmed=lambda: said.append(("warmed", len(requests(client)))))
+    out = []
+    thread = threading.Thread(target=lambda: out.append(t.think("x", Seen())))
+    thread.start()
+    assert wait_for(lambda: said)
+    time.sleep(0.1)
+    assert said == ["warming"]  # still loading
+    gate.set()
+    thread.join(2)
+    assert out and out[0].data is not None
+    assert said == ["warming", ("warmed", 0)]  # once, after the load and before the answering request
+
+
+def test_warmed_is_not_said_for_a_warm_model():
+    client = FakeOllama("qwen35")
+    said = []
+    t = tier1(client, warming=lambda: said.append("warming"), warmed=lambda: said.append("warmed"))
+    assert t.think("x", Seen()).data is not None
+    assert said == []
+
+
+def test_warmed_is_not_said_after_esc():
+    gate = threading.Event()
+    client = FakeOllama("qwen35", resident=(), load_gate=gate)
+    loader = Loader(client)
+    said = []
+    t = tier1(client, warming=lambda: said.append("warming"), warmed=lambda: said.append("warmed"), loader=loader)
+    out = []
+    thread = threading.Thread(target=lambda: out.append(t.think("x", Seen())))
+    thread.start()
+    assert wait_for(lambda: loads(client))
+    t.abort()
+    thread.join(2)
+    gate.set()
+    assert wait_for(lambda: loader.resident("qwen3.5:2b-q4_K_M"))  # the load itself finished
+    assert out and out[0].cancelled and said == ["warming"]
+
+
+def test_warmed_is_not_said_after_a_failed_load():
+    client = FakeOllama("qwen35", resident=())
+    client.load_error = LLMError("The model qwen3.5:2b-q4_K_M isn't on this laptop — run: ollama pull qwen3.5:2b-q4_K_M")
+    said = []
+    thought = tier1(client, warming=lambda: said.append("warming"), warmed=lambda: said.append("warmed")).think(
+        "x", Seen())
+    assert thought.error and said == ["warming"]
 
 
 def test_loader_loads_each_model_once_at_a_time():

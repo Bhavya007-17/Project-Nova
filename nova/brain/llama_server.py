@@ -19,6 +19,7 @@ import atexit
 import contextlib
 import ctypes
 import http.client
+import json
 import logging
 import os
 import re
@@ -26,7 +27,7 @@ import socket
 import subprocess
 import threading
 import time
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from ctypes import wintypes
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -264,6 +265,12 @@ class LlamaServer:
             return f"{EXE} isn't on this laptop (it comes with Ollama 0.30)"
         return self._broken
 
+    def serves(self, model: str) -> bool:
+        """The child is running — or starting — for ``model``."""
+        with self._lock:
+            alive = self._proc is not None and self._proc.poll() is None
+            return alive and self._serving is not None and self._serving.model == model
+
     def rows(self) -> tuple[Loaded, ...]:
         """What is loaded and ready, in Ollama's /api/ps shape (for the governor and the loader)."""
         with self._lock:
@@ -276,10 +283,12 @@ class LlamaServer:
     # --- start / stop -----------------------------------------------------------------------------------------------
 
     def ensure(self, model: str, gguf: str, *, size: int, layers: int, ctx: int, timeout: float,
-               cancelled: Callable[[], bool] = lambda: False) -> Serving:
+               cancelled: Callable[[], bool] = lambda: False, hold: bool = False) -> Serving:
         """The child serving ``model``, ready: as it runs, joined while it starts, or started now (replacing another
         model). Waits at most ``timeout`` and stops waiting when ``cancelled`` — the start itself goes on, so the
-        next caller finds the model warm. Raises LLMError when it can't run."""
+        next caller finds the model warm. Raises LLMError when it can't run. ``hold``: return with a request already
+        counted (in the same step as "ready", so the idle timer can't stop the child in between); the caller then
+        runs it in ``request(held=True)``, which releases it."""
         deadline = self._clock() + timeout
         want = (model, gguf, layers, ctx)
         with self._lock:
@@ -289,14 +298,22 @@ class LlamaServer:
             alive = self._proc is not None and self._proc.poll() is None
             same = alive and s is not None and (s.model, s.gguf, s.layers, s.ctx) == want
             if same and self._ready and s is not None:
+                if hold:
+                    self._busy += 1
                 return s
             if not same:
                 if not self.usable:
                     raise LLMError(self._broken)
                 self._kill()
                 port = self._free_port()
-                self._proc = self._spawn(server_args(self._exe, gguf, port=port, ctx=ctx, layers=layers),
-                                         server_env(self._exe.parent, gpu=layers > 0))
+                try:
+                    self._proc = self._spawn(server_args(self._exe, gguf, port=port, ctx=ctx, layers=layers),
+                                             server_env(self._exe.parent, gpu=layers > 0))
+                except OSError as error:  # broken like a child that died: auto falls back to Ollama
+                    self._broken = f"llama-server couldn't start: {error}"
+                    self._broken_at = self._clock()
+                    _log.warning("%s", self._broken)
+                    raise LLMError(self._broken) from error
                 self._serving = Serving(model, gguf, layers, ctx, port, size, 0.0)
                 self._ready = False
                 self._started_at = self._clock()
@@ -316,6 +333,8 @@ class LlamaServer:
                         self._ready = True
                         self._serving = replace(serving, started_ms=round((self._clock() - started) * 1000, 1))
                         _log.info("llama-server ready: %s in %.0f ms", model, self._serving.started_ms)
+                    if hold:
+                        self._busy += 1
                     return self._serving  # type: ignore[return-value]
             if cancelled():
                 raise LLMCancelled("Cancelled")
@@ -362,10 +381,12 @@ class LlamaServer:
     # --- keep_alive -------------------------------------------------------------------------------------------------
 
     @contextlib.contextmanager
-    def request(self) -> Iterator[None]:
-        """Around every request: a child that is answering is never stopped as idle."""
-        with self._lock:
-            self._busy += 1
+    def request(self, held: bool = False) -> Iterator[None]:
+        """Around every request: a child that is answering is never stopped as idle. ``held``: ``ensure(hold=True)``
+        already counted this one."""
+        if not held:
+            with self._lock:
+                self._busy += 1
         try:
             yield
         finally:
@@ -405,6 +426,8 @@ class LlamaServer:
 _shared: LlamaServer | None = None
 _shared_lock = threading.Lock()
 _FILES: dict[str, tuple[str | None, int]] = {}  # model -> (its GGUF, bytes), as Ollama's store has it
+_VIA_OLLAMA: set[str] = set()  # models this process has had Ollama serve (chat templates, loads, fallbacks)
+_UNLOAD_S = 2.0  # asking Ollama to drop its copy before the child starts: best effort, never longer than this
 
 
 def shared() -> LlamaServer:
@@ -425,18 +448,22 @@ class LlamaClient(Ollama):
     (auto = llama-server, Ollama when it can't run · ollama · llama-server = no fallback)."""
 
     def __init__(self, url: str = DEFAULT_URL, server: Any = None, runtime: Callable[[], str] = lambda: "auto", *,
-                 files: dict[str, tuple[str | None, int]] | None = None) -> None:
+                 files: dict[str, tuple[str | None, int]] | None = None, via_ollama: set[str] | None = None) -> None:
+        """``via_ollama``: the models Ollama has served for this client and its siblings — the only rows of
+        Ollama's list that count as loaded (outside ``ollama`` mode), so a model Ollama holds for someone else
+        never passes for the child's."""
         super().__init__(url)
         self._server = server if server is not None else shared()
         self._runtime = runtime
         self._files = files if files is not None else {}
+        self._via_ollama = via_ollama if via_ollama is not None else set()
 
     @property
     def server(self) -> Any:
         return self._server
 
     def sibling(self) -> LlamaClient:
-        return LlamaClient(self.url, self._server, self._runtime, files=self._files)
+        return LlamaClient(self.url, self._server, self._runtime, files=self._files, via_ollama=self._via_ollama)
 
     def _file(self, model: str) -> tuple[str | None, int]:
         known = self._files.get(model)
@@ -450,7 +477,8 @@ class LlamaClient(Ollama):
         return known
 
     def _serve(self, model: str, options: Mapping[str, Any] | None, timeout: float) -> Serving | None:
-        """The child, ready for ``model`` — or None when this call is Ollama's."""
+        """The child, ready for ``model`` and already counted as in use (run the request in ``request(held=True)``)
+        — or None when this call is Ollama's."""
         mode = self._runtime()
         if mode == "ollama":
             self._server.stop()  # left from before the setting changed: one copy of the model at a time
@@ -469,9 +497,11 @@ class LlamaClient(Ollama):
                 if fallback:
                     return None
                 raise LLMError(f"{model} has no GGUF file llama-server can open")
+            if not self._server.serves(model):  # never the same model on the GPU twice
+                self._drop_from_ollama(model)
             return self._server.ensure(model, gguf, size=size, layers=int(opts.get("num_gpu", ALL_LAYERS)),
                                        ctx=int(opts.get("num_ctx", NUM_CTX)), timeout=timeout,
-                                       cancelled=lambda: self._aborted)
+                                       cancelled=lambda: self._aborted, hold=True)
         except LLMCancelled:
             raise
         except LLMError as error:
@@ -488,12 +518,13 @@ class LlamaClient(Ollama):
         began = time.perf_counter()
         serving = self._serve(model, options, timeout)
         if serving is None:
+            self._via_ollama.add(model)
             return super().generate(model, prompt, schema=schema, options=options, keep_alive=keep_alive,
                                     timeout=timeout, num_predict=num_predict)
-        load_ms = (time.perf_counter() - began) * 1000
-        body = completion_body(prompt, schema=schema, options=options or {}, num_predict=num_predict)
         try:
-            with self._server.request():
+            with self._server.request(held=True):  # counted by ensure: released here, whatever happens
+                load_ms = (time.perf_counter() - began) * 1000
+                body = completion_body(prompt, schema=schema, options=options or {}, num_predict=num_predict)
                 status, data = self._send("127.0.0.1", serving.port, "POST", "/completion", body,
                                           max(0.5, timeout - load_ms / 1000), who="llama-server",
                                           down="The local model stopped answering.")
@@ -505,24 +536,58 @@ class LlamaClient(Ollama):
             raise LLMError(f"llama-server: {message or f'HTTP {status}'}")
         return reply_of_completion(data, (time.perf_counter() - began) * 1000, load_ms=load_ms)
 
+    def chat(self, model: str, messages: Sequence[Mapping[str, str]], *, schema: Mapping[str, Any] | None = None,
+             options: Mapping[str, Any] | None = None, keep_alive: str = "10m", timeout: float = 8.0,
+             num_predict: int | None = None) -> Reply:
+        """Chat-template models stay with Ollama."""
+        self._via_ollama.add(model)
+        return super().chat(model, messages, schema=schema, options=options, keep_alive=keep_alive, timeout=timeout,
+                            num_predict=num_predict)
+
     def load(self, model: str, *, options: Mapping[str, Any] | None = None, keep_alive: str = "10m",
              timeout: float = 120.0) -> float:
+        """A load without a prompt is the chat-template path (raw models are warmed by reading their prefix through
+        ``generate``): Ollama's, as their requests are."""
         self._check(model)
-        began = time.perf_counter()
-        if self._serve(model, options, timeout) is None:
-            return super().load(model, options=options, keep_alive=keep_alive, timeout=timeout)
-        self._server.used(keep_alive_s(keep_alive))
-        return (time.perf_counter() - began) * 1000
+        self._via_ollama.add(model)
+        return super().load(model, options=options, keep_alive=keep_alive, timeout=timeout)
 
     def unload(self, model: str, timeout: float = 10.0) -> None:
         if not self._server.stop(model):
             super().unload(model, timeout)
 
+    def _drop_from_ollama(self, model: str) -> None:
+        """Before the child loads ``model``: Ollama's copy goes (best effort — it may hold none, or not be running)."""
+        self._via_ollama.discard(model)
+        conn = http.client.HTTPConnection(self._host, self._port, timeout=_UNLOAD_S)
+        try:
+            conn.request("POST", "/api/generate", body=json.dumps({"model": model, "keep_alive": 0}).encode("utf-8"),
+                         headers={"Content-Type": "application/json"})
+            conn.getresponse().read()
+        except (OSError, http.client.HTTPException) as error:
+            _log.debug("Ollama didn't unload %s before llama-server: %s", model, error)
+        finally:
+            conn.close()
+
     def loaded(self, timeout: float = 2.0) -> tuple[Loaded, ...]:
-        """The child's model when it serves one (no HTTP at all: this is on every request's path), else Ollama's."""
-        return self._server.rows() or super().loaded(timeout)
+        """The child's model, plus Ollama's rows only for models Ollama served here (``ollama`` mode: Ollama's list).
+        Nothing served through Ollama = no HTTP at all: this is on every request's path."""
+        if self._runtime() == "ollama":
+            return super().loaded(timeout)
+        rows = self._server.rows()
+        ours = frozenset(self._via_ollama)
+        if not ours:
+            return rows
+        try:
+            theirs = super().loaded(timeout)
+        except LLMError:
+            if rows:
+                return rows
+            raise
+        child = {row.name for row in rows}
+        return (*rows, *(row for row in theirs if row.name in ours and row.name not in child))
 
 
 def connect(url: str = DEFAULT_URL, runtime: Callable[[], str] = lambda: "auto") -> LlamaClient:
     """The LLM client for ``llm.runtime`` (read on every call, so a settings change needs no restart)."""
-    return LlamaClient(url, shared(), runtime, files=_FILES)
+    return LlamaClient(url, shared(), runtime, files=_FILES, via_ollama=_VIA_OLLAMA)

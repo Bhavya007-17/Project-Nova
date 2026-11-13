@@ -74,6 +74,7 @@ from .state import (
     Tick,
     Transition,
     WakeHeard,
+    Warming,
     Woke,
     next_deadline,
     outputs,
@@ -266,7 +267,9 @@ class Triggers:
             self._feed(Done(item.ok, now, item.detail, item.hold), now)
         elif isinstance(item, BrainProgress):
             state = _STATES.get(item.state)
-            if state is None:
+            if item.state == "warming":  # a signal, not a state: the command waits for the model to load
+                self._feed(Warming(now), now)
+            elif state is None:
                 _log.warning("brain asked for an unknown state %r", item.state)
             else:
                 self._feed(Progress(state, now, item.why), now)

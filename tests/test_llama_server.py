@@ -271,6 +271,7 @@ class _Both(BaseHTTPRequestHandler):
     """Ollama's API and llama-server's on one port; every request is noted."""
 
     seen: list[tuple[str, dict]] = []
+    ps: list[str] = ["gemma:2b"]  # what Ollama holds
 
     def log_message(self, *args):
         pass
@@ -278,7 +279,7 @@ class _Both(BaseHTTPRequestHandler):
     def do_GET(self):
         type(self).seen.append((self.path, {}))
         if self.path == "/api/ps":
-            self._send(200, {"models": [{"name": "gemma:2b", "size": 5, "size_vram": 5}]})
+            self._send(200, {"models": [{"name": name, "size": 5, "size_vram": 5} for name in type(self).ps]})
         else:
             self._send(200, {"status": "ok"})
 
@@ -317,7 +318,7 @@ class FakeServer:
         self.stopped: list[str | None] = []
         self.kept: list[float | None] = []
 
-    def ensure(self, model, gguf, *, size, layers, ctx, timeout, cancelled):
+    def ensure(self, model, gguf, *, size, layers, ctx, timeout, cancelled, hold=False):
         self.ensured.append((model, gguf, layers, ctx))
         if self.fail:
             self.usable = False
@@ -325,11 +326,14 @@ class FakeServer:
         self.serving = Serving(model, gguf, layers, ctx, self.port, 3 * 1024**3, 0.0)
         return self.serving
 
+    def serves(self, model):
+        return self.serving is not None and self.serving.model == model
+
     def rows(self):
         s = self.serving
         return () if s is None else (Loaded(s.model, s.size, s.size if s.layers else 0),)
 
-    def request(self):
+    def request(self, held=False):
         return threading.Lock()  # any context manager
 
     def used(self, seconds):
@@ -347,6 +351,7 @@ class FakeServer:
 def both(monkeypatch):
     monkeypatch.setattr("nova.brain.llama_server.os.path.getsize", lambda path: 3 * 1024**3)
     _Both.seen = []
+    _Both.ps = ["gemma:2b"]
     srv = ThreadingHTTPServer(("127.0.0.1", 0), _Both)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     yield srv.server_address[1]
@@ -355,6 +360,15 @@ def both(monkeypatch):
 
 def _paths():
     return [path for path, _ in _Both.seen]
+
+
+def _unloads(model):
+    return [body for path, body in _Both.seen if path == "/api/generate" and body == {"model": model, "keep_alive": 0}]
+
+
+def _ollama_generates():
+    """Ollama asked to answer or load (not to unload)."""
+    return [body for path, body in _Both.seen if path == "/api/generate" and body.get("keep_alive") != 0]
 
 
 def test_raw_completions_go_to_llama_server(both):
@@ -403,23 +417,32 @@ def test_cancelled_is_never_a_reason_to_fall_back(both):
     client = LlamaClient(f"http://127.0.0.1:{both}", Cancelling(both))
     with pytest.raises(LLMCancelled):
         client.generate("qwen:4b", "P")
-    assert "/api/generate" not in _paths()
+    assert _ollama_generates() == []  # (asking Ollama to drop its own copy first is no fallback)
 
 
 def test_loaded_is_the_servers_model_without_asking_ollama(both):
     server = FakeServer(both)
     client = LlamaClient(f"http://127.0.0.1:{both}", server)
-    assert [row.name for row in client.loaded()] == ["gemma:2b"]  # nothing served here: what Ollama holds
+    assert client.loaded() == () and _paths() == []  # nothing served here, nothing through Ollama: no HTTP at all
     client.generate("qwen:4b", "P")
     _Both.seen.clear()
     assert [row.name for row in client.loaded()] == ["qwen:4b"] and _paths() == []
 
 
-def test_load_starts_the_server_and_unload_stops_it(both):
+def test_load_without_a_prompt_goes_to_ollama(both):
     server = FakeServer(both)
     client = LlamaClient(f"http://127.0.0.1:{both}", server)
-    client.load("qwen:4b", options={"num_ctx": 4096, "num_gpu": 99}, keep_alive="10m")
-    assert server.serving is not None and server.kept == [600.0] and "/completion" not in _paths()
+    client.load("gemma:2b", options={"num_ctx": 4096, "num_gpu": 99}, keep_alive="10m")  # the chat-template path
+    assert server.ensured == [] and server.serving is None
+    assert _ollama_generates() == [{"model": "gemma:2b", "keep_alive": "10m",
+                                    "options": {"num_ctx": 4096, "num_gpu": 99}}]
+
+
+def test_unload_stops_the_server_or_asks_ollama(both):
+    server = FakeServer(both)
+    client = LlamaClient(f"http://127.0.0.1:{both}", server)
+    client.generate("qwen:4b", "P", options={"num_ctx": 4096, "num_gpu": 99})
+    assert server.serving is not None
     client.unload("qwen:4b")
     assert server.serving is None
     client.unload("gemma:2b")  # not ours: Ollama's to unload
@@ -455,3 +478,161 @@ def test_nova_say_keeps_ollama_unless_llama_server_is_forced():
 
     assert one_shot_runtime("auto") == "ollama"  # a child server can't stay warm between one-command runs
     assert one_shot_runtime("llama-server") == "llama-server" and one_shot_runtime("ollama") == "ollama"
+
+
+# --- the child's model is never counted from Ollama's list (Stage 07a review) ------------------------------------------
+
+
+def test_a_cold_child_is_not_resident_because_ollama_holds_the_model(both):
+    from nova.brain.llm import Loader
+
+    _Both.ps = ["qwen:4b"]  # `nova say` (Ollama) left it loaded
+    server = FakeServer(both)
+    client = LlamaClient(f"http://127.0.0.1:{both}", server)
+    assert client.loaded() == () and _paths() == []  # nothing went through Ollama here: no HTTP
+    assert not Loader(client.sibling()).resident("qwen:4b")  # so the request warms up instead of timing out
+
+
+def test_a_cold_start_asks_ollama_to_drop_its_copy_once(both):
+    _Both.ps = ["qwen:4b"]
+    server = FakeServer(both)
+    order = []
+    ensure = server.ensure
+
+    def noting(*args, **kwargs):
+        order.append(("ensure", len(_unloads("qwen:4b"))))
+        return ensure(*args, **kwargs)
+
+    server.ensure = noting
+    client = LlamaClient(f"http://127.0.0.1:{both}", server)
+    client.generate("qwen:4b", "P", options={"num_ctx": 4096, "num_gpu": 99})
+    assert len(_unloads("qwen:4b")) == 1 and order == [("ensure", 1)]  # first Ollama's copy goes, then the child starts
+    client.generate("qwen:4b", "AGAIN", options={"num_ctx": 4096, "num_gpu": 99})
+    assert len(_unloads("qwen:4b")) == 1  # warm: never again
+    assert json.loads(client.generate("qwen:4b", "P").text) == {"via": "llama-server"}
+
+
+def test_a_failing_unload_never_stops_the_child_from_starting(both):
+    server = FakeServer(both)
+    client = LlamaClient("http://127.0.0.1:9", server, files={"qwen:4b": (GGUF, 3 * 1024**3)})  # Ollama isn't there
+    client.generate("qwen:4b", "P")
+    assert server.ensured and server.serving is not None
+
+
+def test_chat_template_models_are_reported_from_ollamas_list(both):
+    _Both.ps = ["gemma:2b", "qwen:4b"]
+    server = FakeServer(both)
+    client = LlamaClient(f"http://127.0.0.1:{both}", server)
+    client.chat("gemma:2b", [{"role": "user", "content": "hi"}])
+    assert [row.name for row in client.loaded()] == ["gemma:2b"]  # not qwen:4b: nothing here put it there
+    twin = LlamaClient(f"http://127.0.0.1:{both}", FakeServer(both))
+    twin.load("gemma:2b", keep_alive="10m")
+    assert [row.name for row in twin.sibling().loaded()] == ["gemma:2b"]  # siblings share what went through Ollama
+
+
+def test_mode_ollama_reports_ollamas_list(both):
+    _Both.ps = ["gemma:2b", "qwen:4b"]
+    client = LlamaClient(f"http://127.0.0.1:{both}", FakeServer(both), lambda: "ollama")
+    assert [row.name for row in client.loaded()] == ["gemma:2b", "qwen:4b"]
+
+
+def test_a_fallback_answer_counts_ollamas_copy_until_the_child_takes_over(both):
+    _Both.ps = ["qwen:4b"]
+    runtime = ["ollama"]
+    server = FakeServer(both)
+    client = LlamaClient(f"http://127.0.0.1:{both}", server, lambda: runtime[0])
+    assert json.loads(client.generate("qwen:4b", "P").text) == {"via": "ollama"}
+    runtime[0] = "auto"
+    assert [row.name for row in client.loaded()] == ["qwen:4b"]  # Ollama answered: its copy is the model
+    client.generate("qwen:4b", "P")  # now the child: Ollama's copy is dropped first
+    assert len(_unloads("qwen:4b")) == 1
+    _Both.seen.clear()
+    assert [row.name for row in client.loaded()] == ["qwen:4b"] and _paths() == []  # the child's row, no HTTP
+
+
+def test_auto_fallback_counts_ollamas_copy(both):
+    _Both.ps = ["qwen:4b"]
+    client = LlamaClient(f"http://127.0.0.1:{both}", FakeServer(both, usable=False))
+    client.generate("qwen:4b", "P")
+    assert [row.name for row in client.loaded()] == ["qwen:4b"]
+
+
+def test_every_connected_client_shares_what_went_through_ollama(both, monkeypatch):
+    monkeypatch.setattr("nova.brain.llama_server._shared", FakeServer(both))
+    monkeypatch.setattr("nova.brain.llama_server._VIA_OLLAMA", set())
+    _Both.ps = ["gemma:2b"]
+    connect(f"http://127.0.0.1:{both}").chat("gemma:2b", [{"role": "user", "content": "hi"}])
+    assert [row.name for row in connect(f"http://127.0.0.1:{both}").loaded()] == ["gemma:2b"]
+
+
+def test_serves_is_the_model_running_or_starting():
+    rig = Rig(healthy_after=40)
+    assert not rig.server.serves("qwen:4b")
+    with pytest.raises(LLMError):
+        rig.ensure(timeout=1.0)  # still starting
+    assert rig.server.serves("qwen:4b") and not rig.server.serves("qwen:2b")
+    rig.server.stop()
+    assert not rig.server.serves("qwen:4b")
+
+
+# --- two small holes (Stage 07a review N3) ------------------------------------------------------------------------------
+
+
+def test_a_request_that_got_the_child_is_counted_before_the_idle_timer_can_stop_it():
+    rig = Rig()
+    rig.ensure()
+    rig.server.used(10.0)
+    rig.now += 60  # idle long enough: the timer is due
+    rig.server.ensure("qwen:4b", GGUF, size=3 * 1024**3, layers=99, ctx=4096, timeout=60.0, hold=True)
+    rig.timers[-1][1]()  # the timer fires between ensure and the request
+    assert not rig.procs[0].killed
+    with rig.server.request(held=True):
+        pass
+    rig.server.used(0.0)  # released: nothing in flight, so keep_alive 0 stops it
+    assert rig.procs[0].killed
+
+
+def test_a_cold_start_held_is_counted_too_and_a_failed_one_is_not():
+    rig = Rig(healthy_after=3)
+    rig.server.ensure("qwen:4b", GGUF, size=3 * 1024**3, layers=99, ctx=4096, timeout=60.0, hold=True)
+    rig.server.used(0.0)
+    assert not rig.procs[0].killed  # in flight
+    with rig.server.request(held=True):
+        pass
+    rig.server.used(0.0)
+    assert rig.procs[0].killed
+    slow = Rig(healthy_after=40)
+    with pytest.raises(LLMError):
+        slow.server.ensure("qwen:4b", GGUF, size=3 * 1024**3, layers=99, ctx=4096, timeout=1.0, hold=True)
+    slow.ensure()
+    slow.server.used(0.0)
+    assert slow.procs[0].killed  # the failed wait counted nothing
+
+
+def test_a_child_that_cannot_be_spawned_is_broken_and_says_so():
+    rig = Rig()
+
+    def refuse(args, env):
+        rig.spawned.append(args)
+        raise OSError(22, "Invalid argument")
+
+    rig.server._spawn = refuse
+    with pytest.raises(LLMError, match="couldn't start"):
+        rig.ensure()
+    assert not rig.server.usable and "couldn't start" in rig.server.broken and rig.server.rows() == ()
+    with pytest.raises(LLMError):
+        rig.ensure()
+    assert len(rig.spawned) == 1  # not tried on every request
+    rig.now += RETRY_S + 1
+    assert rig.server.usable
+
+
+def test_auto_falls_back_to_ollama_when_the_child_cannot_be_spawned(both):
+    rig = Rig()
+
+    def refuse(args, env):
+        raise OSError(22, "Invalid argument")
+
+    rig.server._spawn = refuse
+    client = LlamaClient(f"http://127.0.0.1:{both}", rig.server)
+    assert json.loads(client.generate("qwen:4b", "P").text) == {"via": "ollama"}

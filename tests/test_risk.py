@@ -80,6 +80,23 @@ def test_a_paste_asks_first_when_the_field_could_not_be_checked():
     assert assess(step("press", keys="ctrl+v"), NOTEPAD) is None
 
 
+@pytest.mark.parametrize("keys", ["ctrl+v+v", "a+b", "shift+a+b"])
+def test_a_chord_it_cannot_classify_counts_as_entering_text(keys):
+    # Ctrl down, V down, V down... is a paste: fail closed rather than let it past the password check
+    assert enters_text(keys)
+    assert needs_focus(step("press", keys=keys))
+    risk = assess(step("press", keys=keys), PASSWORD_BOX)
+    assert risk is not None and risk.refuse and "password" in risk.reason
+    assert assess(step("press", keys=keys), UNCHECKED).confirm
+
+
+def test_ordinary_chords_are_judged_as_before():
+    for keys in ("ctrl+c", "alt+tab", "ctrl+shift+t", "enter"):
+        assert not enters_text(keys), keys
+        assert assess(step("press", keys=keys), PASSWORD_BOX) is None, keys
+        assert assess(step("press", keys=keys), UNCHECKED) is None, keys
+
+
 def test_which_steps_need_the_focused_control_checked():
     assert needs_focus(step("type_text", text="hi"))
     assert needs_focus(step("press", keys="ctrl+v"))

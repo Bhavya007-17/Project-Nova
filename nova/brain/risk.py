@@ -152,10 +152,12 @@ def pastes(keys: str) -> bool:
 
 def enters_text(keys: str) -> bool:
     """Does this chord put characters into the focused field: a paste, or a character key on its own / with
-    Shift / with AltGr? (Enter, Tab, Backspace, arrows and shortcuts like Ctrl+T enter nothing.)"""
+    Shift / with AltGr? (Enter, Tab, Backspace, arrows and shortcuts like Ctrl+T enter nothing.) A chord with more
+    than one key besides the modifiers can't be judged ("ctrl+v+v" pastes): it counts as entering text."""
     chord = _chord(keys)
     if chord is None:
-        return False
+        parts = [part.strip() for part in keys.lower().split("+") if part.strip()]
+        return sum(part not in _KEY_MODIFIERS for part in parts) > 1
     mods, key = chord
     return pastes(keys) or ((len(key) == 1 or key == "space") and mods in _CHARACTER_MODIFIERS)
 

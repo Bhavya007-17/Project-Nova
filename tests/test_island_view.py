@@ -296,6 +296,26 @@ def test_the_next_command_doesnt_inherit_warming():
     assert view.words == "open notepad" and not view.warming
 
 
+def test_once_loaded_the_island_goes_back_to_his_words():
+    view = feed(READY, go("idle", "listening"), final(1, "make this bigger"), go("listening", "thinking"),
+                gated(1, "make this bigger"), BrainProgress("warming", WARMING))
+    assert view.words == WARMING
+    view = reduce(view, BrainProgress("thinking"))  # loaded: the model is answering now
+    assert view.state == "thinking" and view.words == "make this bigger" and view.final and not view.warming
+
+
+def test_once_loaded_the_island_shows_the_command_that_arrived_while_warming():
+    view = feed(READY, BrainProgress("warming", WARMING), go("idle", "thinking"), gated(4, "open the thing"))
+    assert view.words == WARMING
+    view = reduce(view, BrainProgress("thinking"))
+    assert view.state == "thinking" and view.words == "open the thing" and not view.warming
+
+
+def test_thinking_progress_without_warming_leaves_the_view_alone():
+    view = feed(READY, go("idle", "thinking"), gated(1, "x y"))
+    assert reduce(view, BrainProgress("thinking")) == view  # his answer going back to the model (router)
+
+
 def test_other_brain_progress_leaves_the_view_alone():
     view = feed(READY, go("idle", "thinking"), gated(1, "x y"))
     assert reduce(view, BrainProgress("acting")) == view

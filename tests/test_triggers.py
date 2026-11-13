@@ -409,3 +409,31 @@ def test_ctrl_copilot_toggles_the_pin_and_leaves_the_state_alone(rig):
     assert isinstance(r.next(PinToggled), PinToggled)
     r.triggers.key_event(TriggerEvent("pin", False, time.perf_counter()))
     assert r.triggers.machine.state.value == "idle"
+
+
+def test_warming_moves_the_thinking_deadline_and_thinking_brings_it_back(rig, caplog):
+    from nova.events import WARMING
+    from nova.state import HEARD_WAIT_S, WARM_WAIT_S
+
+    now = [100.0]
+    r = rig(clock=lambda: now[0])
+    r.bus.publish(FinalTranscript(1, "Nova, open Chrome", "x", "silence", 1.0, 1.0, 1.0))
+    assert r.next(Gated).accepted
+
+    def deadline_is(value):
+        limit = time.monotonic() + 2.0
+        while r.triggers.machine.deadline != value and time.monotonic() < limit:
+            time.sleep(0.01)
+        return r.triggers.machine.deadline == value
+
+    assert deadline_is(100.0 + HEARD_WAIT_S)
+    now[0] = 101.0
+    with caplog.at_level("WARNING", logger="nova.triggers"):
+        r.bus.publish(BrainProgress("warming", WARMING))  # the model is cold: the load comes first
+        assert deadline_is(101.0 + WARM_WAIT_S)
+    assert not [rec for rec in caplog.records if rec.name == "nova.triggers" and rec.levelname == "WARNING"]
+    now[0] = 100.0 + HEARD_WAIT_S + 5.0  # past the old deadline: still thinking
+    r.bus.publish(BrainProgress("thinking"))  # loaded: the answer has the usual 10 s
+    assert deadline_is(now[0] + HEARD_WAIT_S)
+    assert r.triggers.machine.state.value == "thinking"
+    assert not [e for e in r.events.queue if isinstance(e, SessionCancelled)]

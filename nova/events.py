@@ -172,7 +172,8 @@ class BrainProgress:
     why = island text where a state has one (passthrough: "Claude voice").
 
     "warming" is not a state: still thinking, but the local model is cold and loading first (15 s+); the island says
-    WARMING instead of his words. Pass it through unchanged; the thinking deadline must allow for the load.
+    WARMING instead of his words, and the controller gives the thinking deadline room for the load. "thinking" once
+    the load is done: the answer's own deadline starts then, and the island shows his words again.
     """
 
     state: str

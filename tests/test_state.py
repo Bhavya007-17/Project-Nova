@@ -17,6 +17,7 @@ from nova.state import (
     QUEUE_MAX_AGE_S,
     TAP_WAIT_S,
     WAKE_WAIT_S,
+    WARM_WAIT_S,
     Answer,
     Cancelled,
     Command,
@@ -41,6 +42,7 @@ from nova.state import (
     Tick,
     Transition,
     WakeHeard,
+    Warming,
     next_deadline,
     outputs,
     step,
@@ -657,3 +659,74 @@ def test_speech_that_began_while_nova_worked_is_a_follow_up():
     run = Run()(heard(1, "Nova, open Chrome", 1.0), SpeechStart(2, 1.1), Done(True, 1.2),
                 SpeechEnd(2, "silence", 1.9), heard(2, "now close Spotify", 2.1))
     assert run.has(Command)[0].decision.via == "follow-up"
+
+
+# --- a cold model: the load outlives the thinking deadline (Stage 07a) -------------------------------------------------
+
+
+def thinking(at=1.0):
+    return Run()(heard(1, "Nova, open the thing", at))
+
+
+def test_a_request_warming_up_is_not_timed_out_at_ten_seconds():
+    run = thinking(1.0)(Warming(1.5))
+    assert run.state is State.THINKING and run.m.deadline == 1.5 + WARM_WAIT_S and not run.effects
+    run(Tick(1.0 + HEARD_WAIT_S + 0.1))
+    assert run.state is State.THINKING and not run.has(Cancelled)
+    run(Tick(1.5 + WARM_WAIT_S - 0.1))
+    assert run.state is State.THINKING
+    run(Tick(1.5 + WARM_WAIT_S))
+    assert run.state is State.IDLE and run.has(Cancelled)[0].why == "timed out"  # a load that never finishes
+
+
+def test_the_wait_for_a_load_is_longer_than_the_load_timeout():
+    from nova.brain.llm import LOAD_TIMEOUT_S
+
+    assert WARM_WAIT_S > LOAD_TIMEOUT_S
+
+
+def test_once_loaded_the_ten_second_deadline_counts_from_then():
+    run = thinking(1.0)(Warming(1.5), Progress(State.THINKING, 30.0))
+    assert run.state is State.THINKING and run.m.deadline == 30.0 + HEARD_WAIT_S and not run.effects
+    run(Tick(30.0 + HEARD_WAIT_S - 0.1))
+    assert run.state is State.THINKING
+    run(Tick(30.0 + HEARD_WAIT_S))
+    assert run.state is State.IDLE and run.has(Cancelled)[0].why == "timed out"
+
+
+def test_esc_while_warming_cancels_at_once():
+    run = thinking(1.0)(Warming(1.5), Cancel(3.0, "Esc"))
+    assert run.state is State.IDLE and run.has(Cancelled)[0].why == "Esc" and run.m.deadline is None
+
+
+def test_the_key_and_the_name_replace_a_warming_request_at_once():
+    run = thinking(1.0)(Warming(1.5), Press("copilot", 3.0))
+    assert run.state is State.LISTENING and run.has(Cancelled)[0].why == "superseded"
+    run = thinking(1.0)(Warming(1.5), heard(2, "Nova, open notepad", 3.0))
+    assert run.state is State.THINKING and run.has(Cancelled)[0].why == "superseded"
+    assert run.m.deadline == 3.0 + HEARD_WAIT_S  # the new command's own deadline
+
+
+def test_warming_outside_thinking_changes_nothing():
+    listening = Run()(Press("copilot", 1.0)).m
+    done = Run()(heard(1, "Nova, open Chrome", 1.0), Done(True, 1.2)).m
+    confirm = Run()(heard(1, "Nova, open Chrome", 1.0), Progress(State.CONFIRM, 1.2)).m
+    for machine in (Machine(), listening, done, confirm):
+        assert step(machine, Warming(2.0)).machine == machine and not step(machine, Warming(2.0)).effects
+
+
+def test_warming_while_a_session_waits_for_its_own_words_changes_nothing():
+    run = Run()(Press("copilot", 1.0), SpeechStart(1, 1.1), Release("copilot", 2.0, 1.0, hold=True),
+                SpeechEnd(1, "key", 2.0))
+    assert run.state is State.THINKING and run.m.session is not None  # the final hasn't come yet
+    before = run.m
+    assert step(before, Warming(2.1)).machine == before
+
+
+def test_thinking_without_a_deadline_keeps_none_while_warming():
+    run = Run()(heard(1, "Nova, send it", 1.0), Progress(State.CONFIRM, 1.2), Progress(State.THINKING, 3.0))
+    assert run.state is State.THINKING and run.m.deadline is None  # his answer went back to the model
+    run(Warming(3.1))
+    assert run.m.deadline is None
+    run(Progress(State.THINKING, 20.0))
+    assert run.state is State.THINKING and run.m.deadline is None

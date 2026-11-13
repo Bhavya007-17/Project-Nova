@@ -130,12 +130,15 @@ class Thought:
 class Tier1:
     def __init__(self, client: Ollama, governor: Governor, settings: Callable[[], Llm],
                  catalog: Callable[[], Catalog], *, loader: Loader | None = None,
-                 warming: Callable[[], None] = lambda: None, clock: Callable[[], float] = time.monotonic) -> None:
+                 warming: Callable[[], None] = lambda: None, warmed: Callable[[], None] = lambda: None,
+                 clock: Callable[[], float] = time.monotonic) -> None:
         """``loader``: shared with dictation cleanup (default: its own, on a client of its own). ``warming``: called
-        when a request finds the model cold and has to wait for it to load (the island's "Warming up…")."""
+        when a request finds the model cold and has to wait for it to load (the island's "Warming up…"); ``warmed``:
+        once that wait ends with the model loaded (not after Esc or a failed load), right before the request."""
         self._client = client
         self._loader = loader or Loader(client.sibling())
         self._warming = warming
+        self._on_warmed = warmed
         self._governor = governor
         self._settings = settings
         self._catalog = catalog
@@ -230,6 +233,7 @@ class Tier1:
                 self._warmed[choice] = self._clock()
                 _log.info("LLM loaded for a request: %s on the %s, waited %.0f ms", choice.model,
                           choice.device.upper(), warm_ms)
+                self._on_warmed()
             listed = [name for name in prompt.relevant_apps(text, catalog, seen.open_apps) if name not in seen.open_apps]
             if page and choice.device == "cpu":
                 page = page[:CPU_PAGE_ROWS]  # every row is ~20 tokens: the CPU reads them ~10x slower

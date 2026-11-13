@@ -145,9 +145,14 @@ def _url(value: str) -> None:
         raise PlanError(f"not a web address: {value!r}")
 
 
+_MODIFIERS = frozenset({"ctrl", "shift", "alt", "win"})
+
+
 def keys_ok(keys: str) -> bool:
+    """Known key names, and at most one key besides the modifiers ("ctrl+v+v" is not a chord: it pastes twice)."""
     parts = keys.lower().split("+")
-    return bool(parts) and all(_KEY.fullmatch(part) for part in parts)
+    return (bool(parts) and all(_KEY.fullmatch(part) for part in parts)
+            and sum(part not in _MODIFIERS for part in parts) <= 1)
 
 
 def _check_step(s: Step) -> None:

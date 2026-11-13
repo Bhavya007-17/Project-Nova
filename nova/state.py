@@ -42,6 +42,9 @@ ERROR_S = 5.0
 TAP_WAIT_S = 6.0  # tapped, then said nothing
 WAKE_WAIT_S = 8.0  # "Nova" alone: wait this long for the command
 HEARD_WAIT_S = 10.0  # speech ended but no final (or no answer from the brain)
+# The local model is cold and loads first: longer than the loader's own 180 s timeout, which is what really ends a
+# load that never finishes. Once loaded (Progress(Thinking)) the answer gets HEARD_WAIT_S again.
+WARM_WAIT_S = 200.0
 CONFIRM_S = 15.0  # SPEC §6: 15 s without an answer = cancel
 CLARIFY_S = 20.0
 CLAIM_S = 1.0  # speech that started at most this long before a key press belongs to the key session
@@ -134,6 +137,13 @@ class Progress:
     state: State
     at: float
     why: str = ""
+
+
+@dataclass(frozen=True)
+class Warming:
+    """The brain found the local model cold: the running command waits for it to load (not a state)."""
+
+    at: float
 
 
 @dataclass(frozen=True)
@@ -625,7 +635,21 @@ def _done(m: Machine, e: Done) -> Step:
                follow_up_until=e.at + FOLLOW_UP_S)
 
 
+def _waiting_for_the_model(m: Machine) -> bool:
+    """A command is with the brain under a deadline (not a session waiting for its own words, not his answer going
+    back to the model: those have no thinking deadline to move)."""
+    return m.state is State.THINKING and m.session is None and m.deadline is not None
+
+
+def _warming(m: Machine, e: Warming) -> Step:
+    if not _waiting_for_the_model(m):
+        return Step(m)
+    return Step(replace(m, deadline=e.at + WARM_WAIT_S))
+
+
 def _progress(m: Machine, e: Progress) -> Step:
+    if e.state is State.THINKING and _waiting_for_the_model(m):  # loaded: the answer has the usual time from now
+        return Step(replace(m, deadline=e.at + HEARD_WAIT_S))
     if e.state not in _PROGRESS.get(m.state, ()):
         return Step(m)
     if e.state is State.IDLE:
@@ -663,5 +687,6 @@ _HANDLERS = {
     Tick: _tick,
     Done: _done,
     Progress: _progress,
+    Warming: _warming,
     Sleep: _sleep,
 }
