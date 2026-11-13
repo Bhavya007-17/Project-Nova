@@ -14,6 +14,7 @@ import json
 import math
 import os
 import shutil
+import statistics
 import subprocess
 import time
 from collections.abc import Sequence
@@ -295,4 +296,254 @@ def main(models: Sequence[str] = (), *, devices: Sequence[str] = ("gpu", "cpu"),
         except ConfigError as error:
             print(f"Couldn't save: {error}")
             return 1
+    return 0
+
+
+# --- `nova bench-llm --runtime ollama,llama-server` (Stage 07a) ----------------------------------------------------------
+#
+# The same GGUF (Ollama's blob), the same raw prompts and the same schema, back to back. The llama-server is the one
+# Ollama ships (lib/ollama/llama-server.exe — Ollama 0.30 itself runs models through it), started here as a child on
+# 127.0.0.1 without the vision projector and stopped afterwards. Adopt it only if warm p50 is ≥ 30 % better.
+
+ADOPT_GAIN = 0.30
+SERVER_PORT = 8091
+_LIB = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Ollama" / "lib" / "ollama"
+
+
+@dataclass(frozen=True)
+class Timing:
+    ms: float  # wall time of the request
+    prompt_ms: float
+    eval_ms: float
+    tokens: int
+    prompt_tokens: int
+    json_ok: bool
+
+
+@dataclass(frozen=True)
+class RuntimeRow:
+    runtime: str
+    mode: str  # schema (Nova's path) | none (no grammar)
+    n: int
+    p50: float
+    p95: float
+    overhead_p50: float  # wall - prompt reading - generating: the runtime's own per-request cost
+    prompt_tokens_p50: float
+    tokens_p50: float
+    tps_p50: float
+    cold_ms: float
+    not_json: int
+
+
+def _pct(values: Sequence[float], q: float) -> float:
+    xs = sorted(values)
+    if not xs:
+        return math.nan
+    k = (len(xs) - 1) * q
+    low = int(k)
+    high = min(low + 1, len(xs) - 1)
+    return xs[low] + (xs[high] - xs[low]) * (k - low)
+
+
+def runtime_row(runtime: str, mode: str, timings: Sequence[Timing], cold_ms: float) -> RuntimeRow:
+    return RuntimeRow(
+        runtime, mode, len(timings), round(_pct([t.ms for t in timings], 0.5), 1),
+        round(_pct([t.ms for t in timings], 0.95), 1),
+        round(_pct([t.ms - t.prompt_ms - t.eval_ms for t in timings], 0.5), 1),
+        _pct([t.prompt_tokens for t in timings], 0.5), _pct([t.tokens for t in timings], 0.5),
+        round(_pct([t.tokens / (t.eval_ms / 1000) for t in timings if t.eval_ms > 0], 0.5), 1), round(cold_ms),
+        sum(not t.json_ok for t in timings))
+
+
+def gain(ollama_p50: float, server_p50: float) -> float:
+    """How much faster llama-server's warm p50 is (0.3 = 30 %)."""
+    return 1.0 - server_p50 / ollama_p50 if ollama_p50 > 0 else 0.0
+
+
+def gguf_path(modelfile: str) -> str | None:
+    """The model's own GGUF from `ollama show --modelfile` (a second FROM is the vision projector)."""
+    for line in modelfile.splitlines():
+        if line.startswith("FROM "):
+            path = line[5:].strip()
+            if Path(path).is_absolute():
+                return path
+    return None
+
+
+def server_args(exe: Path, gguf: str, *, port: int = SERVER_PORT) -> list[str]:
+    from .brain.llm import NUM_CTX
+    from .governor import ALL_LAYERS
+
+    return [str(exe), "-m", gguf, "--host", "127.0.0.1", "--port", str(port), "--no-webui", "--offline",
+            "-c", str(NUM_CTX), "-np", "1", "-ngl", str(ALL_LAYERS), "-fa", "auto", "--no-jinja",
+            "--chat-template", "chatml"]
+
+
+def server_env(lib: Path, base: dict[str, str] | None = None) -> dict[str, str]:
+    """Ollama's llama-server finds its CUDA backend only with lib/ollama/cuda_v13 on the DLL path."""
+    base = dict(os.environ if base is None else base)
+    cuda = lib / "cuda_v13"
+    return {**base, "PATH": f"{cuda};{lib};{base.get('PATH', '')}", "GGML_BACKEND_PATH": str(cuda / "ggml-cuda.dll")}
+
+
+def _is_json(text: str) -> bool:
+    try:
+        json.loads(text)
+        return True
+    except ValueError:
+        return False
+
+
+def _prompts(n: int) -> tuple[str, list[str]]:
+    """Tier 1's static prefix and n raw requests built from the eval's positives, exactly as Tier 1 renders them."""
+    from .brain import prompt
+    from .brain.tier1 import Seen, chatml, chatml_turn
+    from .evals import fake_context
+    from .say import _catalog_store
+
+    catalog = _catalog_store().current()
+    static = chatml(prompt.prefix(catalog.aliases))
+    raws = []
+    for case in _spread([c for c in load_cases(catalog) if c.group == "positive"], n):
+        seen = Seen.of(fake_context(case))
+        listed = [a for a in prompt.relevant_apps(case.text, catalog, seen.open_apps) if a not in seen.open_apps]
+        request = prompt.request(case.text, front=seen.front, open_apps=seen.open_apps, tab=seen.tab, apps=listed)
+        raws.append(static + chatml_turn(prompt.dumps(request), True))
+    return static, raws
+
+
+def _ollama_round(client: Ollama, model: str, static: str, raws: Sequence[str]) -> list[RuntimeRow]:
+    from .brain import prompt
+    from .brain.llm import load_options
+
+    options = load_options(Choice(model, "gpu").options)
+    try:
+        client.unload(model)
+    except LLMError:
+        pass
+    time.sleep(2.0)
+    began = time.perf_counter()
+    client.generate(model, static, options=options, keep_alive="5m", timeout=180.0, num_predict=1)
+    cold = (time.perf_counter() - began) * 1000
+    rows = []
+    for mode in ("schema", "none"):
+        timings = []
+        for raw in raws:
+            opts = {**options, "stop": ["<|im_end|>"]} if mode == "none" else options
+            r = client.generate(model, raw, schema=prompt.SCHEMA if mode == "schema" else None, options=opts,
+                                keep_alive="5m", timeout=60.0, num_predict=200)
+            timings.append(Timing(r.ms, r.prompt_ms, r.eval_ms, r.tokens, r.prompt_tokens, _is_json(r.text)))
+        rows.append(runtime_row("ollama", mode, timings, cold))
+    client.unload(model)  # one model on the 8 GB GPU at a time
+    return rows
+
+
+def _server_call(raw: str, mode: str, n_predict: int = 200) -> Timing:
+    import http.client
+
+    from .brain import prompt
+    from .brain.llm import SAMPLING
+
+    body: dict = {"prompt": raw, "n_predict": n_predict, "cache_prompt": True, "temperature": 0, "top_k": 1,
+                  "repeat_penalty": SAMPLING["repeat_penalty"], "presence_penalty": 0.0, "frequency_penalty": 0.0}
+    if mode == "schema":
+        body["json_schema"] = prompt.SCHEMA
+    else:
+        body["stop"] = ["<|im_end|>"]
+    conn = http.client.HTTPConnection("127.0.0.1", SERVER_PORT, timeout=60.0)
+    began = time.perf_counter()
+    try:
+        conn.request("POST", "/completion", body=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
+        data = json.loads(conn.getresponse().read().decode("utf-8") or "{}")
+    finally:
+        conn.close()
+    ms = (time.perf_counter() - began) * 1000
+    tm = data.get("timings") or {}
+    return Timing(ms, float(tm.get("prompt_ms", 0.0)), float(tm.get("predicted_ms", 0.0)),
+                  int(tm.get("predicted_n", 0)), int(tm.get("prompt_n", 0)), _is_json(str(data.get("content", ""))))
+
+
+def _server_round(gguf: str, static: str, raws: Sequence[str]) -> list[RuntimeRow]:
+    import http.client
+
+    exe = _LIB / "llama-server.exe"
+    log = (paths.LOGS / "bench-llama-server.log").open("w", encoding="utf-8")
+    began = time.perf_counter()
+    proc = subprocess.Popen(server_args(exe, gguf), env=server_env(_LIB), stdout=log, stderr=subprocess.STDOUT,
+                            creationflags=subprocess.CREATE_NO_WINDOW)
+    try:
+        while True:
+            if proc.poll() is not None:
+                raise RuntimeError(f"llama-server stopped (exit {proc.returncode}) — see logs/bench-llama-server.log")
+            if time.perf_counter() - began > 180:
+                raise RuntimeError("llama-server didn't come up in 180 s")
+            try:
+                conn = http.client.HTTPConnection("127.0.0.1", SERVER_PORT, timeout=1.0)
+                conn.request("GET", "/health")
+                ready = conn.getresponse().status == 200
+                conn.close()
+                if ready:
+                    break
+            except OSError:
+                pass
+            time.sleep(0.1)
+        _server_call(static, "none", n_predict=1)
+        cold = (time.perf_counter() - began) * 1000
+        return [runtime_row("llama-server", mode, [_server_call(raw, mode) for raw in raws], cold)
+                for mode in ("schema", "none")]
+    finally:
+        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True,
+                       creationflags=subprocess.CREATE_NO_WINDOW)
+        proc.wait(timeout=10)
+        log.close()
+
+
+def runtime_table(rows: Sequence[RuntimeRow]) -> str:
+    lines = ["| runtime | output | n | p50 ms | p95 ms | overhead ms | prompt tok read | out tok | tok/s | cold ms | "
+             "not JSON |", "|---|---|---|---|---|---|---|---|---|---|---|"]
+    for r in rows:
+        lines.append(f"| {r.runtime} | {r.mode} | {r.n} | {r.p50:.0f} | {r.p95:.0f} | {r.overhead_p50:.0f} | "
+                     f"{r.prompt_tokens_p50:.0f} | {r.tokens_p50:.0f} | {r.tps_p50:.1f} | {r.cold_ms:.0f} | "
+                     f"{r.not_json} |")
+    return "\n".join(lines)
+
+
+def runtimes(names: Sequence[str], *, cases: int = 36, rounds: int = 2) -> int:
+    """Ollama vs llama-server on the GPU model, ``rounds`` times back to back; prints the table and the verdict."""
+    config = ConfigStore(paths.SETTINGS)
+    config.load()
+    model = config.settings.llm.gpu_model
+    client = Ollama(config.settings.ollama.url)
+    try:
+        modelfile = str(client.show(model).get("modelfile", ""))
+    except LLMError as error:
+        print(error)
+        return 1
+    gguf = gguf_path(modelfile)
+    if "llama-server" in names and (gguf is None or not (_LIB / "llama-server.exe").is_file()):
+        print("llama-server: no GGUF path in the modelfile or no lib/ollama/llama-server.exe — Ollama only")
+        names = tuple(n for n in names if n != "llama-server")
+    static, raws = _prompts(cases)
+    paths.LOGS.mkdir(parents=True, exist_ok=True)
+    print(f"{model} on the GPU · {len(raws)} eval phrasings · same prompts and schema for every runtime", flush=True)
+    rows: list[RuntimeRow] = []
+    for i in range(rounds):
+        for name in names:
+            print(f"== round {i + 1}: {name}", flush=True)
+            try:
+                got = _ollama_round(client, model, static, raws) if name == "ollama" else \
+                    _server_round(str(gguf), static, raws)
+            except (LLMError, RuntimeError, OSError) as error:
+                print(f"   failed: {error}")
+                continue
+            rows.extend(got)
+            print(runtime_table(got), flush=True)
+    print()
+    print(runtime_table(rows))
+    by = {name: [r.p50 for r in rows if r.runtime == name and r.mode == "schema"] for name in names}
+    if by.get("ollama") and by.get("llama-server"):
+        g = gain(statistics.median(by["ollama"]), statistics.median(by["llama-server"]))
+        verdict = "adopt llama-server" if g >= ADOPT_GAIN else "keep Ollama"
+        print(f"\nllama-server warm p50 is {g:.1%} better than Ollama's (rule: adopt at ≥ {ADOPT_GAIN:.0%}): {verdict}")
+    (paths.LOGS / "bench-runtime.json").write_text(json.dumps([asdict(r) for r in rows], indent=1), encoding="utf-8")
     return 0
