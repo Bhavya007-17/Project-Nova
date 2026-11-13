@@ -62,7 +62,7 @@ class _Name:
 # --- the lines (pure) ------------------------------------------------------------------------------------------
 
 
-def _display(phrase: str, known: Mapping[str, str]) -> str:
+def display_name(phrase: str, known: Mapping[str, str]) -> str:
     """An alias as he'd write it: a known spelling (vocab term, app or short app name), else Title Case
     with vowel-less words in capitals ("vs code" -> "VS Code")."""
     found = known.get(key_of(phrase))
@@ -86,7 +86,7 @@ def _names(aliases: Mapping[str, str], terms: Sequence[str],
     for group in groups.values():
         phrase, target = max(group, key=lambda pt: len(pt[0].split()))
         kind = "site" if target.startswith(("http://", "https://")) else "app"
-        required.append(_Name(_display(phrase, known), kind))
+        required.append(_Name(display_name(phrase, known), kind))
     said = set(groups)
     for term in terms:
         key = key_of(term)
