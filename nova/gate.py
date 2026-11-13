@@ -6,7 +6,8 @@ Rules, in order:
    the name is stripped if he said it anyway.
 3. Addressed to the wake name ("Nova, ..." / "um, hey Nova ..." / "please Nova, open ...", spellings from
    settings; see ``strip_wake``) -> accepted, name stripped.
-4. Nova busy (thinking / acting), in Passthrough or asleep -> nothing else counts.
+4. A session waiting for its own words, Passthrough or asleep -> nothing else counts. (While Nova thinks or acts
+   on a command, 6 and 7 still apply; the state machine queues what passes and "stop" / "cancel" aborts.)
 5. Another app is using the mic (a call) -> name or key required.
 6. Follow-up window (8 s after a command ran) -> anything that starts like a command.
 7. Always-listening -> starts like a command, resolves (stub until Stage 04: a page / media / volume
@@ -144,6 +145,24 @@ def command_words(text: str) -> tuple[str, ...] | None:
     if i < len(words) and words[i] in _VERBS:
         return tuple(words[i:])
     return None
+
+
+_STOPS = frozenset({
+    ("stop",), ("cancel",), ("abort",), ("wait",), ("stop", "it"), ("stop", "that"), ("cancel", "it"),
+    ("cancel", "that"), ("never", "mind"), ("nevermind",), ("hold", "on"),
+})
+
+
+def is_stop(text: str, wake: WakeName) -> bool:
+    """Is this only "stop" / "cancel" / "wait" (the name or fillers in front, "please" behind)? While Nova is
+    busy that aborts the running command (SPEC §5); a sentence with "stop" in it doesn't."""
+    rest = strip_wake(text, wake) if wake.enabled else None
+    words = _words(text if rest is None else rest)
+    while words and words[0] in _FILLERS:
+        words = words[1:]
+    while words and words[-1] in ("please", "now"):
+        words = words[:-1]
+    return tuple(words) in _STOPS
 
 
 # --- stub resolver (Stage 04 replaces it with Tier 0 + the app catalog) ------------------------------
@@ -311,7 +330,8 @@ class Addressing:
     follow_up: bool = False  # within 8 s of a command that ran
     passthrough: bool = False  # Claude / ChatGPT voice mode is listening to him
     asleep: bool = False  # "stop listening": only the name or the key count
-    busy: bool = False  # thinking / acting on the last command
+    busy: bool = False  # a key / wake session is waiting for its own words: this isn't them
+    working: bool = False  # thinking / acting on a command: what passes now runs next (the state machine queues it)
 
 
 @dataclass(frozen=True)
@@ -357,7 +377,7 @@ def decide(text: str, addressing: Addressing, env: Env) -> Decision:
     if rest is not None:
         return Decision(True, "wake", rest, heard, f"starts with {name}")
     if addressing.busy:
-        return ignored("busy", f"busy with the last command: say {name} or use the key")
+        return ignored("busy", f"listening for something else: say {name} or use the key")
     if addressing.passthrough:
         return ignored("passthrough", f"voice mode is on: say {name} or use the key")
     if addressing.asleep:
@@ -366,7 +386,8 @@ def decide(text: str, addressing: Addressing, env: Env) -> Decision:
         return ignored("mic-busy", f"{env.mic_busy} is using the mic: say {name} or use the key")
     over_speakers = ignored("speakers", f"the speakers are playing: say {name} or use the key")
     words = command_words(heard)
-    if addressing.follow_up and words is not None:
+    # While Nova works on his command he is still talking to it: the follow-up window is already open.
+    if (addressing.follow_up or addressing.working) and words is not None:
         if not env.speakers:
             return Decision(True, "follow-up", heard, heard, "follow-up window")
         # What the speakers say can't type, click or close: only what strict Tier 0 calls safe gets through.

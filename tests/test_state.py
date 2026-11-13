@@ -1,5 +1,7 @@
 """Nova's state machine (SPEC §5): key gestures + speech + finals -> states and effects."""
 
+import pytest
+
 from nova.gate import Env, StubResolver, WakeName
 from nova.keys import Cancel, DoubleTap, Press, Release
 from nova.state import (
@@ -8,6 +10,8 @@ from nova.state import (
     DONE_S,
     FOLLOW_UP_S,
     HEARD_WAIT_S,
+    QUEUE_MAX,
+    QUEUE_MAX_AGE_S,
     TAP_WAIT_S,
     WAKE_WAIT_S,
     Answer,
@@ -16,6 +20,7 @@ from nova.state import (
     Dictated,
     Dictation,
     Done,
+    Dropped,
     DropUtterance,
     EndUtterance,
     Heard,
@@ -25,6 +30,7 @@ from nova.state import (
     Power,
     Preload,
     Progress,
+    Queued,
     Sleep,
     SpeechEnd,
     SpeechStart,
@@ -292,12 +298,114 @@ def test_follow_up_window_lasts_8_seconds():
     assert run.has(Ignored)[0].decision.via == "needs-name"
 
 
-def test_busy_takes_only_the_name():
-    run = Run()(heard(1, "Nova, open Chrome", 1.0))
-    run(heard(2, "open spotify", 1.5))
-    assert run.has(Ignored)[0].decision.via == "busy"
-    run(heard(3, "Nova, pause", 1.8))
-    assert run.has(Command) and run.has(Cancelled)[0].why == "superseded"
+# --- never drop him: what passes the gate while Nova is busy runs next (SPEC §5) ---------------------------
+
+
+def busy(at=1.0):
+    """ "Nova, open Chrome" was accepted and the brain is acting on it."""
+    return Run()(heard(1, "Nova, open Chrome", at), Progress(State.ACTING, at + 0.1))
+
+
+def test_a_command_said_while_nova_is_busy_runs_next():
+    run = busy()(SpeechStart(2, 1.2), SpeechEnd(2, "silence", 1.9), heard(2, "maximize it", 2.1))
+    assert run.has(Queued)[0].decision.text == "maximize it"
+    assert not run.has(Command) and not run.has(Cancelled) and not run.has(Ignored)
+    assert run.state is State.ACTING  # the running command is not disturbed
+    run(Done(True, 2.5, "Opened Chrome"))
+    command = run.has(Command)[0]
+    assert run.state is State.THINKING and command.utterance == 2 and command.waited == pytest.approx(0.6)
+    run(Progress(State.ACTING, 2.6), Done(True, 2.9, "Maximized"))
+    assert run.state is State.DONE and run.m.queue == ()
+
+
+def test_queued_commands_run_in_order():
+    run = busy()(heard(2, "maximize it", 1.5), heard(3, "open spotify", 1.8))
+    assert [w.utterance for w in run.m.queue] == [2, 3]
+    run(Done(True, 2.0))
+    assert run.has(Command)[0].utterance == 2
+    run(Done(True, 2.5))
+    assert run.has(Command)[0].utterance == 3
+    run(Done(True, 3.0))
+    assert run.state is State.DONE and not run.has(Command)
+
+
+def test_a_queued_command_older_than_10_s_is_dropped_with_a_note():
+    run = busy()(SpeechStart(2, 1.2), SpeechEnd(2, "silence", 1.9), heard(2, "maximize it", 2.1))
+    run(Done(True, 1.9 + QUEUE_MAX_AGE_S + 0.5, "Opened Chrome"))
+    dropped = run.has(Dropped)[0]
+    assert dropped.utterance == 2 and dropped.stale and not run.has(Command)
+    assert run.state is State.DONE and run.m.queue == ()
+
+
+def test_a_stale_command_is_skipped_and_a_fresh_one_behind_it_runs():
+    run = busy()(heard(2, "maximize it", 1.5), heard(3, "open spotify", 9.0))
+    run(Done(True, 12.0))
+    assert [d.utterance for d in run.has(Dropped)] == [2] and run.has(Command)[0].utterance == 3
+
+
+@pytest.mark.parametrize("said", ["stop", "Stop.", "Cancel.", "cancel that", "um, stop it", "Nova, stop", "never mind", "Wait."])
+def test_stop_while_busy_aborts_the_action_and_clears_the_queue(said):
+    run = busy()(heard(2, "maximize it", 1.5), heard(3, said, 1.8))
+    assert run.state is State.IDLE and run.has(Cancelled)[0].why == "stop"
+    assert [d.utterance for d in run.has(Dropped)] == [2] and run.m.queue == ()
+    assert not run.has(Command)
+    run(Done(True, 2.0))  # a late result of the stopped command changes nothing
+    assert run.state is State.IDLE and not run.has(Command)
+
+
+def test_a_sentence_with_stop_in_it_is_not_a_stop():
+    run = busy()(heard(2, "we should stop by the store later", 1.5))
+    assert run.state is State.ACTING and not run.has(Cancelled)
+
+
+def test_the_name_still_interrupts_and_replaces_what_was_waiting():
+    run = busy()(heard(2, "maximize it", 1.5), heard(3, "Nova, pause", 1.8))
+    assert run.has(Cancelled)[0].why == "superseded" and run.has(Command)[0].utterance == 3
+    assert [d.utterance for d in run.has(Dropped)] == [2] and run.m.queue == ()
+    run(Done(True, 2.2))
+    assert run.state is State.DONE and not run.has(Command)
+
+
+def test_the_key_still_interrupts_and_replaces_what_was_waiting():
+    run = busy()(heard(2, "maximize it", 1.5), Press("copilot", 1.8))
+    assert run.state is State.LISTENING and run.has(Cancelled)[0].why == "superseded"
+    assert [d.utterance for d in run.has(Dropped)] == [2] and run.m.queue == ()
+
+
+def test_a_failed_command_stops_the_queue():
+    run = busy()(heard(2, "maximize it", 1.5), Done(False, 2.0, "Chrome didn't open"))
+    assert run.state is State.ERROR and [d.utterance for d in run.has(Dropped)] == [2] and not run.has(Command)
+
+
+def test_esc_clears_the_queue():
+    run = busy()(heard(2, "maximize it", 1.5), Cancel(1.8))
+    assert run.state is State.IDLE and run.has(Dropped) and run.m.queue == ()
+
+
+def test_a_command_that_was_not_one_after_all_lets_the_next_run():
+    run = Run()(heard(1, "Nova, do the thing", 1.0), heard(2, "open spotify", 1.5))
+    run(Progress(State.IDLE, 1.8, "not a command"))
+    assert run.state is State.THINKING and run.has(Command)[0].utterance == 2
+
+
+def test_a_question_keeps_the_queue_and_a_no_drops_it():
+    run = busy()(heard(2, "maximize it", 1.5), Progress(State.CONFIRM, 1.7))
+    assert [w.utterance for w in run.m.queue] == [2]
+    run(Progress(State.IDLE, 3.0, "Cancelled"))  # he said no
+    assert run.state is State.IDLE and run.has(Dropped) and run.m.queue == ()
+
+
+def test_the_queue_is_small():
+    run = busy()
+    for n in range(2, 2 + QUEUE_MAX):
+        run(heard(n, "open spotify", 1.5))
+    run(heard(99, "open spotify", 1.6))
+    assert len(run.m.queue) == QUEUE_MAX and run.has(Ignored)[0].decision.via == "busy"
+
+
+def test_chatter_while_busy_is_still_ignored():
+    run = busy()(heard(2, "did you close the door", 1.5))
+    assert run.has(Ignored)[0].decision.via == "not-command" and run.m.queue == ()
 
 
 def test_chatter_during_a_key_session_cannot_take_it_over():

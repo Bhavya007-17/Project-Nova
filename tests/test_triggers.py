@@ -78,7 +78,7 @@ class FakeDetector:
 
 
 class Rig:
-    def __init__(self, settings=None, detector=None, names=("Spotify", "Google Chrome")):
+    def __init__(self, settings=None, detector=None, names=("Spotify", "Google Chrome"), clock=time.perf_counter):
         self.bus = Bus()
         self.events = queue.Queue()
         self.bus.subscribe(object, self.events.put)
@@ -86,7 +86,7 @@ class Rig:
         self.keys = TriggerKeys()
         self.detector = detector or FakeDetector()
         self.triggers = Triggers(self.bus, self.speech, settings or Settings(), keys=self.keys,
-                                 detector=lambda: self.detector, names=names)
+                                 detector=lambda: self.detector, names=names, clock=clock)
         self.triggers.start()
         self.utterance = 0
 
@@ -264,6 +264,48 @@ def test_a_tiny_yes_does_not_answer_but_enter_and_a_real_yes_do(rig):
     assert r.next(IslandAction).what == "yes"
     speak(r, 3, "Yes.", talk_s=0.5)
     assert r.next(AnswerHeard).text == "Yes."
+
+
+def test_a_command_said_while_busy_reaches_the_brain_when_the_first_is_done(rig):
+    r = rig()
+    assert r.say("Nova, open Chrome").accepted
+    speak(r, 2, "open spotify", talk_s=0.2)
+    time.sleep(0.2)
+    waiting = [e for e in r.events.queue if isinstance(e, Gated) and e.utterance == 2]
+    assert waiting == [] and r.triggers.machine.queue  # held back: the brain is busy with the first one
+    r.bus.publish(CommandFinished(True, "Opened Chrome"))
+    gated = r.next(Gated, where=lambda e: e.utterance == 2)
+    assert gated.accepted and gated.text == "open spotify"
+    assert r.triggers.machine.state.value == "thinking"
+
+
+def test_stop_while_busy_cancels_the_running_command(rig):
+    r = rig()
+    assert r.say("Nova, open Chrome").accepted
+    speak(r, 2, "open spotify", talk_s=0.2)
+    speak(r, 3, "Stop.", talk_s=0.2)
+    assert r.next(StateChanged, where=lambda e: e.new == "idle").why == "stopped"
+    assert r.next(SessionCancelled).why == "stop"  # the brain aborts on this
+    r.bus.publish(CommandFinished(True, "Opened Chrome"))
+    time.sleep(0.2)
+    assert not [e for e in r.events.queue if isinstance(e, Gated) and e.utterance == 2 and e.accepted]
+
+
+def test_a_command_that_waited_too_long_is_skipped_with_a_note(rig):
+    now = [100.0]
+    r = rig(clock=lambda: now[0])
+    r.bus.publish(FinalTranscript(1, "Nova, open Chrome", "x", "silence", 1.0, 1.0, 1.0))
+    assert r.next(Gated).accepted
+    r.bus.publish(BrainProgress("acting"))
+    r.bus.publish(FinalTranscript(2, "open spotify", "x", "silence", 1.0, 1.0, 1.0))
+    time.sleep(0.2)
+    now[0] += 11.0  # the first command took 11 s
+    r.bus.publish(CommandFinished(True, "Opened Chrome"))
+    note = r.next(CommandFinished, where=lambda e: not e.ok)
+    assert "open spotify" in note.detail and "waited too long" in note.detail
+    time.sleep(0.2)
+    assert r.triggers.machine.state.value == "done"  # the note is for the island: it is no result
+    assert not [e for e in r.events.queue if isinstance(e, Gated) and e.utterance == 2 and e.accepted]
 
 
 def test_number_key_picks_a_choice(rig):

@@ -5,7 +5,7 @@ import pytest
 from catalog_fixture import CATALOG
 
 from nova.brain.tier0 import Tier0Resolver
-from nova.gate import Addressing, Env, StubResolver, WakeName, command_words, decide, strip_wake
+from nova.gate import Addressing, Env, StubResolver, WakeName, command_words, decide, is_stop, strip_wake
 
 APPS = ["Google Chrome", "Spotify", "Notepad", "Calculator", "Autodesk Fusion", "Claude", "Word", "Excel",
         "Visual Studio Code", "Microsoft Teams", "Camera", "Web Server for Chrome", "Outlook (classic)"]
@@ -338,6 +338,33 @@ def test_passthrough_asleep_and_busy_ignore_plain_commands():
     assert judge("open spotify", Addressing(passthrough=True)).via == "passthrough"
     assert judge("open spotify", Addressing(asleep=True)).via == "asleep"
     assert judge("open spotify", Addressing(busy=True)).via == "busy"
+
+
+def test_while_nova_works_on_a_command_the_follow_up_rule_applies():
+    working = Addressing(working=True)
+    decision = judge("type hello world", working)
+    assert decision.accepted and decision.via == "follow-up"
+    assert judge("open spotify", working).accepted
+    assert not judge("we should go", working).accepted
+    assert judge("type hello world", working, speakers=True).via == "speakers"
+    assert judge("open spotify", working, mic_busy="Teams.exe").via == "mic-busy"
+    assert judge("open spotify", Addressing(busy=True)).via == "busy"  # a session still waits for its own words
+
+
+@pytest.mark.parametrize(
+    "heard", ["stop", "Stop.", "cancel", "Cancel that.", "um, stop it please", "Nova, stop", "hey Nova cancel",
+              "never mind", "wait", "hold on"]
+)
+def test_stop_words(heard):
+    assert is_stop(heard, WAKE)
+
+
+@pytest.mark.parametrize(
+    "heard", ["", "stop the music", "we should stop by the store later", "don't stop", "cancel my subscription",
+              "wait for me", "stop listening", "Nova"]
+)
+def test_not_stop_words(heard):
+    assert not is_stop(heard, WAKE)
 
 
 def test_unknown_app_is_not_resolvable():
