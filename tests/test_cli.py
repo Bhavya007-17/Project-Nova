@@ -69,7 +69,25 @@ def test_keys_probe_dispatch(monkeypatch):
 
 def test_bench_stt_dispatch(monkeypatch):
     seen = []
-    monkeypatch.setattr("nova.stt.bench.run", lambda live=0: seen.append(live) or 0)
+    monkeypatch.setattr("nova.stt.bench.run", lambda live=0, backend="parakeet": seen.append((live, backend)) or 0)
     assert cli.main(["bench-stt"]) == 0
     assert cli.main(["bench-stt", "--live", "5"]) == 0
-    assert seen == [0, 5]
+    assert cli.main(["bench-stt", "--backend", "both"]) == 0
+    assert seen == [(0, "parakeet"), (5, "parakeet"), (0, "parakeet"), (0, "sherpa")]
+
+
+def test_bench_stt_set_dispatch(monkeypatch, tmp_path):
+    seen = []
+    monkeypatch.setattr("nova.stt.bench.run_set", lambda folder, backends: seen.append((folder, backends)) or 0)
+    assert cli.main(["bench-stt", "--set", str(tmp_path)]) == 0
+    assert cli.main(["bench-stt", "--set", str(tmp_path), "--backend", "both"]) == 0
+    assert seen == [(tmp_path, ("parakeet",)), (tmp_path, ("parakeet", "sherpa"))]
+
+
+def test_record_set_dispatch(monkeypatch):
+    seen = []
+    monkeypatch.setattr("nova.recordset.main", lambda **kw: seen.append(kw) or 0)
+    assert cli.main(["record-set"]) == 0
+    assert cli.main(["record-set", "--list", "--seconds", "5", "--device", "Jabra"]) == 0
+    assert seen == [{"list_only": False, "seconds": 4.0, "device": None},
+                    {"list_only": True, "seconds": 5.0, "device": "Jabra"}]

@@ -39,6 +39,12 @@ memories aren't shared, this file is.
 - **Idle CPU:** measure with cycle counts (`nova/cpu.py`, `QueryProcessCycleTime`), not `GetProcessTimes` (15.6 ms tick
   billing misreads 32 ms audio callbacks). Thread wake-ups dominate idle cost. Mic noise suppression makes "quiet" swing
   −96…−58 dB, so the energy gate uses p80 of the last 3 s + 15 dB, clamped −75…−45 dB.
+- **sherpa-onnx hotwords on Parakeet TDT (2.0.1)** work only with `modeling_unit="bpe"` plus a SentencePiece vocab,
+  which the export lacks: `nova/stt/sherpa.py` writes one from `tokens.txt` (score = −id). With the default
+  "cjkchar" every name fails to encode (stderr says so; decoding goes on unbiased). Boost 2.0 fixed names on synthetic
+  speech where 1.5 didn't. Boosting every installed app (180) raised WER on "check" from 14.4 % to 19.0 %; his own
+  names only (32): 14.4 % vs 13.7 % greedy onnx-asr. Its wheel brings its own `onnxruntime.dll` (1.28); it loads
+  next to `onnxruntime` 1.31 in either import order (the Python package links ORT into its own `.pyd`).
 - **Recordings:** in the private voicebar sessions only "check" is clean; "quiet"/"noise" start mid-word (~46 % WER that
   says nothing about STT). `expected_text` is the WER reference. Score WER after normalizing case and punctuation.
 
