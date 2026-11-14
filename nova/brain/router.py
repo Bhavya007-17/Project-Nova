@@ -113,7 +113,7 @@ class Router:
         self._before = (*self._before, entry)[-MAX_BEFORE:]
 
     def forget_talk(self) -> None:
-        """The talk session closed: the next one starts with nothing to point at."""
+        """A talk session opened: it starts with nothing to point at (clauses of the last one have all run)."""
         self._before = ()
         self._context = ()
 

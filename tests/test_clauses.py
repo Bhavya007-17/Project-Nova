@@ -162,6 +162,32 @@ def test_next_is_only_small_talk_before_a_pause():
     assert [c.text for c in split("open the next video")] == ["open the next video"]
 
 
+def test_right_is_only_small_talk_before_a_pause():
+    assert strip("right click on the file") == "right click on the file"
+    assert strip("Right, open Chrome") == "open Chrome"
+    assert [c.text for c in split("right click on the file")] == ["right click on the file"]
+    assert clauses.is_acknowledgement("yeah right")  # still an acknowledgement on its own
+
+
+_PRAISE = ["great job", "great work", "nice work", "good work", "well done", "nicely done", "nice job"]
+
+
+@pytest.mark.parametrize("final", _PRAISE + [p.capitalize() + "." for p in _PRAISE])
+def test_praise_is_an_acknowledgement(final):
+    found = split(final)
+    assert [(c.kind, c.text) for c in found] == [("ack", "")]
+    assert clauses.is_acknowledgement(final)
+
+
+@pytest.mark.parametrize("final", _PRAISE + ["Great job. Nice work!"])
+def test_tier0_makes_no_plan_from_praise(final):
+    from catalog_fixture import CATALOG
+
+    from nova.brain import tier0
+
+    assert tier0.parse(final, CATALOG) is None
+
+
 def test_lexicon_covers_the_gate_verbs():
     assert gate._VERBS <= clauses.IMPERATIVE_VERBS
     assert clauses.FREE_TEXT_VERBS <= clauses.IMPERATIVE_VERBS

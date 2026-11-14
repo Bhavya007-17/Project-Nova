@@ -61,7 +61,7 @@ _log = logging.getLogger(__name__)
 
 _KEEP = 16
 _STOP = object()
-_FORGET_TALK = object()  # on the command queue: the talk session closed (FIFO: clauses before it keep the context)
+_FORGET_TALK = object()  # on the command queue: a talk session opened (FIFO: it runs before that session's commands)
 # keep_alive while a talk session is open: resident for the whole session. Not "-1": Ollama 0.30.10 answers a string
 # "-1" with HTTP 400 "time: missing unit in duration" (only the number -1 means forever there), and llm.keep_alive is
 # a string. "24h" reads the same on both runtimes (llama-server: an idle timer of a day). Closing re-arms the normal one.
@@ -362,10 +362,12 @@ class Brain:
         """Bus thread: only flags and background work here; the session context is the brain thread's."""
         if event.what == "opened":
             self._talk_open = True
+            # A new session starts with nothing to point at. Cleared at the opening, not the close: clauses still
+            # running after a tap-close keep their context, and "opened" comes before the command that opens it.
+            self._commands.put(_FORGET_TALK)
             self._tier1.keep_warm()  # load it now, while he says the first thing (no PreloadHint inside a session)
         elif event.what == "closed":
             self._talk_open = False
-            self._commands.put(_FORGET_TALK)  # after the clauses already queued: they still see the context
             self._tier1.keep_warm(only_if_resident=True)  # the normal keep_alive again; never loads for it
 
     def _on_speech_end(self, event: SpeechEnded) -> None:

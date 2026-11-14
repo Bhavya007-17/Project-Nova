@@ -353,6 +353,17 @@ def _template(words: tuple[str, ...]) -> Step | None:
     return None
 
 
+_END_SESSION = step("listening", op="end_session")
+
+
+def _starts_new(words: tuple[str, ...]) -> bool:
+    """Could these words begin a second command? The closing phrase can't: "type hello and goodbye" types it all."""
+    if _verb(words) is not None:
+        return True
+    made = _template(words)
+    return made is not None and made != _END_SESSION
+
+
 # --- keys --------------------------------------------------------------------------------------------------------
 
 _MODIFIERS = {"control": "ctrl", "ctrl": "ctrl", "ctl": "ctrl", "shift": "shift", "alt": "alt", "alternate": "alt",
@@ -857,7 +868,7 @@ def _starts_command(words: tuple[str, ...], st: _State) -> bool:
     probe = _State(st.catalog, st.strict, running=st.running)
     if _SUBMIT.fullmatch(" ".join(words)):
         return True
-    if _verb(words) is None and _template(words) is None:
+    if not _starts_new(words):
         return False
     made = _clause(words, probe)
     return made is not None or (_verb(words) or ("", 0))[0] in ("type", "search", "click")
@@ -1179,7 +1190,7 @@ def _inner_split(words: tuple[str, ...], st: _State) -> int | None:
     """Where a second command starts inside a clause that doesn't parse whole, if the part before it parses."""
     for k in range(1, len(words)):
         right = words[k:]
-        if _verb(right) is None and _template(right) is None:
+        if not _starts_new(right):
             continue
         if _clause(words[:k], _State(st.catalog, st.strict, st.family, running=st.running)) is not None:
             return k

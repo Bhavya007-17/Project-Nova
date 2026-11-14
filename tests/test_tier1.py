@@ -131,6 +131,40 @@ def test_keep_warm_only_if_resident_never_loads():
     assert loads(client)[0][3]["keep_alive"] == "5m"
 
 
+def _ClosingGovernor():  # noqa: N802 - a fake governor that counts its unloads (FakeGovernor is defined below)
+    class Closing(FakeGovernor):
+        closes = 0
+
+        def close(self):
+            self.closes += 1
+
+    return Closing()
+
+
+def test_keep_warm_after_close_is_a_no_op():
+    client = FakeOllama("qwen35", resident=())
+    t = tier1(client, _ClosingGovernor())
+    t.close()
+    t.keep_warm()
+    t.keep_warm(only_if_resident=True)
+    time.sleep(0.1)
+    assert loads(client) == []
+
+
+def test_a_keep_warm_that_finishes_after_close_unloads():
+    gate = threading.Event()
+    client = FakeOllama("qwen35", resident=(), load_gate=gate)
+    governor = _ClosingGovernor()
+    t = Tier1(client, governor, lambda: Llm(keep_alive="24h"), lambda: CATALOG, loader=Loader(client))
+    t.keep_warm()  # a session opened just before Nova quits
+    assert wait_for(lambda: loads(client))
+    t.close()
+    assert governor.closes == 1
+    gate.set()  # the load lands after the governor unloaded: it must not stay resident for "24h"
+    assert wait_for(lambda: governor.closes == 2)
+    assert len(loads(client)) == 1  # and nothing is warmed again after the close
+
+
 def test_session_is_a_preload_reason():
     from nova.brain.tier1 import CPU_BEFORE, PRELOAD_REASONS
 

@@ -205,19 +205,66 @@ def test_keep_alive_is_forever_while_a_talk_is_open():
     assert brain._llm().keep_alive == "10m" and brain._tier1.warms == [False, True]  # re-arm only if resident
 
 
-def test_talk_closed_forgets_on_the_brain_thread():
+def drain(brain):
+    """Run the brain thread over what its queue holds (forget markers only in these tests), then stop it."""
     from nova.brain.brain import _STOP
-    from nova.events import TalkChanged
 
-    brain = bare_brain()
-    brain._router.remember("open notepad", True, "Opened Notepad")
-    brain._on_talk(TalkChanged("closed", "tap", None, 2.0))
-    assert brain._router.before == ("open notepad: Opened Notepad",)  # not on the bus thread: a clause may be running
     brain._commands.put(_STOP)
     thread = threading.Thread(target=brain._run)
     thread.start()
     thread.join(5)
+
+
+def test_talk_opened_forgets_on_the_brain_thread():
+    from nova.events import TalkChanged
+
+    brain = bare_brain()
+    brain._router.remember("open notepad", True, "Opened Notepad")
+    brain._on_talk(TalkChanged("opened", "copilot", 30.0, 0.0))
+    assert brain._router.before == ("open notepad: Opened Notepad",)  # not on the bus thread: a clause may be running
+    drain(brain)
     assert brain._router.before == ()
+
+
+def test_clauses_after_a_tap_close_keep_the_context_and_the_next_session_starts_clean():
+    from nova.events import TalkChanged
+
+    brain = bare_brain()
+    executor = Executor(FakeHands(), FakeAsker())
+
+    def clause(text):
+        handle(Command(text, utterance=3, via="talk", at=0.0, talk=True), CATALOG, executor, router=brain._router,
+               snap=lambda catalog: EMPTY)
+
+    brain._on_talk(TalkChanged("opened", "copilot", 30.0, 0.0))
+    drain(brain)
+    clause("open notepad")
+    brain._on_talk(TalkChanged("closed", "tap", None, 2.0))  # two clauses still wait in the state machine
+    drain(brain)
+    assert brain._router.before == ("open notepad: did open_app",)  # clause 2 sees clause 1
+    clause("open chrome")
+    assert brain._router.before == ("open notepad: did open_app", "open chrome: did open_app")
+    brain._on_talk(TalkChanged("opened", "wake", 30.0, 9.0))  # session 2
+    drain(brain)
+    assert brain._router.before == ()
+
+
+def test_a_session_opened_by_name_remembers_its_opening_command():
+    from nova.brain.brain import _FORGET_TALK
+    from nova.events import Gated, TalkChanged
+
+    brain = bare_brain()
+    brain._router.remember("old", True, "from the last session")
+    # The state machine announces the opening before the command it opens.
+    brain._on_talk(TalkChanged("opened", "named", None, 1.0))
+    brain._on_gated(Gated(1, True, "wake", "open notepad", "Nova, open notepad", "starts with Nova", False, False,
+                          1.0, talk=True))
+    assert brain._commands.get_nowait() is _FORGET_TALK
+    opening = brain._commands.get_nowait()
+    assert (opening.via, opening.talk) == ("wake", True)
+    brain._router.forget_talk()  # what the brain thread does with the marker
+    handle(opening, CATALOG, Executor(FakeHands(), FakeAsker()), router=brain._router, snap=lambda catalog: EMPTY)
+    assert brain._router.before == ("open notepad: did open_app",)
 
 
 def test_end_session_step_publishes_talk_end_requested():

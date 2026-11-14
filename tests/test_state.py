@@ -1,5 +1,7 @@
 """Nova's state machine (SPEC §5): key gestures + speech + finals -> states and effects."""
 
+from dataclasses import replace
+
 import pytest
 
 from catalog_fixture import CATALOG
@@ -1161,6 +1163,41 @@ def test_a_final_begun_in_the_session_counts_after_a_tap_close():
     run = talking(1.0)(SpeechStart(1, 2.0), SpeechEnd(1, "silence", 2.8), Cancel(3.0))
     run(heard(1, "type hello", 3.2))
     assert run.has(Ignored)[0].decision.via == "needs-name"
+
+
+@pytest.mark.parametrize(("env", "refused"), [(replace(ENV, speakers=True), "speakers"),
+                                              (replace(ENV, mic_busy="Teams"), "mic-busy")])
+def test_the_name_keeps_its_authority_inside_a_session(env, refused):
+    run = talking(1.0)(SpeechStart(1, 2.0), SpeechEnd(1, "silence", 2.8))
+    run(Heard(1, "Nova, close Notepad and then type hello", 3.0, env))
+    first, waiting = run.has(Command)[0].decision, run.has(Queued)[0].decision
+    assert (first.accepted, first.via, first.text, first.safe_only, first.talk) == (
+        True, "wake", "close Notepad", False, True)
+    assert (waiting.accepted, waiting.via, waiting.text, waiting.safe_only, waiting.talk) == (
+        True, "wake", "type hello", False, True)
+    assert run.state is State.THINKING and run.m.talk is not None
+    # Without the name the same clause keeps the safe-only rule.
+    run = talking(1.0)(SpeechStart(1, 2.0), SpeechEnd(1, "silence", 2.8), Heard(1, "close Notepad", 3.0, env))
+    assert not run.has(Command) and run.has(Ignored)[0].decision.via == refused
+
+
+def test_the_command_that_opens_a_session_is_a_talk_command():
+    run = say(Run(), 1, "Nova, open Notepad", 1.0)
+    decision = run.has(Command)[0].decision
+    assert (decision.via, decision.text, decision.talk, decision.safe_only) == ("wake", "open Notepad", True, False)
+    assert run.m.talk.via == "named"
+    # The opening is announced before the command it opens (the brain clears the old context first).
+    kinds = [type(e) for e in run.effects]
+    assert kinds.index(TalkEvent) < kinds.index(Command)
+
+
+def test_a_final_given_up_on_is_no_longer_a_talk_clause():
+    closes = 1.1 + TALK_IDLE_S
+    run = talking(1.0)(SpeechStart(1, closes - 2.0), SpeechEnd(1, "silence", closes - 1.0), Tick(closes + 15.0))
+    assert run.m.talk is None and not spoken_talk(run, 1)
+    run(Heard(1, "type hello world", closes + 16.0, replace(ENV, always_listening=False)))
+    assert not run.has(Command) and run.has(Ignored)[0].decision.via == "off"
+    assert run.state is State.IDLE
 
 
 def test_idle_s_comes_from_the_machine():

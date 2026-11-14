@@ -660,17 +660,18 @@ def _talk_tick(result: Step, at: float) -> Step:
         m = replace(m, talk=replace(talk, warned=True))
         effects = (*effects, TalkEvent("closing", "idle", closes))
     if at >= closes and m.speaking is None and not _awaited(m):
-        closed = _close_talk(m, at, "idle", forget_pending=False)
+        closed = _close_talk(m, at, "idle", forget_pending=True)  # a final still marked can't run without the name
         return Step(closed.machine, (*effects, *closed.effects))
     return Step(m, effects)
 
 
 def _given_up(m: Machine, at: float) -> Machine:
-    """Talk finals that never came (HEARD_WAIT_S after his speech ended) no longer hold the idle close."""
+    """Talk finals that never came (HEARD_WAIT_S after his speech ended) no longer hold the idle close, and are no
+    longer talk clauses: one that turns up later needs the name or the key like any other speech (SPEC §5)."""
     late = [s for s in m.spoken if s.talk and s.ended is not None and not s.heard and at - s.ended >= HEARD_WAIT_S]
     if not late:
         return m
-    return replace(m, spoken=tuple(replace(s, heard=True) if s in late else s for s in m.spoken))
+    return replace(m, spoken=tuple(replace(s, heard=True, talk=False) if s in late else s for s in m.spoken))
 
 
 def _talk_final(m: Machine, e: Heard) -> bool:
@@ -713,8 +714,12 @@ def _talk_heard(m: Machine, e: Heard) -> Step:
                              clause=i)
             effects.append(Ignored(small, utterance))
             continue
-        decision = replace(decide(clause.text, addressed, e.env), heard=heard, talk=True, request=clause.request,
-                           clause=i)
+        if rest is not None:  # named: every clause has the name's authority, whatever the speakers or mic do
+            decision = Decision(True, "wake", clause.text, heard, f"starts with {e.env.wake.name}", talk=True,
+                                request=clause.request, clause=i)
+        else:
+            decision = replace(decide(clause.text, addressed, e.env), heard=heard, talk=True, request=clause.request,
+                               clause=i)
         if not decision.accepted:
             effects.append(Ignored(decision, utterance))
         elif first is None and not running:
@@ -915,7 +920,8 @@ def _heard(m: Machine, e: Heard) -> Step:
         if begun.ended is None:
             return _go(m, State.LISTENING, "listening for the command", *effects, session=session, deadline=None)
         return _go(m, State.THINKING, "heard you", *effects, session=session, deadline=e.at + HEARD_WAIT_S)
-    command = Command(decision, e.utterance)
+    # The command that opens a talk is its first clause: the brain remembers it for the clauses after it.
+    command = Command(replace(decision, talk=True) if opens else decision, e.utterance)
     if m.state is State.PASSTHROUGH:
         return Step(m, (command,))  # "Nova, ..." during voice mode runs; voice mode goes on
     superseded = (Cancelled("superseded"),) if m.state in _BUSY and not mine else ()

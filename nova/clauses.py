@@ -56,7 +56,8 @@ ACKS: tuple[tuple[str, ...], ...] = _phrases(
     "great", "nice", "cool", "awesome", "perfect", "good", "sweet", "excellent", "wonderful", "amazing", "lovely",
     "beautiful", "brilliant", "fantastic", "wow", "okay", "ok", "alright", "all right", "thanks", "thank you",
     "thank you so much", "thanks a lot", "got it", "sounds good", "that works", "thats great", "good job",
-    "nice one", "yes", "yeah", "yep", "no", "right", "very good",
+    "nice one", "yes", "yeah", "yep", "no", "right", "very good", "great job", "great work", "nice work",
+    "good work", "well done", "nicely done", "nice job",
 )
 
 # Leading words that carry the talk along, not the command. Every acknowledgement counts too ("great, now open X").
@@ -84,8 +85,9 @@ _CONTINUATIONS: tuple[tuple[str, ...], ...] = _phrases(
 )
 # A polite frame anywhere makes a clause a request ("inside this note let's make ..."); "just" alone doesn't.
 _FRAMES: tuple[tuple[str, ...], ...] = tuple(frame for frame in POLITE if frame != ("just",))
-# "next" is small talk only before a pause ("Next, open Chrome"); "next tab" is a command.
-_PAUSE_ONLY = frozenset({"next"})
+# Small talk at the start of a clause only before a pause: "Next, open Chrome" / "Right, open Chrome", but "next tab"
+# and "right click on the file" are commands.
+_PAUSE_ONLY = frozenset({"next", "right"})
 # Words that are filler on their own, for "only acknowledgements" ("um, great, thanks").
 _FILLER_WORDS = frozenset(phrase[0] for phrase in DISCOURSE if len(phrase) == 1) - frozenset(a[0] for a in ACKS)
 _FRAME_REACH = 6  # a frame this far into the next part still marks a new request ("inside this new note let's ...")
@@ -152,7 +154,9 @@ def _match(toks: list[_Tok], i: int, end: int, table: _Table) -> int:
     for phrase in table.get(toks[i].word, ()):
         n = len(phrase)
         if i + n <= end and all(toks[i + k].word == phrase[k] for k in range(1, n)):
-            if n == 1 and phrase[0] in _PAUSE_ONLY and i + 1 < end and not toks[i + 1].mark:
+            # Pause-only words count as discourse before a pause; as acknowledgements ("yeah right") they always do.
+            if (n == 1 and phrase[0] in _PAUSE_ONLY and table is _DISCOURSE_T and i + 1 < end
+                    and not toks[i + 1].mark):
                 continue
             return n
     return 0

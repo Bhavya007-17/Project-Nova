@@ -152,6 +152,7 @@ class Tier1:
         self._preloading = False
         self._pinned: Choice | None = None
         self._cancel = threading.Event()  # Esc while a request waits for a load
+        self._closed = False  # Nova is quitting: no more keep-warms, and one that lands late unloads again
 
     @property
     def governor(self) -> Governor:
@@ -312,11 +313,15 @@ class Tier1:
         """A talk session opened (or closed): read the static prefix with the keep_alive the settings say *now*, in
         the background. Opened: the governor picks GPU or CPU as for any preload, and the model loads now and stays
         for the whole session. Closed (``only_if_resident``): the model in use, if it's still there, gets the normal
-        keep_alive again — nothing is loaded for it. Never blocks."""
+        keep_alive again — nothing is loaded for it. Never blocks. After ``close`` it does nothing."""
+        if self._closed:
+            return
         threading.Thread(target=self._keep_warm, args=(only_if_resident,), name="nova-llm-keep", daemon=True).start()
 
     def _keep_warm(self, only_if_resident: bool) -> None:
         try:
+            if self._closed:
+                return
             if only_if_resident:
                 choice = self._pinned or self._governor.current
                 if choice is None or not self._loader.resident(choice.model):
@@ -324,6 +329,8 @@ class Tier1:
             else:
                 choice = self._pinned or self._governor.choose(fresh=True)
             for _ in range(3):
+                if self._closed:
+                    return  # (the finally unloads what an earlier round loaded)
                 keep = self._settings().keep_alive
                 joined = self._loader.loading(choice.model) is not None
                 ms = self.warm(choice)
@@ -337,6 +344,9 @@ class Tier1:
             _log.warning("LLM keep-warm failed: %s", error)
         except Exception:  # noqa: BLE001 - a warm-up must never take anything down
             _log.exception("LLM keep-warm failed")
+        finally:
+            if self._closed:  # Nova quit while this loaded: don't leave the model resident with the session's "24h"
+                self._governor.close()
 
     def abort(self) -> None:
         """Esc / superseded: drop the command's request, or stop it waiting for a load (the load itself goes on)."""
@@ -344,4 +354,5 @@ class Tier1:
         self._client.abort()
 
     def close(self) -> None:
+        self._closed = True
         self._governor.close()

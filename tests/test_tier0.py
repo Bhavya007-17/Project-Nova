@@ -502,6 +502,28 @@ def test_closing_phrases_end_the_session(text):
     assert describe(plan) == "End the talk session"
 
 
+# Each expected plan is what parse() gave at 150fff1, before the closing phrase existed: free text is never cut.
+@pytest.mark.parametrize(("text", "expected"), [
+    ("type hello and then goodbye", [step("type_text", text="hello and then goodbye", submit=False)]),
+    ("write see you later and bye", [step("type_text", text="see you later and bye", submit=False)]),
+    ("type we're done and bye", [step("type_text", text="we're done and bye", submit=False)]),
+    ("type hello and goodbye", [step("type_text", text="hello and goodbye", submit=False)]),
+    ("type thanks, that's all", [step("type_text", text="thanks, that's all", submit=False)]),
+    ("write I'm done and goodbye", [step("type_text", text="I'm done and goodbye", submit=False)]),
+    ("google goodbye songs and that's all", [step("web_search", query="goodbye songs and that's all", engine="google")]),
+    ("type all done, bye", [step("type_text", text="all done, bye", submit=False)]),
+    ("search youtube for goodbye and bye", [step("web_search", query="goodbye and bye", engine="youtube")]),
+    ("type see you then bye for now", [step("type_text", text="see you then bye for now", submit=False)]),
+    ("type hello. Goodbye.", [step("type_text", text="hello. Goodbye", submit=False)]),
+])
+def test_a_closing_phrase_never_cuts_free_text(text, expected):
+    assert steps(text) == expected
+
+
+def test_a_closing_phrase_after_dictate_is_what_it_was_before():
+    assert parse("dictate we're done for now", CATALOG) is None  # as at 150fff1
+
+
 @pytest.mark.parametrize("text", ["stop listening", "stop listening for now", "go to sleep"])
 def test_stop_listening_still_sleeps(text):
     assert one(text) == step("listening", op="sleep")
