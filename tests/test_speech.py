@@ -308,6 +308,28 @@ def test_mic_level_flows_only_while_a_session_listens(make):
     assert not [e for e in h.collect(0.3) if isinstance(e, MicLevel)]
 
 
+def test_talking_selects_talk_rules(make):
+    h = make(FakeStt())
+    h.worker.set_attentive(True)
+    h.source.feed(silence_ms=300)
+    h.source.feed(speech_ms=3000, silence_ms=550)  # 550 ms: not the end of a long piece under the 700 ms rule
+    h.next(SpeechStarted)
+    assert not [e for e in h.collect(0.4) if isinstance(e, SpeechEnded)]
+    h.worker.end_now()
+    h.next(SpeechEnded)
+    h.worker.set_talking(True)
+    time.sleep(0.05)
+    h.source.feed(silence_ms=400)
+    h.source.feed(speech_ms=3000, silence_ms=550)  # inside a talk: 450 ms ends it
+    ended = h.next(SpeechEnded)
+    assert ended.reason == "silence"
+    h.worker.set_dictating(True)  # dictation wins over a talk (its own 600 ms segments)
+    time.sleep(0.05)
+    from nova.vad import DICTATION_RULES
+
+    assert h.worker._ep.rules is DICTATION_RULES
+
+
 # --- dictation (Stage 07) ---------------------------------------------------------------------------
 
 

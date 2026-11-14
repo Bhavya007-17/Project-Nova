@@ -13,10 +13,14 @@ from nova.state import (
     DONE_S,
     FOLLOW_UP_S,
     HEARD_WAIT_S,
+    CONFIRM_S,
+    ERROR_S,
     QUEUE_MAX,
     QUEUE_MAX_AGE_S,
-    TAP_WAIT_S,
-    WAKE_WAIT_S,
+    TALK_IDLE_S,
+    TALK_QUEUE_MAX,
+    TALK_QUEUE_MAX_AGE_S,
+    TALK_WARN_S,
     WARM_WAIT_S,
     Answer,
     Cancelled,
@@ -26,6 +30,7 @@ from nova.state import (
     Done,
     Dropped,
     DropUtterance,
+    EndTalk,
     EndUtterance,
     Heard,
     Ignored,
@@ -35,20 +40,29 @@ from nova.state import (
     Preload,
     Progress,
     Queued,
+    Skipped,
     Sleep,
     SpeechEnd,
     SpeechStart,
     State,
+    TalkEvent,
     Tick,
     Transition,
     WakeHeard,
     Warming,
+    Woke,
     next_deadline,
     outputs,
+    spoken,
     step,
 )
 
 ENV = Env(WakeName.of("Nova"), True, Tier0Resolver(CATALOG))
+
+
+def spoken_talk(run, utterance):
+    said = spoken(run.m, utterance)
+    return said is not None and said.talk
 
 
 class Run:
@@ -143,39 +157,42 @@ def test_older_chatter_in_progress_is_dropped_at_the_press():
 # --- Copilot key: tap --------------------------------------------------------------------------------
 
 
+# Stage 07b: a tap opens a talk session (the session tests below); these keep the 07a intent of each tap test.
+
+
 def test_tap_talk_pause_is_accepted_at_the_endpoint():
     run = Run()(Press("copilot", 1.0), Release("copilot", 1.1, 0.1, hold=False))
-    assert run.state is State.LISTENING and not outputs(run.m).held and outputs(run.m).attentive
-    assert next_deadline(run.m) == 1.1 + TAP_WAIT_S
-    run(SpeechStart(2, 1.5))
-    assert run.has(Preload)[0].reason == "speech" and next_deadline(run.m) is None
-    run(SpeechEnd(2, "silence", 2.4), heard(2, "open spotify", 2.7))
-    assert run.has(Command)[0].decision.text == "open spotify"
+    assert run.state is State.IDLE and run.m.talk is not None
+    assert not outputs(run.m).held and outputs(run.m).attentive
+    run(SpeechStart(2, 1.5), SpeechEnd(2, "silence", 2.4), heard(2, "open spotify", 2.7))
+    command = run.has(Command)[0]
+    assert command.decision.text == "open spotify" and command.decision.via == "talk"
 
 
 def test_tap_then_silence_times_out():
-    run = Run()(Press("copilot", 1.0), Release("copilot", 1.1, 0.1, hold=False), Tick(1.1 + TAP_WAIT_S))
-    assert run.state is State.IDLE
+    run = Run()(Press("copilot", 1.0), Release("copilot", 1.1, 0.1, hold=False), Tick(1.1 + TALK_IDLE_S))
+    assert run.state is State.IDLE and run.m.talk is None
 
 
 def test_tap_while_talking_finishes_now():
     run = Run()(Press("chord", 1.0), Release("chord", 1.1, 0.1, hold=False), SpeechStart(3, 1.3))
     run(Press("chord", 3.0))
-    assert run.has(EndUtterance) and run.state is State.LISTENING
-    run(Release("chord", 3.5, 0.5, hold=True))  # the finishing press's release does nothing more
-    assert run.effects == () or not run.has(EndUtterance)
-    run(SpeechEnd(3, "key", 3.0))
-    assert run.state is State.THINKING
+    assert not run.effects or not run.has(EndUtterance)  # tap or hold is known only at the release
+    run(Release("chord", 3.1, 0.1, hold=False))
+    assert run.has(EndUtterance) and run.m.talk is None
+    run(SpeechEnd(3, "key", 3.1), heard(3, "open spotify", 3.3))
+    assert run.has(Command)[0].decision.talk  # the sentence under way still counts
 
 
 def test_tap_while_listening_to_nothing_stops():
-    run = Run()(Press("copilot", 1.0), Release("copilot", 1.1, 0.1, hold=False), Press("copilot", 2.0))
-    assert run.state is State.IDLE
+    run = Run()(Press("copilot", 1.0), Release("copilot", 1.1, 0.1, hold=False), Press("copilot", 2.0),
+                Release("copilot", 2.1, 0.1, hold=False))
+    assert run.state is State.IDLE and run.m.talk is None and not outputs(run.m).attentive
 
 
 def test_new_press_while_thinking_starts_over():
-    run = Run()(heard(1, "Nova, open Chrome", 1.0))
-    assert run.state is State.THINKING
+    run = Run()(heard(1, "open spotify", 1.0))  # outside a session
+    assert run.state is State.THINKING and run.m.talk is None
     run(Press("copilot", 1.2))
     assert run.state is State.LISTENING and run.has(Cancelled)[0].why == "superseded"
 
@@ -186,6 +203,7 @@ def test_new_press_while_thinking_starts_over():
 def test_double_tap_locks_dictation_until_the_next_tap():
     run = Run()(Press("copilot", 1.0), Release("copilot", 1.1, 0.1, hold=False), DoubleTap("copilot", 1.3))
     assert run.state is State.DICTATING and run.has(Dictation)[0].on and run.has(DropUtterance)
+    assert run.has(TalkEvent)[0].what == "closed" and run.m.talk is None  # the first tap's session closes
     run(Release("copilot", 1.4, 0.1, hold=False))
     assert run.state is State.DICTATING
     run(SpeechStart(7, 2.0), SpeechEnd(7, "silence", 3.0), heard(7, "dear professor", 3.2))
@@ -214,7 +232,7 @@ def test_nova_open_chrome_is_accepted_with_the_name_stripped():
     run = Run()(SpeechStart(1, 1.0), SpeechEnd(1, "silence", 2.0), heard(1, "Nova, open Chrome.", 2.3))
     command = run.has(Command)[0]
     assert command.decision.via == "wake" and command.decision.text == "open Chrome."
-    assert run.state is State.THINKING
+    assert run.state is State.THINKING and run.m.talk is not None  # and a talk session opens (07b)
 
 
 def test_wake_name_in_live_words_shows_listening_early():
@@ -231,39 +249,43 @@ def test_live_words_wake_that_the_final_does_not_confirm_is_dropped():
     assert run.state is State.IDLE and run.has(Ignored)
 
 
+# Stage 07b: the name alone opens a talk session; what he says next is a clause of it (no name needed).
+
+
 def test_name_alone_opens_a_session_for_the_next_utterance():
     run = Run()(SpeechStart(1, 1.0), SpeechEnd(1, "silence", 1.4), heard(1, "Nova.", 1.6))
-    assert run.state is State.LISTENING and next_deadline(run.m) == 1.6 + WAKE_WAIT_S
+    assert run.state is State.IDLE and run.m.talk is not None
+    assert next_deadline(run.m) == 1.6 + TALK_IDLE_S - TALK_WARN_S
     run(SpeechStart(2, 2.0), SpeechEnd(2, "silence", 3.0), heard(2, "I'm gonna open a restaurant", 3.2))
     decision = run.has(Command)[0].decision
-    assert decision.via == "wake" and decision.text == "I'm gonna open a restaurant"
+    assert decision.via == "talk" and decision.text == "I'm gonna open a restaurant"
 
 
 def test_name_alone_claims_the_command_he_already_started():
     # Logged shape (~7 % of name-alone sessions): he starts the command 400 ms after the name; the name's final
     # lands 50 ms later. Nothing claimed that utterance and it was dropped as "busy".
     run = Run()(SpeechStart(1, 0.0), SpeechEnd(1, "silence", 0.45), SpeechStart(2, 0.85), heard(1, "Nova.", 0.9))
-    assert run.state is State.LISTENING and run.m.session.utterance == 2 and next_deadline(run.m) is None
-    run(SpeechEnd(2, "silence", 1.8))
-    assert run.state is State.THINKING
-    run(heard(2, "the blue folder please", 2.0))
+    assert run.state is State.IDLE and run.m.talk is not None
+    assert [s.talk for s in run.m.spoken] == [True, True]  # begun after the name: a clause of the session
+    run(SpeechEnd(2, "silence", 1.8), heard(2, "the blue folder please", 2.0))
     decision = run.has(Command)[0].decision
-    assert decision.via == "wake" and decision.text == "the blue folder please"
+    assert decision.via == "talk" and decision.text == "the blue folder"
 
 
 def test_name_alone_claims_a_short_command_that_already_ended():
     run = Run()(SpeechStart(1, 0.0), SpeechEnd(1, "silence", 0.45), SpeechStart(2, 0.7), SpeechEnd(2, "silence", 1.2),
                 heard(1, "Nova.", 1.3))
-    assert run.state is State.THINKING and run.m.session.utterance == 2
-    assert next_deadline(run.m) == 1.3 + HEARD_WAIT_S
+    assert run.state is State.IDLE and spoken_talk(run, 2)
     run(heard(2, "pause", 1.5))
-    assert run.has(Command)[0].decision.via == "wake" and not run.has(Ignored)
+    assert run.has(Command)[0].decision.via == "talk" and not run.has(Ignored)
 
 
 def test_name_seen_in_live_words_then_a_pause_still_claims_the_command():
     run = Run()(SpeechStart(1, 0.0), WakeHeard(1, 0.3), SpeechEnd(1, "silence", 0.45), SpeechStart(2, 0.85),
-                heard(1, "Nova.", 0.9), SpeechEnd(2, "silence", 1.8), heard(2, "new tab", 2.0))
-    assert run.has(Command)[0].decision.via == "wake"
+                heard(1, "Nova.", 0.9))
+    assert run.state is State.IDLE and run.m.session is None and run.m.talk is not None
+    run(SpeechEnd(2, "silence", 1.8), heard(2, "new tab", 2.0))
+    assert run.has(Command)[0].decision.via == "talk"
 
 
 def test_name_alone_claims_only_fresh_speech():
@@ -271,13 +293,12 @@ def test_name_alone_claims_only_fresh_speech():
 
     stale = Machine(spoken=(Spoken(9, 1.0, 2.0),))  # an utterance from long ago whose final never came
     run = Run(stale)(SpeechStart(10, 30.0), SpeechEnd(10, "silence", 30.4), heard(10, "Nova.", 30.6))
-    assert run.state is State.LISTENING and run.m.session.utterance is None
-    assert next_deadline(run.m) == 30.6 + WAKE_WAIT_S
+    assert run.m.talk is not None and not spoken_talk(run, 9) and spoken_talk(run, 10)
 
 
 def test_name_alone_then_nothing_times_out():
-    run = Run()(heard(1, "Nova", 1.0), Tick(1.0 + WAKE_WAIT_S))
-    assert run.state is State.IDLE
+    run = Run()(heard(1, "Nova", 1.0), Tick(1.0 + TALK_IDLE_S))
+    assert run.state is State.IDLE and run.m.talk is None
 
 
 # --- always-listening, follow-up, busy -------------------------------------------------------------
@@ -296,7 +317,7 @@ def test_always_listening_command():
 
 
 def test_follow_up_window_lasts_8_seconds():
-    run = Run()(heard(1, "Nova, open Chrome", 1.0), Done(True, 1.2))
+    run = Run()(heard(1, "open spotify", 1.0), Done(True, 1.2))  # a command outside a session (07b)
     run(heard(2, "now close Spotify", 5.0))
     assert run.has(Command)[0].decision.via == "follow-up"
     run(Done(True, 5.2), Tick(5.2 + FOLLOW_UP_S + 0.1), heard(3, "close Spotify", 14.0))
@@ -306,9 +327,16 @@ def test_follow_up_window_lasts_8_seconds():
 # --- never drop him: what passes the gate while Nova is busy runs next (SPEC §5) ---------------------------
 
 
+def keyed(text, at=1.0, utterance=1, run=None):
+    """A held-key command (one command, no talk session): its final arrives at ``at``."""
+    run = run or Run()
+    return run(Press("copilot", at - 0.8), SpeechStart(utterance, at - 0.7), Release("copilot", at - 0.3, 0.5, hold=True),
+               SpeechEnd(utterance, "key", at - 0.3), heard(utterance, text, at))
+
+
 def busy(at=1.0):
-    """ "Nova, open Chrome" was accepted and the brain is acting on it."""
-    return Run()(heard(1, "Nova, open Chrome", at), Progress(State.ACTING, at + 0.1))
+    """ "open Chrome" was held-key accepted (no session) and the brain is acting on it."""
+    return keyed("open Chrome", at)(Progress(State.ACTING, at + 0.1))
 
 
 def test_a_command_said_while_nova_is_busy_runs_next():
@@ -388,7 +416,7 @@ def test_esc_clears_the_queue():
 
 
 def test_a_command_that_was_not_one_after_all_lets_the_next_run():
-    run = Run()(heard(1, "Nova, do the thing", 1.0), heard(2, "open spotify", 1.5))
+    run = keyed("do the thing", 1.0)(heard(2, "open spotify", 1.5))
     run(Progress(State.IDLE, 1.8, "not a command"))
     assert run.state is State.THINKING and run.has(Command)[0].utterance == 2
 
@@ -414,7 +442,7 @@ def test_chatter_while_busy_is_still_ignored():
 
 
 def test_chatter_during_a_key_session_cannot_take_it_over():
-    run = Run()(Press("copilot", 1.0), Release("copilot", 1.1, 0.1, hold=False), heard(9, "open spotify", 1.5))
+    run = Run()(Press("copilot", 1.0), heard(9, "open spotify", 1.5))  # the key is held: a 07a key session
     assert run.has(Ignored)[0].decision.via == "busy" and run.state is State.LISTENING
 
 
@@ -455,7 +483,7 @@ def test_confirm_takes_answers_and_times_out():
 
 
 def asking(kind=State.CONFIRM, at=10.0):
-    return Run()(heard(1, "Nova, send it", at - 0.5), Progress(kind, at))
+    return keyed("send it", at - 0.5)(Progress(kind, at))  # outside a session: a press interrupts at once
 
 
 def test_a_tiny_clip_that_began_before_the_question_never_answers_it():
@@ -642,7 +670,7 @@ def test_silence_clock_waits_for_a_sentence_already_under_way():
 
 
 def test_the_follow_up_window_is_judged_by_when_he_started_speaking():
-    run = Run()(heard(1, "Nova, open Chrome", 1.0), Done(True, 1.2))
+    run = Run()(heard(1, "open spotify", 1.0), Done(True, 1.2))  # outside a session (07b)
     closes = 1.2 + FOLLOW_UP_S
     run(SpeechStart(2, closes - 0.3), Tick(closes + 0.1), SpeechEnd(2, "silence", closes + 1.4),
         heard(2, "now close Spotify", closes + 1.9))  # the text arrives 1.9 s after the window closed
@@ -650,13 +678,13 @@ def test_the_follow_up_window_is_judged_by_when_he_started_speaking():
 
 
 def test_speech_that_began_before_the_window_opened_is_not_a_follow_up():
-    run = Run()(SpeechStart(1, 0.2), heard(2, "Nova, open Chrome", 1.0), Done(True, 1.2),
+    run = Run()(SpeechStart(1, 0.2), heard(2, "open spotify", 1.0), Done(True, 1.2),
                 SpeechEnd(1, "silence", 2.0), heard(1, "close Spotify", 2.5))  # chatter from before the command
     assert run.has(Ignored)[0].decision.via == "needs-name"
 
 
 def test_speech_that_began_while_nova_worked_is_a_follow_up():
-    run = Run()(heard(1, "Nova, open Chrome", 1.0), SpeechStart(2, 1.1), Done(True, 1.2),
+    run = Run()(heard(1, "open spotify", 1.0), SpeechStart(2, 1.1), Done(True, 1.2),
                 SpeechEnd(2, "silence", 1.9), heard(2, "now close Spotify", 2.1))
     assert run.has(Command)[0].decision.via == "follow-up"
 
@@ -665,7 +693,7 @@ def test_speech_that_began_while_nova_worked_is_a_follow_up():
 
 
 def thinking(at=1.0):
-    return Run()(heard(1, "Nova, open the thing", at))
+    return keyed("open the thing", at)  # outside a session: the key interrupts at the press
 
 
 def test_a_request_warming_up_is_not_timed_out_at_ten_seconds():
@@ -730,3 +758,454 @@ def test_thinking_without_a_deadline_keeps_none_while_warming():
     assert run.m.deadline is None
     run(Progress(State.THINKING, 20.0))
     assert run.state is State.THINKING and run.m.deadline is None
+
+
+# --- talk sessions (Stage 07b, SPEC §5): the mic stays open across commands -------------------------------------
+
+
+def tap(run, at, source="copilot"):
+    return run(Press(source, at), Release(source, at + 0.1, 0.1, hold=False))
+
+
+def talking(at=1.0, machine=None):
+    """A talk session opened by a Copilot tap whose release came at ``at + 0.1`` (clock: 30 s from then)."""
+    return tap(Run(machine), at)
+
+
+def say(run, utterance, text, start, end=None, final=None):
+    end = start + 0.8 if end is None else end
+    final = end + 0.2 if final is None else final
+    return run(SpeechStart(utterance, start), SpeechEnd(utterance, "silence", end), heard(utterance, text, final))
+
+
+def talk_events(effects, what=None):
+    return [e for e in effects if isinstance(e, TalkEvent) and (what is None or e.what == what)]
+
+
+def test_a_tap_opens_a_talk_session():
+    run = Run()(Press("copilot", 1.0))
+    assert run.state is State.LISTENING  # tap or hold is known only at the release
+    run(Release("copilot", 1.15, 0.15, hold=False))
+    assert run.state is State.IDLE and run.m.session is None and run.m.talk.via == "copilot"
+    opened, moved = run.effects
+    assert isinstance(opened, TalkEvent) and isinstance(moved, Transition)  # the pill knows before the state moves
+    assert (opened.what, opened.why, opened.closes_at) == ("opened", "copilot", pytest.approx(1.15 + TALK_IDLE_S))
+    assert (moved.old, moved.new, moved.why) == (State.LISTENING, State.IDLE, "talk session")
+    o = outputs(run.m)
+    assert o.attentive and o.talking and o.esc and not o.held and not o.dictating
+    assert next_deadline(run.m) == pytest.approx(1.15 + TALK_IDLE_S - TALK_WARN_S)
+
+
+def test_a_hold_is_one_command_without_a_session():
+    run = keyed("open notepad", 2.0)
+    assert run.has(Command)[0].decision.via == "key" and run.m.talk is None
+    run(Done(True, 2.5))
+    assert run.state is State.DONE and run.m.follow_up_until == 2.5 + FOLLOW_UP_S
+    assert not talk_events(run.all) and not outputs(run.m).talking
+
+
+def test_the_name_alone_opens_a_session():
+    run = say(Run(), 1, "Nova.", 1.0)
+    assert run.state is State.IDLE and run.m.talk.via == "wake"
+    assert run.has(Woke) and run.has(Preload)[0].reason == "wake"
+    assert talk_events(run.effects, "opened")[0].closes_at == pytest.approx(2.0 + TALK_IDLE_S)
+    say(run, 2, "open notepad", 3.0)
+    decision = run.has(Command)[0].decision
+    assert decision.via == "talk" and decision.text == "open notepad" and decision.talk
+    # The name in the live words showed Listening first: the talk takes over from that turn.
+    run = Run()(SpeechStart(1, 1.0), WakeHeard(1, 1.2), SpeechEnd(1, "silence", 1.5), heard(1, "Nova", 1.7))
+    assert run.state is State.IDLE and run.m.session is None and run.m.talk is not None
+
+
+def test_nova_command_runs_and_opens_a_paused_session():
+    run = say(Run(), 1, "Nova, open Chrome", 1.0)
+    command = run.has(Command)[0]
+    assert command.decision.via == "wake" and command.decision.text == "open Chrome"
+    assert run.state is State.THINKING and run.m.talk.via == "named" and run.m.talk.since is None
+    assert run.m.talk_command and talk_events(run.effects, "opened")[0].closes_at is None
+    run(Progress(State.ACTING, 2.2), Done(True, 3.0, "Opened Chrome"))
+    assert run.state is State.DONE and run.m.follow_up_until == 0.0  # the session, not the 8 s follow-up
+    resumed = talk_events(run.effects, "resumed")[0]
+    assert resumed.why == "done" and resumed.closes_at == pytest.approx(3.0 + TALK_IDLE_S)
+
+
+def test_clauses_of_one_final_run_in_order():
+    run = talking(1.0)
+    say(run, 1, "Open Notepad and then create a new note.", 2.0)  # ends 2.8, final 3.0
+    first = run.has(Command)[0]
+    assert first.decision.text == "Open Notepad" and first.decision.clause == 0 and first.decision.talk
+    assert first.decision.request and first.decision.via == "talk"
+    assert run.has(Queued)[0].decision.text == "create a new note" and run.m.queue[0].talk
+    assert isinstance(run.effects[0], TalkEvent) and run.effects[0].what == "paused"
+    assert run.effects[0].why == "running" and run.m.talk.since is None
+    run(Progress(State.ACTING, 3.1), Done(True, 4.0, "Opened Notepad"))
+    second = run.has(Command)[0]
+    assert second.decision.clause == 1 and second.waited == pytest.approx(4.0 - 2.8)
+    assert run.state is State.THINKING and not talk_events(run.effects)  # still busy: the clock stays paused
+    run(Progress(State.ACTING, 4.1), Done(True, 5.0, "New note"))
+    assert run.state is State.DONE and talk_events(run.effects, "resumed")[0].closes_at == pytest.approx(35.0)
+
+
+def test_small_talk_is_dropped_and_never_touches_the_clock():
+    run = talking(1.0)
+    before = run.m.talk
+    for n, said in enumerate(["Great, okay.", "um", "Nice.", "Cool, thank you."], start=1):
+        say(run, n, said, 5.0 + n)
+        assert not run.has(Command) and not talk_events(run.effects) and run.state is State.IDLE
+        assert run.has(Ignored) and all(i.decision.via == "small-talk" and i.decision.talk for i in run.has(Ignored))
+    assert run.m.talk == before
+
+
+def test_not_a_command_after_all_resumes_the_clock_where_it_stopped():
+    run = talking(1.0)  # closes at 31.1
+    say(run, 1, "the next video is so good", 9.0)  # final at 10.0
+    assert run.state is State.THINKING and not run.has(Command)[0].decision.request
+    assert run.m.talk.left == pytest.approx(21.1)
+    run(Progress(State.IDLE, 11.0, "not a command"))
+    resumed = talk_events(run.effects, "resumed")[0]
+    assert resumed.why == "ignored" and resumed.closes_at == pytest.approx(11.0 + 21.1)
+
+
+def test_a_finished_command_restarts_the_clock():
+    run = talking(1.0)
+    say(run, 1, "open notepad", 9.0)
+    run(Done(True, 11.0, "Opened Notepad"))
+    resumed = talk_events(run.effects, "resumed")[0]
+    assert resumed.why == "done" and resumed.closes_at == pytest.approx(11.0 + TALK_IDLE_S)
+
+
+def test_idle_close_warns_five_seconds_before():
+    run = talking(1.0)
+    closes = 1.1 + TALK_IDLE_S
+    run(Tick(closes - TALK_WARN_S - 0.1))
+    assert not run.effects
+    run(Tick(closes - TALK_WARN_S))
+    closing = talk_events(run.effects, "closing")[0]
+    assert closing.why == "idle" and closing.closes_at == pytest.approx(closes)
+    assert next_deadline(run.m) == pytest.approx(closes)
+    run(Tick(closes - 1.0))
+    assert not run.effects  # warned once
+    run(Tick(closes))
+    assert talk_events(run.effects, "closed")[0].why == "idle" and run.m.talk is None
+    assert not run.has(Transition) and run.state is State.IDLE
+    o = outputs(run.m)
+    assert not o.attentive and not o.talking and not o.esc
+
+
+def test_idle_close_waits_for_a_sentence_under_way():
+    closes = 1.1 + TALK_IDLE_S
+    run = talking(1.0)(SpeechStart(1, closes - 2.0), Tick(closes))
+    assert run.m.talk is not None  # he is talking
+    run(SpeechEnd(1, "silence", closes + 0.5), Tick(closes + 0.6))
+    assert run.m.talk is not None  # his final is on its way
+    assert next_deadline(run.m) == pytest.approx(closes + 0.5 + HEARD_WAIT_S)
+    run(heard(1, "Great.", closes + 0.8), Tick(closes + 0.8))
+    assert talk_events(run.all, "closed") and run.m.talk is None  # small talk: closes at once
+    # A command said at the edge runs and gets a fresh clock.
+    run = talking(1.0)(SpeechStart(1, closes - 2.0), Tick(closes), SpeechEnd(1, "silence", closes + 0.5))
+    run(heard(1, "open notepad", closes + 0.8), Tick(closes + 0.8), Done(True, closes + 2.0))
+    assert run.m.talk is not None and run.m.talk.closes_at() == pytest.approx(closes + 2.0 + TALK_IDLE_S)
+    # A final that never comes is given up on.
+    run = talking(1.0)(SpeechStart(1, closes - 2.0), SpeechEnd(1, "silence", closes + 0.5), Tick(closes + 1.0))
+    assert run.m.talk is not None
+    run(Tick(closes + 0.5 + HEARD_WAIT_S))
+    assert run.m.talk is None
+
+
+def test_a_tap_closes_and_the_running_step_and_queue_go_on():
+    run = talking(1.0)
+    say(run, 1, "open notepad and then create a new note", 2.0)
+    tap(run, 4.0)
+    closed = talk_events(run.all, "closed")[0]
+    assert closed.why == "tap" and run.m.talk is None
+    assert run.state is State.THINKING and len(run.m.queue) == 1 and not run.has(Cancelled)
+    run(Done(True, 5.0))
+    assert run.has(Command)[0].decision.text == "create a new note"
+    run(Done(True, 6.0))
+    assert run.state is State.DONE and run.m.follow_up_until == 0.0  # it came from the session
+
+
+def test_a_tap_mid_sentence_finishes_it_and_its_clauses_run():
+    run = talking(1.0)(SpeechStart(1, 2.0), Press("copilot", 3.0))
+    assert run.state is State.IDLE and outputs(run.m).held and not run.has(EndUtterance)
+    run(Release("copilot", 3.1, 0.1, hold=False))
+    assert run.has(EndUtterance) and talk_events(run.effects, "closed")[0].why == "tap"
+    run(SpeechEnd(1, "key", 3.1), heard(1, "open notepad and create a new note", 3.3))
+    assert run.has(Command)[0].decision.text == "open notepad" and run.has(Queued)[0].decision.talk
+
+
+def test_a_hold_inside_a_session_interrupts_on_release():
+    run = talking(1.0)
+    say(run, 1, "open notepad and then create a new note", 2.0)
+    run(Progress(State.ACTING, 3.1), Press("copilot", 5.0), SpeechStart(2, 5.1))
+    assert run.state is State.ACTING and not run.has(Cancelled)  # nothing is cancelled at the press
+    run(Release("copilot", 6.0, 1.0, hold=True))
+    assert run.has(Cancelled)[0].why == "superseded" and run.has(EndUtterance)
+    assert run.has(Dropped)[0].why == "replaced by a new command" and run.has(Skipped)[0].texts == ("create a new note",)
+    assert run.state is State.LISTENING and run.m.session.utterance == 2 and run.m.queue == ()
+    run(SpeechEnd(2, "key", 6.0))
+    assert run.state is State.THINKING
+    run(heard(2, "close spotify", 6.2))
+    decision = run.has(Command)[0].decision
+    assert decision.via == "key" and decision.text == "close spotify" and run.m.talk is not None
+    # A hold with nothing said changes nothing.
+    run = talking(1.0)(Press("copilot", 5.0), Release("copilot", 6.0, 1.0, hold=True))
+    assert run.state is State.IDLE and run.m.talk is not None and not run.effects
+
+
+@pytest.mark.parametrize("why", ["Esc", "stop button"])
+def test_esc_and_the_stop_button_close_and_cancel(why):
+    run = talking(1.0)
+    say(run, 1, "open notepad and then create a new note", 2.0)
+    run(Cancel(5.0, why))
+    assert talk_events(run.effects, "closed")[0].why == why and run.m.talk is None
+    assert run.has(Cancelled)[0].why == why and run.state is State.IDLE
+    assert run.has(Skipped)[0].texts == ("create a new note",) and run.m.queue == ()
+    assert not outputs(run.m).esc
+    # Nothing running, he is mid-sentence: that sentence is thrown away.
+    run = talking(1.0)(SpeechStart(1, 2.0), Cancel(2.5, why))
+    assert run.has(DropUtterance) and run.m.talk is None and not run.has(Transition)
+
+
+def test_stop_clears_the_queue_and_keeps_the_session():
+    run = talking(1.0)
+    say(run, 1, "open notepad and then create a new note", 2.0)
+    run(Progress(State.ACTING, 3.1))
+    say(run, 2, "stop", 4.0)
+    assert run.state is State.IDLE and run.has(Cancelled)[0].why == "stop"
+    skipped = run.has(Skipped)[0]
+    assert skipped.texts == ("create a new note",) and skipped.why == "stopped"
+    resumed = talk_events(run.effects, "resumed")[0]
+    assert resumed.why == "done" and run.m.talk is not None
+
+
+def test_a_failed_step_stops_the_queue_and_says_what_was_skipped():
+    run = talking(1.0)
+    say(run, 1, "open the notes app and then create a new note and then make the title say hello", 2.0)
+    assert len(run.m.queue) == 2
+    run(Progress(State.ACTING, 3.1), Done(False, 4.0, "Couldn't find the notes app"))
+    assert run.state is State.ERROR
+    skipped = run.has(Skipped)[0]
+    assert skipped.texts == ("create a new note", "make the title say hello")
+    assert skipped.why == "the step before it didn't finish"
+    assert talk_events(run.effects, "resumed")[0].why == "done" and run.m.talk is not None
+    run(Tick(4.0 + ERROR_S))
+    assert run.state is State.IDLE and run.m.talk is not None
+
+
+def test_a_declined_or_timed_out_confirm_stops_the_queue():
+    run = talking(1.0)
+    say(run, 1, "close notepad and then open chrome", 2.0)
+    run(Progress(State.CONFIRM, 3.5), Progress(State.IDLE, 5.0, "Cancelled"))
+    assert run.has(Skipped)[0].texts == ("open chrome",) and run.m.talk is not None
+    assert talk_events(run.effects, "resumed")[0].closes_at == pytest.approx(5.0 + TALK_IDLE_S)
+    run = talking(1.0)
+    say(run, 1, "close notepad and then open chrome", 2.0)
+    run(Progress(State.CONFIRM, 3.5), Tick(3.5 + CONFIRM_S))
+    assert run.has(Cancelled)[0].why == "no answer" and run.has(Skipped)[0].texts == ("open chrome",)
+    assert run.m.talk is not None and run.state is State.IDLE
+    run = talking(1.0)  # the island's No: the same, and the session stays
+    say(run, 1, "close notepad and then open chrome", 2.0)
+    run(Progress(State.CONFIRM, 3.5), Cancel(4.0, "No"))
+    assert run.has(Skipped) and run.m.talk is not None
+
+
+def test_confirm_inside_a_session_needs_a_fresh_answer():
+    run = talking(1.0)
+    say(run, 1, "close notepad", 2.0)
+    run(SpeechStart(2, 3.2), Progress(State.CONFIRM, 3.5))
+    run(SpeechEnd(2, "silence", 4.0), heard(2, "yes", 4.1))
+    assert not run.has(Answer) and run.has(Ignored)[0].decision.via == "answer-early"
+    say(run, 3, "yeah", 4.5, 4.7, 4.8)
+    assert not run.has(Answer) and run.has(Ignored)[0].decision.via == "answer-short"
+    say(run, 4, "yes, close it and open chrome", 5.0, 5.7, 5.9)
+    assert run.has(Answer)[0].text == "yes, close it and open chrome"  # an answer is never split
+    assert not run.has(Command) and not run.has(Queued) and run.state is State.CONFIRM
+
+
+def test_session_queue_limits():
+    run = talking(1.0)
+    say(run, 1, "open notepad", 2.0)
+    for n in range(2, 2 + TALK_QUEUE_MAX):
+        say(run, n, "open chrome", 3.0)
+    assert len(run.m.queue) == TALK_QUEUE_MAX > QUEUE_MAX
+    say(run, 99, "open chrome", 3.5)
+    assert run.has(Ignored)[0].decision.via == "busy" and len(run.m.queue) == TALK_QUEUE_MAX
+    # Older than the 07a limit but within the session's: it still runs.
+    run(Done(True, 3.8 + QUEUE_MAX_AGE_S + 5.0))
+    assert run.has(Command) and not run.has(Dropped)
+    # The head waited too long: everything behind it goes too (later clauses build on it).
+    run(Done(True, 3.8 + TALK_QUEUE_MAX_AGE_S + 0.5))
+    dropped = run.has(Dropped)
+    assert len(dropped) == TALK_QUEUE_MAX - 1 and all(d.stale for d in dropped) and not run.has(Command)
+    assert run.has(Skipped)[0].texts == ("open chrome",) * (TALK_QUEUE_MAX - 1)
+    assert run.state is State.DONE and run.m.queue == ()
+
+
+def test_outside_a_session_the_07a_queue_is_unchanged():
+    run = busy()
+    for n in range(2, 2 + QUEUE_MAX):
+        run(heard(n, "open spotify", 1.5))
+    run(heard(99, "open spotify", 1.6))
+    assert len(run.m.queue) == QUEUE_MAX and run.has(Ignored)[0].decision.via == "busy"
+    assert not any(w.talk for w in run.m.queue)
+    run(Done(True, 1.5 + QUEUE_MAX_AGE_S + 0.5))
+    assert len(run.has(Dropped)) == QUEUE_MAX and not run.has(Command)
+    run = busy()(heard(2, "maximize it", 1.5), Done(False, 2.0, "Chrome didn't open"))
+    assert [d.utterance for d in run.has(Dropped)] == [2] and not run.has(Skipped)
+    assert run.m.follow_up_until == 2.0 + FOLLOW_UP_S
+    assert not talk_events(run.all) and not any(isinstance(e, Skipped) for e in run.all)
+
+
+def test_type_this_pauses_the_clock_and_a_tap_ends_only_dictation():
+    run = talking(1.0)
+    say(run, 1, "type this hello world", 2.0)
+    assert run.has(Command)[0].decision.text == "type this hello world"
+    run(Progress(State.ACTING, 3.1), Progress(State.DICTATING, 3.2, "voice"))
+    assert talk_events(run.effects, "paused")[0].why == "dictating"
+    o = outputs(run.m)
+    assert o.dictating and o.attentive and not o.talking
+    run(Done(True, 3.5, "Dictating…"))
+    assert run.state is State.DICTATING and not run.effects
+    run(Press("copilot", 10.0))
+    assert run.state is State.IDLE and run.has(Dictation)[0].why == "tap"
+    resumed = talk_events(run.effects, "resumed")[0]
+    assert resumed.why == "done" and resumed.closes_at == pytest.approx(10.0 + TALK_IDLE_S)
+    assert outputs(run.m).talking
+    run(Release("copilot", 10.1, 0.1, hold=False))
+    assert not run.effects and run.m.talk is not None
+
+
+def test_dictation_end_gives_a_fresh_clock():
+    run = talking(1.0)
+    say(run, 1, "type this", 2.0)
+    run(Progress(State.DICTATING, 3.1))
+    run(Tick(3.1 + DICTATION_SILENCE_S))
+    assert run.has(Dictation)[0].why == "silence"
+    assert talk_events(run.effects, "resumed")[0].closes_at == pytest.approx(3.1 + DICTATION_SILENCE_S + TALK_IDLE_S)
+    run = talking(1.0)
+    say(run, 1, "type this", 2.0)
+    run(Progress(State.DICTATING, 3.1), Progress(State.IDLE, 8.0, "stopped"))
+    assert talk_events(run.effects, "resumed")[0].why == "done"
+
+
+def test_the_closing_phrase_closes_and_drops_what_waits():
+    run = talking(1.0)
+    say(run, 1, "That's all.", 2.0)
+    say(run, 2, "open chrome", 3.0)
+    run(Progress(State.ACTING, 4.0), EndTalk(4.1))
+    assert talk_events(run.effects, "closed")[0].why == "phrase" and run.m.talk is None
+    assert run.has(Skipped)[0].texts == ("open chrome",) and run.m.queue == ()
+    assert run.state is State.ACTING and not run.has(Cancelled)
+    run(Done(True, 4.5, "Talk session ended"))
+    assert run.state is State.DONE and run.m.follow_up_until == 0.0 and not talk_events(run.effects)
+    assert not outputs(run.m).attentive
+
+
+def test_no_follow_up_after_a_session_command():
+    run = talking(1.0)
+    say(run, 1, "open chrome", 2.0)
+    run(Done(True, 3.5))
+    assert run.m.follow_up_until == 0.0
+    tap(run, 4.0)
+    say(run, 2, "open spotify", 5.0)  # outside the session now: always-listening
+    assert run.has(Command)[0].decision.via == "always"
+    run(Done(True, 6.5))
+    assert run.m.follow_up_until == 6.5 + FOLLOW_UP_S
+
+
+def test_the_name_interrupts_inside_a_session():
+    run = talking(1.0)
+    say(run, 1, "open notepad and then create a new note", 2.0)
+    run(Progress(State.ACTING, 3.1))
+    say(run, 2, "Nova, open chrome", 4.0)
+    assert run.has(Cancelled)[0].why == "superseded" and run.has(Skipped)[0].texts == ("create a new note",)
+    command = run.has(Command)[0]
+    assert command.decision.text == "open chrome" and command.utterance == 2 and run.state is State.THINKING
+    assert run.m.queue == () and run.m.talk is not None
+    # The name alone: nothing runs -> a fresh clock; something runs -> only a preload.
+    run = talking(1.0)
+    say(run, 1, "Nova", 20.0)
+    assert run.has(Ignored)[0].decision.via == "wake-only"
+    assert talk_events(run.effects, "resumed")[0].why == "name"
+    assert run.m.talk.closes_at() == pytest.approx(21.0 + TALK_IDLE_S)
+    say(run, 2, "open notepad", 22.0)
+    say(run, 3, "Nova.", 24.0)
+    assert [type(e) for e in run.effects] == [Preload] and run.state is State.THINKING
+
+
+def test_passthrough_teaching_sleep_and_off_close_the_session():
+    run = talking(1.0)
+    say(run, 1, "turn on claude voice", 2.0)
+    run(Progress(State.PASSTHROUGH, 3.5))
+    assert talk_events(run.effects, "closed")[0].why == "voice mode" and run.m.talk is None
+    run = talking(1.0)
+    say(run, 1, "watch me do this", 2.0)
+    run(Progress(State.TEACHING, 3.5))
+    assert talk_events(run.effects, "closed")[0].why == "teaching"
+    run = talking(1.0)(Sleep(True, 3.0))
+    assert talk_events(run.effects, "closed")[0].why == "asleep" and run.m.asleep and run.m.talk is None
+    run = talking(1.0)(Power(False, 3.0))
+    assert talk_events(run.effects, "closed")[0].why == "off" and run.m.talk is None
+    run(Power(True, 4.0))
+    assert run.m.talk is None and run.state is State.IDLE
+
+
+def test_a_final_begun_in_the_session_counts_after_a_tap_close():
+    run = talking(1.0)(SpeechStart(1, 2.0), SpeechEnd(1, "silence", 2.8))
+    tap(run, 3.0)
+    run(heard(1, "type hello", 3.2))
+    decision = run.has(Command)[0].decision
+    assert decision.talk and decision.via == "talk"
+    # Esc forgets what was said in the session: the same words now need the name.
+    run = talking(1.0)(SpeechStart(1, 2.0), SpeechEnd(1, "silence", 2.8), Cancel(3.0))
+    run(heard(1, "type hello", 3.2))
+    assert run.has(Ignored)[0].decision.via == "needs-name"
+
+
+def test_idle_s_comes_from_the_machine():
+    run = talking(1.0, Machine(idle_s=12.0))
+    assert run.m.talk.closes_at() == pytest.approx(1.1 + 12.0)
+    say(run, 1, "open notepad", 2.0)
+    run(Done(True, 4.0))
+    assert talk_events(run.effects, "resumed")[0].closes_at == pytest.approx(16.0)
+    assert Machine().idle_s == TALK_IDLE_S
+
+
+def test_flow_1_tap_two_clauses_small_talk_then_thats_all():
+    run = Run()(Press("copilot", 0.0), Release("copilot", 0.15, 0.15, hold=False))
+    assert talk_events(run.effects, "opened")[0].closes_at == pytest.approx(30.15)
+    say(run, 1, "Open Notepad and then create a new note.", 1.0, 2.6, 2.85)
+    assert run.has(Command)[0].decision.text == "Open Notepad" and run.has(Queued)
+    run(Progress(State.ACTING, 3.0), Done(True, 3.5, "Opened Notepad"))
+    assert run.has(Command)[0].decision.text == "create a new note"
+    run(Progress(State.ACTING, 4.5), Done(True, 5.0, "New note"))
+    assert run.state is State.DONE and talk_events(run.effects, "resumed")[0].closes_at == pytest.approx(35.0)
+    run(Tick(6.5))
+    assert run.state is State.IDLE and run.m.talk is not None  # the pill stays between clauses
+    say(run, 2, "Great, okay.", 8.0)
+    assert run.has(Ignored)[0].decision.via == "small-talk" and run.m.talk.closes_at() == pytest.approx(35.0)
+    say(run, 3, "That's all.", 10.0)
+    assert run.has(Command)[0].decision.text == "That's all"
+    run(Progress(State.ACTING, 11.1), EndTalk(11.2))
+    assert talk_events(run.effects, "closed")[0].why == "phrase" and not outputs(run.m).talking
+    run(Done(True, 11.3, "Talk session ended"))
+    assert run.state is State.DONE and run.m.follow_up_until == 0.0
+    run(Tick(11.3 + DONE_S))
+    assert run.state is State.IDLE and not outputs(run.m).attentive
+
+
+def test_flow_2_three_clauses_in_one_breath_while_the_first_acts():
+    run = talking(0.0)
+    say(run, 1, "open Fusion", 1.0)
+    run(Progress(State.ACTING, 2.1))
+    say(run, 2, "snap it to the left, open Claude and put it on the right", 5.0, 7.9, 8.1)
+    assert [q.decision.text for q in run.has(Queued)] == ["snap it to the left", "open Claude", "put it on the right"]
+    assert run.state is State.ACTING and not run.has(Command)
+    waited = []
+    for at in (12.0, 13.0, 14.0):
+        run(Done(True, at))
+        waited.append(run.has(Command)[0].waited)
+    assert waited == [pytest.approx(4.1), pytest.approx(5.1), pytest.approx(6.1)]
+    run(Done(True, 15.0))
+    assert run.state is State.DONE and run.m.queue == ()

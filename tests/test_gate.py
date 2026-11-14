@@ -445,6 +445,45 @@ def test_seeing_returns_a_new_resolver_and_leaves_the_old_one_alone():
     assert seen.seeing([])._running == frozenset() and seen._running == frozenset({"Spotify"})
 
 
+# --- talk sessions (Stage 07b, SPEC §5): inside one nothing needs the name -----------------------------------------
+
+TALK = Addressing(talk=True)
+
+
+@pytest.mark.parametrize(
+    "clause", ["create a new note", "make the title say hello", "type hello world", "close Claude",
+               "the next video is so good", "click the first link"]
+)
+def test_talk_accepts_any_clause(clause):
+    decision = judge(clause, TALK, always_listening=False)
+    assert decision.accepted and decision.via == "talk" and decision.talk and not decision.safe_only
+    assert decision.text == clause and decision.request and decision.clause == 0  # the machine fills those two
+
+
+@pytest.mark.parametrize("clause", ["open spotify", "switch to Google Chrome", "new tab", "pause the music"])
+def test_talk_over_speakers_takes_safe_actions_only(clause):
+    decision = judge(clause, TALK, speakers=True)
+    assert decision.accepted and decision.via == "talk" and decision.safe_only and decision.talk
+    for risky in ("type hello world", "close Claude", "create a new note", "click the first link"):
+        refused = judge(risky, TALK, speakers=True)
+        assert not refused.accepted and refused.via == "speakers" and refused.talk, risky
+
+
+def test_talk_with_another_app_on_the_mic_takes_safe_actions_only():
+    decision = judge("open spotify", TALK, mic_busy="Teams.exe")
+    assert decision.accepted and decision.safe_only and decision.via == "talk"
+    refused = judge("type hello", TALK, mic_busy="Teams.exe")
+    assert not refused.accepted and refused.via == "mic-busy" and "Teams.exe" in refused.why
+
+
+def test_the_name_inside_a_talk_is_still_wake():
+    decision = judge("Nova, type hello", TALK, speakers=True)
+    assert decision.accepted and decision.via == "wake" and decision.text == "type hello" and decision.talk
+    key = judge("open spotify", Addressing(session="copilot", talk=True))
+    assert key.via == "key" and key.talk
+    assert judge("open spotify", Addressing(busy=True, talk=True)).via == "busy"  # a held key waits for its words
+
+
 def test_command_words():
     assert command_words("Um, can you please open Spotify?") == ("open", "spotify")
     assert command_words("and then snap it left") == ("snap", "it", "left")
