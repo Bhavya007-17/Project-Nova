@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
 
 from ..actions.catalog import Catalog
@@ -21,7 +21,11 @@ from .tier1 import Seen, Thought, Tier1
 from .validate import check_llm
 
 MAX_REPLANS = 2
-_QUIET_VIA = frozenset({"follow-up", "always"})  # not addressed by name or key: "not a command" stays silent
+# Not addressed by name or key: "not a command" stays silent. "talk": a talk-session clause (SPEC §5) — he talks
+# freely between commands, so whatever the model calls chat is dropped without a word in the island.
+_QUIET_VIA = frozenset({"follow-up", "always", "talk"})
+MAX_BEFORE = 5  # a talk session's last executed steps Tier 1 sees, so "there", "it", "this new note" resolve
+_BEFORE_CHARS = 60  # each one: short enough that five cost ~75 tokens
 
 
 class Skills(Protocol):
@@ -88,14 +92,48 @@ class Router:
         self._skills = skills or NoSkills()
         self._page = page
         self._shown: Any = None  # the page rows the model saw last (its answer's element numbers point into them)
+        # The talk session's context (07b): "<what he said>: <Nova's result>", oldest first. Only his own words and
+        # Nova's own short result, never page text (SPEC §14). Read and changed on the brain thread only.
+        self._before: tuple[str, ...] = ()
+        self._context: tuple[str, ...] = ()  # what the model was shown for this command (a re-plan keeps it)
 
     def abort(self) -> None:
         if self._tier1 is not None:
             self._tier1.abort()
 
+    @property
+    def before(self) -> tuple[str, ...]:
+        return self._before
+
+    def remember(self, said: str, ok: bool, detail: str) -> None:
+        """A talk-session step ran: keep it for the next clauses ("there", "it" point at it)."""
+        entry = " ".join(f"{said.strip()}: {detail.strip() if ok else f'failed, {detail.strip()}'}".split())
+        if len(entry) > _BEFORE_CHARS:
+            entry = entry[: _BEFORE_CHARS - 1].rstrip() + "…"
+        self._before = (*self._before, entry)[-MAX_BEFORE:]
+
+    def forget_talk(self) -> None:
+        """The talk session closed: the next one starts with nothing to point at."""
+        self._before = ()
+        self._context = ()
+
     def route(self, text: str, ctx: Any, catalog: Catalog, *, strict: bool = False, via: str = "key",
-              running: frozenset[str] = frozenset(), tier1_only: bool = False) -> Routed:
-        """``tier1_only``: skip Tier 0 and skills (the bench compares models on every phrasing)."""
+              running: frozenset[str] = frozenset(), tier1_only: bool = False, talk: bool = False,
+              request: bool = True) -> Routed:
+        """``tier1_only``: skip Tier 0 and skills (the bench compares models on every phrasing). ``talk``: a command
+        of a talk session (Tier 1 sees the session's last steps); ``request``: worded as one (verb first or a polite
+        frame) — a session clause that isn't one and that Nova isn't sure about is dropped quietly."""
+        self._context = self._before if talk else ()
+        routed = self._route(text, ctx, catalog, strict=strict, via=via, running=running, tier1_only=tier1_only)
+        if routed.cancelled or routed.quiet or via != "talk" or request:
+            return routed
+        if routed.plan is None or routed.plan.kind == "clarify":
+            # Said in passing, not asked ("notepad would be handy"): no question, nothing in the island (07b).
+            return replace(routed, plan=None, quiet=True)
+        return routed
+
+    def _route(self, text: str, ctx: Any, catalog: Catalog, *, strict: bool, via: str, running: frozenset[str],
+               tier1_only: bool) -> Routed:
         began = time.perf_counter()
         plan = None if tier1_only else tier0.parse(text, catalog, strict=strict, running=running)
         parse_ms = round((time.perf_counter() - began) * 1000, 2)
@@ -138,7 +176,9 @@ class Router:
             self._shown = self._page(text, ctx) if self._page is not None else None
             page_ms = round(self._shown.ms, 1) if self._shown is not None else None
         shown = self._shown
-        extra = {"page": shown.rows()} if shown is not None else {}
+        extra: dict[str, Any] = {"page": shown.rows()} if shown is not None else {}
+        if self._context:
+            extra["before"] = self._context
         thought = self._tier1.think(text, Seen.of(ctx), catalog, asked=asked, answer=answer, **extra)
         if thought.cancelled:
             return Routed(None, "1", "Cancelled", thought=thought, cancelled=True, page_ms=page_ms)

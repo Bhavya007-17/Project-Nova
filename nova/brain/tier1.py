@@ -37,9 +37,10 @@ _log = logging.getLogger(__name__)
 
 MAX_TOKENS = 200  # the longest plan (4 steps / a 4-slot layout) is ~120 tokens; a rambling answer stops here
 CPU_PAGE_ROWS = 12  # page elements shown to the CPU model (the GPU one gets up to 40)
+CPU_BEFORE = 3  # a talk session's last steps shown to the CPU model (the GPU one gets the router's 5)
 # Not "always": chatter never needs the LLM. "say": `nova say` (only loads a cold model; a warm-up of a resident one
-# would only queue in front of the request).
-PRELOAD_REASONS = frozenset({"key", "wake", "speech", "follow-up", "say"})
+# would only queue in front of the request). "session": a talk session opened (07b).
+PRELOAD_REASONS = frozenset({"key", "wake", "speech", "follow-up", "say", "session"})
 _COLD_ONLY = frozenset({"say"})
 WARM_AGAIN_S = 60.0
 _WAIT_STEP_S = 0.05  # how often a request waiting for a load checks for Esc
@@ -208,9 +209,9 @@ class Tier1:
 
     def think(self, text: str, seen: Seen, catalog: Catalog | None = None, *, asked: str | None = None,
               answer: str | None = None, choice: Choice | None = None,
-              page: Sequence[str] | None = None) -> Thought:
+              page: Sequence[str] | None = None, before: Sequence[str] = ()) -> Thought:
         """``page``: the ranked page elements, one line each (``nova.chrome.pagemap.llm_rows``), when he points at
-        the page."""
+        the page. ``before``: a talk session's last steps, oldest first (``Router.before``)."""
         began = time.perf_counter()
         self._cancel.clear()
         catalog = catalog or self._catalog()
@@ -237,8 +238,10 @@ class Tier1:
             listed = [name for name in prompt.relevant_apps(text, catalog, seen.open_apps) if name not in seen.open_apps]
             if page and choice.device == "cpu":
                 page = page[:CPU_PAGE_ROWS]  # every row is ~20 tokens: the CPU reads them ~10x slower
+            if before and choice.device == "cpu":
+                before = tuple(before)[-CPU_BEFORE:]  # the newest ones: "it" points at the last step
             request = prompt.request(text, front=seen.front, open_apps=seen.open_apps, tab=seen.tab, apps=listed,
-                                     asked=asked, answer=answer, page=page)
+                                     asked=asked, answer=answer, page=page, before=before or None)
             if dialect.raw:
                 reply = self._client.generate(
                     choice.model, static + chatml_turn(prompt.dumps(request), dialect.think_block), schema=prompt.SCHEMA,
@@ -304,6 +307,36 @@ class Tier1:
         finally:
             with self._lock:
                 self._preloading = False
+
+    def keep_warm(self, *, only_if_resident: bool = False) -> None:
+        """A talk session opened (or closed): read the static prefix with the keep_alive the settings say *now*, in
+        the background. Opened: the governor picks GPU or CPU as for any preload, and the model loads now and stays
+        for the whole session. Closed (``only_if_resident``): the model in use, if it's still there, gets the normal
+        keep_alive again — nothing is loaded for it. Never blocks."""
+        threading.Thread(target=self._keep_warm, args=(only_if_resident,), name="nova-llm-keep", daemon=True).start()
+
+    def _keep_warm(self, only_if_resident: bool) -> None:
+        try:
+            if only_if_resident:
+                choice = self._pinned or self._governor.current
+                if choice is None or not self._loader.resident(choice.model):
+                    return
+            else:
+                choice = self._pinned or self._governor.choose(fresh=True)
+            for _ in range(3):
+                keep = self._settings().keep_alive
+                joined = self._loader.loading(choice.model) is not None
+                ms = self.warm(choice)
+                # A load already under way was started with its own keep_alive, and the session may have opened or
+                # closed while this one loaded: say the current keep_alive once more.
+                if not joined and self._settings().keep_alive == keep:
+                    break
+            _log.info("LLM kept (%s): %s on the %s in %.0f ms", self._settings().keep_alive, choice.model,
+                      choice.device.upper(), ms)
+        except LLMError as error:
+            _log.warning("LLM keep-warm failed: %s", error)
+        except Exception:  # noqa: BLE001 - a warm-up must never take anything down
+            _log.exception("LLM keep-warm failed")
 
     def abort(self) -> None:
         """Esc / superseded: drop the command's request, or stop it waiting for a load (the load itself goes on)."""

@@ -248,3 +248,92 @@ def test_always_listening_never_reads_the_page():
     Router(PageTier1(), page=lambda text, ctx: fetched.append(text)).route("press the blue one", EMPTY, CATALOG,
                                                                           strict=True)
     assert fetched == []
+
+
+# --- Stage 07b: talk sessions ------------------------------------------------------------------------------------------
+
+from nova.brain.router import MAX_BEFORE  # noqa: E402
+
+IGNORE = {"kind": "ignore", "steps": [], "confidence": 0.9}
+UNSURE = {"kind": "act", "steps": [{"action": "open_app", "app": "Notepad"}], "confidence": 0.4}
+QUESTION = {"kind": "clarify", "steps": [], "confidence": 0.3, "question": "Open which one?",
+            "choices": ["Google Chrome", "Notepad"]}
+
+
+class ContextTier1(FakeTier1):
+    """Records the ``before`` it was given (absent = not passed at all)."""
+
+    def think(self, text, seen, catalog=None, *, asked=None, answer=None, choice=None, **extra):
+        self.befores = getattr(self, "befores", []) + [extra.get("before", "absent")]
+        return super().think(text, seen, catalog, asked=asked, answer=answer, choice=choice)
+
+
+def test_talk_context_keeps_the_last_five_steps():
+    router = Router()
+    assert router.before == () and MAX_BEFORE == 5
+    for i in range(7):
+        router.remember(f"open app {i}", True, f"Opened {i}")
+    assert len(router.before) == 5
+    assert router.before[0] == "open app 2: Opened 2" and router.before[-1] == "open app 6: Opened 6"  # oldest first
+
+
+def test_talk_context_entries_are_short_and_say_failed():
+    router = Router()
+    router.remember("open the notes app", False, "Couldn't find the notes app")
+    router.remember("google search " + "very long words " * 10, True, "Searched Google")
+    failed, long = router.before
+    assert failed == "open the notes app: failed, Couldn't find the notes app"
+    assert len(long) <= 60 and long.endswith("…")
+
+
+def test_forget_talk_clears_it():
+    router = Router()
+    router.remember("open notepad", True, "Opened Notepad")
+    router.forget_talk()
+    assert router.before == ()
+
+
+def test_ignore_inside_a_session_is_quiet():
+    routed = route("the weather is nice today", FakeTier1(IGNORE), talk=True, via="talk", request=False)
+    assert routed.plan is None and routed.quiet
+    asked = route("can you believe it", FakeTier1(IGNORE), talk=True, via="talk", request=True)
+    assert asked.plan is None and asked.quiet  # ignore is quiet in a talk however it was worded
+
+
+def test_low_confidence_non_request_is_dropped_quietly():
+    routed = route("notepad would be handy", FakeTier1(UNSURE), talk=True, via="talk", request=False)
+    assert routed.plan is None and routed.quiet and not routed.cancelled
+
+
+def test_low_confidence_request_still_asks():
+    routed = route("can you put notepad up", FakeTier1(UNSURE), talk=True, via="talk", request=True)
+    assert routed.plan.kind == "clarify" and not routed.quiet
+    # addressed inside a talk (a held key, "Nova, ..."): an unsure plan asks, however it was worded
+    keyed = route("notepad would be handy", FakeTier1(UNSURE), talk=True, via="key", request=False)
+    assert keyed.plan.kind == "clarify" and not keyed.quiet
+
+
+def test_model_question_for_a_non_request_is_dropped():
+    routed = route("the other thing was weird", FakeTier1(QUESTION), talk=True, via="talk", request=False)
+    assert routed.plan is None and routed.quiet
+    sure = route("notepad would be handy",
+                 FakeTier1({"kind": "act", "steps": [{"action": "open_app", "app": "Notepad"}], "confidence": 0.95}),
+                 talk=True, via="talk", request=False)
+    assert sure.plan.kind == "act"  # a sure plan runs: only unsure non-requests are dropped
+
+
+def test_context_only_goes_to_talk_clauses():
+    tier1 = ContextTier1(UNSURE, UNSURE, QUESTION, {"kind": "act", "steps": [{"action": "open_app",
+                                                                               "app": "Notepad"}],
+                                                    "confidence": 0.9})
+    router = Router(tier1)
+    router.remember("open notepad", True, "Opened Notepad")
+    router.route("make a new one in there", EMPTY, CATALOG, via="key")
+    router.route("make a new one in there", EMPTY, CATALOG, talk=True, via="talk")
+    assert tier1.befores == ["absent", ("open notepad: Opened Notepad",)]
+    # his answer to the model's question goes back with the same context
+    routed = router.route("open the thing", EMPTY, CATALOG, talk=True, via="talk")
+    router.settle(routed, "open the thing", EMPTY, CATALOG, Asker(choose=1), via="talk")
+    assert tier1.befores[2:] == [("open notepad: Opened Notepad",)] * 2
+    router.forget_talk()
+    assert router.before == ()
