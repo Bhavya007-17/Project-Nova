@@ -11,7 +11,7 @@ chord: ctrl+alt+n
 
 # Ways to start talking. Set any of them to false to turn it off.
 triggers:
-  copilot_key: true        # hold = push-to-talk, tap = listen until you stop
+  copilot_key: true        # hold = push-to-talk, tap = a talk session
   wake_name: true          # "Nova, ..."
   always_listening: true   # plain commands like "open Chrome" with no name
   chord: true              # the chord above
@@ -43,3 +43,7 @@ logs:
 # Dictation: double-tap Copilot, or "type this ...". Ends on a tap, "stop dictation" or 10 s of silence.
 dictation:
   cleanup: true            # the local model fixes misheard words (GPU only); false = rules only
+
+# Talk sessions: tap Copilot or say "Nova" to open one; "that's all", a tap or Esc closes it.
+session:
+  idle_s: 30               # close after this long without a command (the pill shrinks over the last 5 s)

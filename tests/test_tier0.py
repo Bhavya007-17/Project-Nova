@@ -4,7 +4,7 @@ import pytest
 from catalog_fixture import CATALOG
 
 from nova.brain.plan import step
-from nova.brain.tier0 import parse
+from nova.brain.tier0 import describe, parse
 
 
 def steps(text, strict=False):
@@ -486,3 +486,40 @@ def test_plain_type_and_paste_and_google_docs_home_stay_as_they_were():
 ])
 def test_a_google_doc_without_the_a_is_still_a_new_doc(text, expected):
     assert steps(text) == expected
+
+
+# --- talk sessions (Stage 07b) ----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("text", [
+    "that's all", "That's all.", "thanks that's all", "thank you that's all", "that's all for now", "okay that's all",
+    "that is all", "that will be all", "that'll be all", "we're done", "I'm done", "all done", "end the session",
+    "end session", "end this session", "goodbye", "bye", "bye for now", "that's all nova", "that's all thank you",
+])
+def test_closing_phrases_end_the_session(text):
+    plan = parse(text, CATALOG)
+    assert plan is not None and plan.kind == "act" and plan.steps == (step("listening", op="end_session"),), plan
+    assert describe(plan) == "End the talk session"
+
+
+@pytest.mark.parametrize("text", ["stop listening", "stop listening for now", "go to sleep"])
+def test_stop_listening_still_sleeps(text):
+    assert one(text) == step("listening", op="sleep")
+
+
+@pytest.mark.parametrize("text", [
+    "Great great. Okay.", "great great", "Nice nice.", "Cool cool cool", "Perfect, perfect.", "Awesome. Thanks.",
+    "Wow. Okay. Great.", "Sweet sweet", "Okay great great",
+])
+def test_acknowledgements_are_never_guessed_into_commands(text):
+    assert parse(text, CATALOG) is None
+
+
+@pytest.mark.parametrize(("text", "query"), [
+    ("google search Norbert Wiener", "Norbert Wiener"),
+    ("Google search for the history of cybernetics", "the history of cybernetics"),
+    ("google for cats", "cats"),
+    ("google how tall is the eiffel tower", "how tall is the eiffel tower"),
+])
+def test_google_search_drops_the_word_search(text, query):
+    assert one(text) == step("web_search", query=query, engine="google")

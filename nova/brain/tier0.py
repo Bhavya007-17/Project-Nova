@@ -23,6 +23,7 @@ from datetime import datetime
 
 from ..actions.catalog import Catalog, Match, Target, sounds_like
 from ..chrome import canvas
+from ..clauses import is_acknowledgement
 from ..gate import Resolved
 from .plan import Plan, PlanError, Step, check, dictate_after_docs, step
 
@@ -315,6 +316,10 @@ _TEMPLATES: list[tuple[re.Pattern[str], Callable[[re.Match], Step]]] = [
         # "open Google Doc" — speech-to-text often drops the "a"; one doc (not "docs") is a document, not the home page
         (r"(?:open|create|make|start|get|give me|pull up|bring up|spin up)(?: me)?(?: up)? google (?:doc|document)",
          lambda m: step("docs_new")),
+        # The closing phrase of a talk session (SPEC §5). Not "that's it": that also means "yes, right".
+        (r"(?:thanks |thank you )?(?:thats all|that is all|that will be all|thatll be all|were done|im done|all done"
+         r"|end (?:the |this )?session|goodbye|bye)(?: (?:for now|nova|thanks|thank you))?",
+         lambda m: step("listening", op="end_session")),
         (r"(?:stop listening|go to sleep|sleep|take a break)(?: (?:for now|for a bit|for a while|for a minute"
          r"|for a few minutes|for the night))?",
          lambda m: step("listening", op="sleep")),
@@ -987,7 +992,7 @@ def parse(text: str, catalog: Catalog, *, strict: bool = False, running: Iterabl
             continue
         verb = _verb(words)
         if _engine_search(words) and _find(words, catalog, True, bare=True) is None:  # "google how tall is ..."
-            begin, end, i = _payload(text, toks, clause.first + lead + 1, clauses, i, st)
+            begin, end, i = _payload(text, toks, clause.first + lead + 1 + _search_word(words), clauses, i, st)
             query = _clean_payload(text[begin:end])
             if not query:
                 return None
@@ -1030,7 +1035,9 @@ def parse(text: str, catalog: Catalog, *, strict: bool = False, running: Iterabl
         if result is None:
             k = _inner_split(words, st)
             if k is None:
-                guess = None if strict or i in guessed else _guess_verb(words, st)
+                # Small talk is never a misheard command ("Great great. Okay." is not "Type 'great. Okay'?").
+                chatter = strict or i in guessed or is_acknowledgement(text)
+                guess = None if chatter else _guess_verb(words, st)
                 if guess is None:
                     return None
                 guessed.add(i)  # "Clothes notepad": try it as "close notepad", then ask before doing it
@@ -1094,6 +1101,8 @@ def _guess_verb(words: tuple[str, ...], st: _State) -> str | None:
     clause a command, or None. Closest-sounding first."""
     first = words[0] if words else ""
     if len(words) < 2 or len(first) < 3 or not first.isalpha() or first in _FILLERS or _verb(words) is not None:
+        return None
+    if is_acknowledgement(" ".join(words)):  # "great great": praise, not a misheard "write"
         return None
     scored = sorted(((sounds_like(first, v), v) for v in _GUESSABLE), reverse=True)
     for score, verb in scored:
@@ -1159,6 +1168,8 @@ def describe(plan: Plan) -> str:
             said = "Open a new Google Doc"
         case "dictation":
             said = {"paste": "Paste your last dictation", "stop": "Stop dictation"}.get(a.get("op"), "Start dictation")
+        case "listening" if a.get("op") == "end_session":
+            said = "End the talk session"
         case _:
             said = s.action.replace("_", " ").capitalize()
     return said + (" …" if len(plan.steps) > 1 else "")
@@ -1245,6 +1256,18 @@ def _clarify(items: list[object], at: int, ask: Ask, running: frozenset[str] = f
 
 _STATEMENT = frozenset({"is", "was", "has", "had", "keeps", "kept", "just", "always", "never", "can", "cant", "wont",
                         "does", "did", "says", "said"})
+
+
+_SEARCH_WORDS = (("search", "for"), ("search",), ("for",))
+
+
+def _search_word(words: tuple[str, ...]) -> int:
+    """How many words after the engine only say "search" ("google search X", "google for X"): not the query."""
+    for lead in _SEARCH_WORDS:
+        n = len(lead)
+        if tuple(words[1 : 1 + n]) == lead and len(words) > 1 + n:
+            return n
+    return 0
 
 
 def _engine_search(words: tuple[str, ...]) -> bool:

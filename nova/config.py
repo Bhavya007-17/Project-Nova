@@ -68,6 +68,13 @@ class Dictation:
 
 
 @dataclass(frozen=True)
+class SessionSettings:
+    """Talk sessions (SPEC §5): the mic stays open across commands until he closes it or goes quiet."""
+
+    idle_s: float = 30.0  # close after this long without an accepted command (the pill shrinks over the last 5 s)
+
+
+@dataclass(frozen=True)
 class Llm:
     """Tier 1 (SPEC §7.4, §15). Models picked by `nova bench-llm`."""
 
@@ -93,6 +100,7 @@ class Settings:
     llm: Llm = field(default_factory=Llm)
     logs: Logs = field(default_factory=Logs)
     dictation: Dictation = field(default_factory=Dictation)
+    session: SessionSettings = field(default_factory=SessionSettings)
 
 
 DEFAULT_YAML = """\
@@ -109,7 +117,7 @@ chord: ctrl+alt+n
 
 # Ways to start talking. Set any of them to false to turn it off.
 triggers:
-  copilot_key: true        # hold = push-to-talk, tap = listen until you stop
+  copilot_key: true        # hold = push-to-talk, tap = a talk session
   wake_name: true          # "Nova, ..."
   always_listening: true   # plain commands like "open Chrome" with no name
   chord: true              # the chord above
@@ -141,6 +149,10 @@ logs:
 # Dictation: double-tap Copilot, or "type this ...". Ends on a tap, "stop dictation" or 10 s of silence.
 dictation:
   cleanup: true            # the local model fixes misheard words (GPU only); false = rules only
+
+# Talk sessions: tap Copilot or say "Nova" to open one; "that's all", a tap or Esc closes it.
+session:
+  idle_s: 30               # close after this long without a command (the pill shrinks over the last 5 s)
 """
 
 
@@ -288,6 +300,8 @@ def _check(settings: Settings) -> None:
         raise ConfigError(f"chord: {error}") from error
     _check_local_url(settings.ollama.url, "ollama.url")
     _check_llm(settings.llm)
+    if not 10 <= settings.session.idle_s <= 600:
+        raise ConfigError("session.idle_s must be between 10 and 600 seconds")
 
 
 _DURATION = re.compile(r"-1|0|(\d+h)?(\d+m)?(\d+s)?")
