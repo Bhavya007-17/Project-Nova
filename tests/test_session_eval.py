@@ -2,10 +2,10 @@
 
 from dataclasses import replace
 
-from catalog_fixture import CATALOG
+from catalog_fixture import CATALOG, ROWS
 
 from nova import tts
-from nova.actions.catalog import words_of
+from nova.actions.catalog import DEFAULT_ALIASES, Catalog, apps_from_rows, parse_aliases, words_of
 from nova.brain.plan import act, step
 from nova.brain.router import Routed, Router
 from nova.session_eval import (
@@ -62,7 +62,9 @@ def run(sess, router=None):
 
 
 def test_sessions_yaml_loads_and_case_1_is_the_recording():
-    sessions = load_sessions(CATALOG)
+    # sessions.yaml accepts either Windows notes app for "the notes app": the laptop has both, so the catalog does too.
+    sticky = {"Name": "Sticky Notes", "AppID": "Microsoft.MicrosoftStickyNotes_8wekyb3d8bbwe!App", "Exe": "", "Args": ""}
+    sessions = load_sessions(Catalog(apps_from_rows([*ROWS, sticky]), parse_aliases(DEFAULT_ALIASES)))
     first = sessions[0]
     assert first.name == "recording" and first.opener == "tap" and first.screen.front == "Claude"
     assert [ln.say for ln in first.lines] == [

@@ -18,7 +18,7 @@ sessions:
     pause_ms: 900
     lines:
       - say: Alright, can you open up the notes app for me
-        want: [open Notepad]
+        want: [open Notepad || open Sticky Notes]
       - say: and once you're there can you create a new note
         want: [press ctrl+n || press ctrl+t]
       - say: and inside this new note let's make the title say hello
@@ -38,7 +38,7 @@ sessions:
       - say: snap that to the left
         want: [window snap_left Calculator || window snap_left active]
       - {say: now get notepad going, want: [open Notepad]}
-      - {say: type hello in there, want: [type hello]}
+      - {say: type hello in there, want: [type hello in there]}
       - say: and close it
         want: [close Notepad || window close Notepad || window close active]
       - {say: we're done, want: [listening end_session]}

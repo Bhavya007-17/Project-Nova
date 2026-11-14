@@ -981,6 +981,25 @@ def test_stop_clears_the_queue_and_keeps_the_session():
     assert resumed.why == "done" and run.m.talk is not None
 
 
+@pytest.mark.parametrize("said", ["stop", "Wait.", "never mind", "hold on", "Cancel that.", "um, hold on"])
+def test_a_stop_word_with_nothing_to_stop_is_dropped_like_small_talk(said):
+    run = talking(1.0)
+    before = run.m.talk
+    say(run, 1, said, 5.0)
+    assert not run.has(Command) and not run.has(Cancelled) and not talk_events(run.effects)
+    (ignored,) = run.has(Ignored)
+    assert ignored.decision.via == "stop" and ignored.decision.talk and not ignored.decision.accepted
+    assert run.state is State.IDLE and run.m.talk == before  # the idle clock is untouched
+
+
+def test_a_stop_word_over_the_speakers_is_an_ordinary_clause():
+    run = talking(1.0)(SpeechStart(1, 5.0), SpeechEnd(1, "silence", 5.8))
+    run(Heard(1, "stop", 6.0, replace(ENV, speakers=True)))
+    assert not any(i.decision.via == "stop" for i in run.has(Ignored))
+    decision = run.has(Command)[0].decision  # "stop" can still reach the player (strict Tier 0: pause)
+    assert decision.accepted and decision.heard == "stop" and decision.talk and decision.safe_only
+
+
 def test_a_failed_step_stops_the_queue_and_says_what_was_skipped():
     run = talking(1.0)
     say(run, 1, "open the notes app and then create a new note and then make the title say hello", 2.0)

@@ -65,6 +65,8 @@ DISCOURSE: tuple[tuple[str, ...], ...] = _phrases(
     "lets move on and", "lets move on", "moving on", "once youre there", "once you are there", "when youre there",
     "after that", "and then", "and now", "and also", "alright", "all right", "okay", "ok", "um", "uh", "uhm", "er",
     "erm", "hmm", "mm", "so", "and", "then", "now", "also", "next", "well", "oh", "right", "yeah",
+    # What is left of a polite frame when he says it on its own ("go ahead", "let's move on"): never a command.
+    "go ahead",
     *(" ".join(ack) for ack in ACKS),
 )
 
@@ -74,9 +76,9 @@ POLITE: tuple[tuple[str, ...], ...] = _phrases(
     "i want you to", "id like you to", "lets", "let us",
 )
 
-# Politeness at the end of a clause.
+# Politeness and fillers at the end of a clause ("open the calculator too"). Free-text clauses keep theirs.
 TRAILING: tuple[tuple[str, ...], ...] = _phrases(
-    "for me", "please", "thanks", "thank you", "real quick", "okay", "ok",
+    "for me", "please", "thanks", "thank you", "real quick", "okay", "ok", "too", "as well", "also",
 )
 
 # A clause boundary only where he said it (comma or not) and what follows starts like a request.
@@ -284,7 +286,10 @@ def split(final: str) -> tuple[Clause, ...]:
             locked = first < i and toks[first].word in FREE_TEXT_VERBS
             nxt = rest + n
             stop = _sentence_end(toks, nxt)
-            if (first < i and not locked
+            # A leading frame is never cut at its own "and" ("go ahead and minimize ..."): the lead read over the
+            # whole sentence must end before this boundary.
+            inside_lead = _lead_end(toks, start, stop) > i
+            if (first < i and not locked and not inside_lead
                     and (_starts_like_request(toks, nxt, stop) or _frame_then_verb(toks, nxt, stop))):
                 clause = _clause(final, toks, start, i)
                 if clause is not None:

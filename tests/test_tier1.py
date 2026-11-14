@@ -38,6 +38,37 @@ def test_examples_are_not_eval_items():
         assert f"say: {request_['said'].lower()}\n" not in eval_text
 
 
+def test_examples_are_not_session_eval_lines():
+    import yaml
+
+    from nova.evals import EVAL_FILE
+
+    sessions = yaml.safe_load((EVAL_FILE.parent / "sessions.yaml").read_text(encoding="utf-8"))["sessions"]
+    lines = {line["say"].lower().strip(" .,!?") for s in sessions for line in s["lines"]}
+    for request_, _ in prompt.EXAMPLES:
+        assert request_["said"].lower() not in lines
+        assert not any(request_["said"].lower() in line for line in lines)
+
+
+def test_prefix_rules_keep_before_as_context_only():
+    system = prompt.prefix(CATALOG.aliases)[0]["content"]
+    rule = next(line for line in system.splitlines() if line.startswith('- "before"'))
+    assert "never repeat, redo or continue" in rule and "ignore" in rule
+    # A worked example: with "before" set, words that ask for nothing new are ignored, nothing is redone.
+    assert any("before" in r and p["kind"] == "ignore" and not p["steps"] for r, p in prompt.EXAMPLES)
+
+
+def test_prefix_rules_new_document_in_the_app_in_front():
+    system = prompt.prefix(CATALOG.aliases)[0]["content"]
+    press = next(line for line in system.splitlines() if line.startswith("press{keys}:"))
+    assert "new" in press and "ctrl+n" in press
+    docs = next(line for line in system.splitlines() if line.startswith("docs_new{}:"))
+    assert "only when he names a Google Doc" in docs
+    # A worked example: a new file in a desktop app in front, no "before" -> ctrl+n (not docs_new, not open_app).
+    assert any("before" not in r and r.get("front") not in (None, "Google Chrome")
+               and p["steps"] == [{"action": "press", "keys": "ctrl+n"}] for r, p in prompt.EXAMPLES)
+
+
 def test_prefix_is_byte_identical_for_the_same_aliases():
     assert prompt.prefix(CATALOG.aliases) == prompt.prefix(CATALOG.aliases)
     system = prompt.prefix(CATALOG.aliases)[0]["content"]

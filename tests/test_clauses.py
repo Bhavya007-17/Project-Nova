@@ -155,6 +155,46 @@ def test_free_text_verbs_keep_their_sentence():
     assert strip("type thank you") == "type thank you"  # his words to type, not a trailing "thank you"
 
 
+@pytest.mark.parametrize(
+    ("final", "text"),
+    [
+        ("go ahead and minimize this window", "minimize this window"),
+        ("go ahead and close notepad", "close notepad"),
+        ("okay, go ahead and open chrome", "open chrome"),
+        ("Go ahead and maximize it, thanks.", "maximize it"),
+    ],
+)
+def test_a_polite_frame_is_never_split_at_its_own_and(final, text):
+    assert [(c.kind, c.text) for c in split(final)] == [("command", text)]
+
+
+@pytest.mark.parametrize("final", ["go ahead", "Go ahead.", "let's move on", "okay, go ahead", "Alright, go ahead."])
+def test_a_frame_remnant_alone_is_not_a_command(final):
+    found = split(final)
+    assert found and all(c.kind != "command" and c.text == "" for c in found)
+    assert strip(final) == ""
+
+
+@pytest.mark.parametrize(
+    ("said", "text"),
+    [
+        ("open the calculator too", "open the calculator"),
+        ("close spotify as well", "close spotify"),
+        ("then mute it also", "mute it"),
+        ("maximize it too please", "maximize it"),
+    ],
+)
+def test_trailing_too_as_well_also_are_cut(said, text):
+    assert strip(said) == text
+    assert [(c.kind, c.text) for c in split(said)] == [("command", text)]
+
+
+def test_free_text_keeps_a_trailing_too():
+    assert [c.text for c in split("type me too")] == ["type me too"]
+    assert strip("write that as well") == "write that as well"
+    assert strip("too") == "too"  # a trailing word never eats the whole clause
+
+
 def test_next_is_only_small_talk_before_a_pause():
     assert strip("next tab") == "next tab"
     assert strip("Next, open chrome") == "open chrome"
