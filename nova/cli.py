@@ -53,6 +53,11 @@ def _parser() -> argparse.ArgumentParser:
     ev.add_argument("--tier1", action="store_true", help="send every phrasing to Tier 1 (skip Tier 0)")
     ev.add_argument("--limit", type=int, default=0, metavar="N", help="only the first N positives (and N/2 negatives)")
     ev.add_argument("--quiet", action="store_true", help="don't list the misses")
+    ev.add_argument("--sessions", action="store_true",
+                    help="score the talk sessions (docs/eval/sessions.yaml) clause by clause instead")
+    ev.add_argument("--replay", type=int, default=0, metavar="N",
+                    help="with --sessions: speak session N with Windows' voice into a WAV and time it through the "
+                         "live speech path (no mic, no keys, no windows)")
     bench_llm = sub.add_parser("bench-llm", help="candidate local models x devices: accuracy, latency, load time, VRAM")
     bench_llm.add_argument("models", nargs="*", help="Ollama models to compare (default: the Stage 05 candidates)")
     bench_llm.add_argument("--devices", default="gpu,cpu", help="comma list of gpu, cpu, arc (default gpu,cpu)")
@@ -82,8 +87,13 @@ def _safe_console() -> None:
 
 def main(argv: Sequence[str] | None = None) -> int:
     _safe_console()
-    args = _parser().parse_args(argv)
+    parser = _parser()
+    args = parser.parse_args(argv)
     command = args.command or "run"
+    if command == "eval" and not args.sessions and args.replay:
+        parser.error("--replay N replays a talk session: use it with --sessions")
+    if command == "eval" and args.sessions and (args.tier1 or args.limit):
+        parser.error("--sessions runs every clause Tier 0 -> Tier 1, as live (no --tier1 / --limit)")
     if command == "run":
         from . import app
 
@@ -124,6 +134,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         from . import latency
 
         return latency.main()
+    if command == "eval" and args.sessions:
+        from . import session_eval
+
+        return session_eval.main(replay=args.replay, model=args.model, device=args.device, misses=not args.quiet)
     if command == "eval":
         from . import evals
 

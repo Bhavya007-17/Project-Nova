@@ -74,6 +74,11 @@ def test_kinds():
     assert not score(None, parse_want("open chrome", CATALOG), CATALOG)
 
 
+def test_the_closing_phrase_is_a_want():
+    assert ok(act(step("listening", op="end_session")), "listening end_session")
+    assert not ok(act(step("listening", op="sleep")), "listening end_session")
+
+
 @pytest.mark.parametrize("want", ["window wobble active", "open", "search@altavista cats", "layout chrome", "fly"])
 def test_bad_wants_are_errors(want):
     with pytest.raises(ValueError):
