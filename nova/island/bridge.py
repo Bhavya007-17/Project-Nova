@@ -36,6 +36,12 @@ _GETTERS: dict[str, Callable[[View], object]] = {
     "chips": lambda v: [{"id": c.id, "text": c.text, "status": c.status} for c in v.chips],
     "pinned": lambda v: v.pinned,
     "always": lambda v: v.always,
+    # talk sessions (Stage 07b): the session pill
+    "talk": lambda v: v.talk,
+    "closing": lambda v: v.closing,
+    "beneath": lambda v: v.beneath,
+    "skipped": lambda v: v.skipped,
+    "warming": lambda v: v.warming,
 }
 
 
@@ -61,6 +67,11 @@ class IslandBridge(QObject):
     chipsChanged = Signal()
     pinnedChanged = Signal()
     alwaysChanged = Signal()
+    talkChanged = Signal()
+    closingChanged = Signal()
+    beneathChanged = Signal()
+    skippedChanged = Signal()
+    warmingChanged = Signal()
     levelChanged = Signal()
 
     def __init__(
@@ -101,7 +112,7 @@ class IslandBridge(QObject):
 
     @Slot(str, int, str)
     def act(self, what: str, index: int, chip: str) -> None:
-        """A click: yes | no | choice (index) | retry | show-me | chip (chip id)."""
+        """A click: yes | no | choice (index) | retry | show-me | chip (chip id) | stop-session."""
         self._on_act(what, index, chip)
 
     @Slot()
@@ -147,4 +158,9 @@ class IslandBridge(QObject):
     chips = Property(list, lambda self: _GETTERS["chips"](self._view), notify=chipsChanged)
     pinned = Property(bool, lambda self: self._view.pinned, notify=pinnedChanged)
     always = Property(bool, lambda self: self._view.always, notify=alwaysChanged)
+    talk = Property(bool, lambda self: self._view.talk, notify=talkChanged)
+    closing = Property(bool, lambda self: self._view.closing, notify=closingChanged)
+    beneath = Property(str, lambda self: self._view.beneath, notify=beneathChanged)
+    skipped = Property(str, lambda self: self._view.skipped, notify=skippedChanged)
+    warming = Property(bool, lambda self: self._view.warming, notify=warmingChanged)
     level = Property(float, lambda self: self._level, notify=levelChanged)

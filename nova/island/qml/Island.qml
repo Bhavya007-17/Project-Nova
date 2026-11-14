@@ -32,6 +32,7 @@ Item {
 
     readonly property bool liveMode: ["listening", "thinking", "dictating", "teaching", "passthrough"].indexOf(mode) >= 0
     readonly property Item face: liveMode ? liveFace
+        : mode === "session" ? sessionFace
         : mode === "acting" ? actingFace
         : mode === "done" ? doneFace
         : mode === "confirm" ? confirmFace
@@ -42,11 +43,32 @@ Item {
     readonly property real targetWidth: !open || !face ? 112
         : island.expanded ? clamp(Math.ceil(face.implicitWidth) + 2 + 2 * expandedPadX, 380, 560)
         : mode === "idle" ? Math.ceil(face.implicitWidth) + 2 + 2 * 16
+        : mode === "session" ? face.implicitWidth  // fixed: rolling words never make it jitter
         : clamp(Math.ceil(face.implicitWidth) + 2 + padLeft + padRight, 176, 420)  // +2: text that just fits never elides
     readonly property real targetHeight: !open || !face ? 30
         : island.expanded ? Math.min(160, face.implicitHeight + 2 * expandedPadY)
         : mode === "idle" ? idleHeight
+        : mode === "session" ? face.implicitHeight  // 44, or ~72 while row 2 has something to say
         : compactHeight
+    readonly property real sessionPad: 16
+
+    // The last 5 s before a talk session closes on its own, the pill shrinks (render-thread
+    // animator); anything that happens (he speaks, a clause runs) snaps it back. A pill that
+    // closes stays small while it flies up and is full size again on its next show.
+    readonly property bool shrinking: island.closing && mode === "session"
+    onShrinkingChanged: {
+        if (shrinking) {
+            grow.stop()
+            shrink.restart()
+        } else {
+            shrink.stop()
+            if (root.island.open)
+                grow.restart()
+        }
+    }
+    onOpenChanged: if (open && !shrinking) { shrink.stop(); grow.stop(); pill.scale = 1 }
+    ScaleAnimator { id: shrink; target: pill; from: 1; to: 0.72; duration: 5000; easing.type: Easing.InOutSine }
+    ScaleAnimator { id: grow; target: pill; to: 1; duration: 240; easing.type: Easing.OutBack }
 
     function clamp(value, low, high) { return Math.max(low, Math.min(high, value)) }
 
@@ -68,6 +90,7 @@ Item {
         targetWidth: root.targetWidth
         targetHeight: root.targetHeight
         targetY: root.open ? root.topMargin : -root.targetHeight - 16  // closed: tucked above the top edge
+        transformOrigin: Item.Top  // the session pill shrinks towards the top centre
         opacity: root.open ? 1 : 0
         Behavior on opacity { OpacityAnimator { duration: root.open ? 120 : 260 } }
 
@@ -331,6 +354,18 @@ Item {
                 PillButton { text: "Try again"; onClicked: root.island.act("retry", -1, "") }
                 PillButton { text: "Show me"; onClicked: root.island.act("show-me", -1, "") }
             }
+        }
+
+        // a talk session: waveform + rolling words + Stop; the clause's progress under it
+        SessionFace {
+            id: sessionFace
+            island: root.island
+            active: root.mode === "session"
+            targetAccent: root.accent
+            targetWidth: root.targetWidth - 2 * root.sessionPad
+            x: (pill.width - width) / 2
+            y: 0
+            height: implicitHeight
         }
     }
 

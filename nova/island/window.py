@@ -44,6 +44,7 @@ from ..events import (
     AlwaysListeningChanged,
     Asking,
     BrainProgress,
+    ClausesSkipped,
     CommandFinished,
     ConfigChanged,
     DictatedText,
@@ -58,6 +59,7 @@ from ..events import (
     SpeechReady,
     StateChanged,
     StepsChanged,
+    TalkChanged,
 )
 from .bridge import IslandBridge
 from .view import View, reduce
@@ -72,6 +74,7 @@ _EVENTS = (
     StateChanged, PartialTranscript, FinalTranscript, DictatedText, Gated, CommandFinished, StepsChanged,
     Asking, JobChip, MicChanged, SpeechReady, PinToggled, AlwaysListeningChanged, ConfigChanged,
     BrainProgress,  # "warming": the model is cold (Stage 07a)
+    TalkChanged, ClausesSkipped,  # the session pill (Stage 07b)
 )
 _WDA_EXCLUDEFROMCAPTURE = 0x11
 _DWMWA_TRANSITIONS_FORCEDISABLED = 3
@@ -198,7 +201,7 @@ class Island(QObject):
 
     def _set(self, model: View) -> None:
         self._model = model
-        self._wants_levels = model.state == "listening"
+        self._wants_levels = model.state in ("listening", "session")  # the session pill has a waveform too
         if not self._wants_levels:
             self._bridge.set_level(0.0)  # the next session's waveform starts flat
         if model.visible and not self._shown:

@@ -6,6 +6,7 @@ from nova.events import (
     AlwaysListeningChanged,
     BrainProgress,
     Asking,
+    ClausesSkipped,
     ConfigChanged,
     CommandFinished,
     DictatedText,
@@ -18,6 +19,7 @@ from nova.events import (
     SpeechReady,
     StateChanged,
     StepsChanged,
+    TalkChanged,
 )
 from nova.island.view import ACCENTS, PASSTHROUGH_END, TEACHING_NOTE, View, fresh_index, reduce
 
@@ -319,3 +321,179 @@ def test_thinking_progress_without_warming_leaves_the_view_alone():
 def test_other_brain_progress_leaves_the_view_alone():
     view = feed(READY, go("idle", "thinking"), gated(1, "x y"))
     assert reduce(view, BrainProgress("acting")) == view
+
+
+# --- talk sessions (Stage 07b): the session pill ---------------------------------------------------------------
+
+
+def talk(what, why="", closes_at=30.0):
+    return TalkChanged(what, why or what, None if what in ("paused", "closed") else closes_at, 0.0)
+
+
+def clause(utterance, text, index=0, accepted=True, via="talk"):
+    return Gated(utterance, accepted, via, text, text, "talk session", False, False, 0.0, True, True, index)
+
+
+def small_talk(utterance, text):
+    return Gated(utterance, False, "small-talk", text, text, "small talk", False, False, 0.0, True)
+
+
+def opened(view=READY):
+    """A Copilot tap: listening while the key is down, then the talk opens and the machine goes idle."""
+    return feed(view, go("idle", "listening", "Copilot key"), talk("opened", "copilot"), go("listening", "idle", "talk session"))
+
+
+def running(view, utterance, text, steps, index=0):
+    """One clause from thinking to acting (his words are already on the pill)."""
+    return feed(view, go(view.machine, "thinking"), clause(utterance, text, index), StepsChanged(steps),
+                go("thinking", "acting"))
+
+
+def test_talk_opened_shows_the_session_pill():
+    view = feed(READY, go("idle", "listening", "Copilot key"), partial(1, "um"))
+    view = reduce(view, talk("opened", "copilot"))
+    assert view.state == "session" and view.talk and view.open and view.visible and not view.expanded
+    assert view.words == "" and view.placeholder == "Listening…"  # fresh words for the session
+    assert view.accent == ACCENTS["listening"] and view.beneath == "" and not view.closing
+    view = reduce(view, go("listening", "idle", "talk session"))
+    assert view.state == "session" and view.visible
+
+
+def test_idle_inside_a_session_keeps_the_pill():
+    view = feed(opened(), final(1, "Open Notepad."))
+    view = running(view, 1, "Open Notepad", ("Notepad",))
+    view = feed(view, CommandFinished(True, "Opened Notepad"), go("acting", "done"), talk("resumed", "done"))
+    view = reduce(view, go("done", "idle"))
+    assert view.state == "session" and view.visible and view.beneath == ""  # the pill never collapses between clauses
+    assert view.words == "Open Notepad"  # row 1 keeps his last words
+    stopped = feed(opened(), final(2, "Open Fusion."))
+    stopped = reduce(running(stopped, 2, "Open Fusion", ("Fusion",)), go("acting", "idle", "stopped"))
+    assert stopped.state == "session" and stopped.beneath == ""
+
+
+def test_done_inside_a_session_shows_the_result_under_the_words():
+    view = feed(opened(), final(1, "Open Notepad and then create a new note."), talk("paused", "running"),
+                go("idle", "thinking"), clause(1, "Open Notepad"))
+    assert (view.state, view.beneath, view.words) == ("session", "thinking", "Open Notepad")
+    view = feed(view, StepsChanged(("Notepad",)), go("thinking", "acting"))
+    assert view.beneath == "acting" and view.steps == ("Notepad",)
+    view = feed(view, CommandFinished(True, "Opened Notepad"), go("acting", "thinking"), clause(1, "create a new note", 1))
+    assert (view.beneath, view.steps, view.result, view.icon) == ("thinking", (), "", "")  # the next clause starts clean
+    assert view.words == "create a new note"
+    view = feed(view, StepsChanged(("Notepad", "new note"), 1), go("thinking", "acting"),
+                CommandFinished(True, "New note in Notepad"), go("acting", "done"), talk("resumed", "done"))
+    assert (view.state, view.beneath, view.icon, view.result) == ("session", "done", "ok", "New note in Notepad")
+    assert view.words == "create a new note" and view.accent == ACCENTS["listening"]  # still the session's blue pill
+    assert reduce(feed(opened(), go("idle", "thinking")), go("thinking", "done", "Opened it")).result == "Opened it"
+
+
+def test_live_words_roll_in_every_state_while_talking():
+    view = running(feed(opened(), final(1, "Open Fusion.")), 1, "Open Fusion", ("Fusion",))
+    view = reduce(view, partial(2, "snap it"))
+    assert view.words == "snap it" and not view.final  # acting, and his next words still roll in
+    view = reduce(view, partial(2, "snap it to the left"))
+    assert view.fresh == len("snap it")
+    view = reduce(view, final(2, "Snap it to the left."))
+    assert view.words == "Snap it to the left." and view.final
+    assert reduce(view, clause(1, "an older clause", 1)).words == "Snap it to the left."  # what he says now stays
+    assert reduce(view, partial(1, "late words")).words == "Snap it to the left."
+    asking = feed(view, Asking("confirm", "Close Fusion without saving?"), go("acting", "confirm"), partial(3, "yes close it"))
+    assert asking.state == "confirm" and asking.words == "yes close it"
+    heard = reduce(opened(), final(4, "Great, okay."))
+    assert heard.words == "Great, okay."
+    assert reduce(heard, small_talk(4, "Great, okay.")) == heard  # dropped small talk changes nothing on screen
+    assert reduce(heard, clause(4, "", accepted=False, via="stop")) == heard
+
+
+def test_closing_shrinks_and_closed_hides():
+    view = reduce(opened(), talk("closing", "idle"))
+    assert view.closing and view.state == "session"
+    view = reduce(view, talk("closed", "idle"))
+    assert view.state == "hidden" and not view.talk and not view.closing and not view.visible
+    assert view.beneath == "" and view.skipped == ""
+    pinned = reduce(opened(reduce(READY, PinToggled(1.0))), talk("closed", "Esc"))
+    assert pinned.state == "idle" and pinned.visible  # back to the pinned status pill
+    tapped = running(feed(opened(), final(1, "Open Fusion.")), 1, "Open Fusion", ("Fusion",))
+    tapped = reduce(tapped, talk("closed", "tap"))  # the running step goes on: its own face
+    assert tapped.state == "acting" and tapped.steps == ("Fusion",) and not tapped.talk
+    assert reduce(tapped, go("acting", "idle")).state == "hidden"
+    assert reduce(READY, talk("closing", "idle")) == READY  # no session: nothing to shrink
+
+
+def test_paused_cancels_the_shrink():
+    view = feed(opened(), talk("closing", "idle"), talk("paused", "running"))
+    assert not view.closing and view.state == "session"
+    view = feed(view, talk("resumed", "ignored"), talk("closing", "idle"))
+    assert view.closing
+    assert not reduce(view, talk("resumed", "name")).closing
+
+
+def test_skipped_clauses_show_under_the_error():
+    view = feed(opened(), final(1, "Open the notes app, then create a new note and make the title say hello."),
+                go("idle", "thinking"), clause(1, "open the notes app"), CommandFinished(False, "Couldn't find the notes app"),
+                go("thinking", "error"),
+                ClausesSkipped(("create a new note", "make the title say hello"), "the step before it didn't finish", 0.0),
+                talk("resumed", "done"))
+    assert (view.state, view.beneath, view.icon, view.result) == ("session", "error", "fail", "Couldn't find the notes app")
+    assert view.skipped == "Skipped: create a new note, make the title…"  # cut to fit
+    assert not view.expanded and view.buttons == () and view.accent == ACCENTS["listening"]
+    view = reduce(view, go("error", "idle"))
+    assert view.state == "session" and view.skipped  # still says what didn't run until the next command
+    assert reduce(view, small_talk(2, "great")).skipped
+    view = feed(view, go("idle", "thinking"), clause(3, "open chrome"))
+    assert view.skipped == ""
+    stopped = reduce(opened(), ClausesSkipped(("open x.com",), "stopped", 0.0))
+    assert stopped.skipped == "Skipped: open x.com" and stopped.beneath == ""
+    assert reduce(stopped, ClausesSkipped((), "stopped", 0.0)) == stopped
+
+
+def test_confirm_inside_a_session_still_expands():
+    view = running(feed(opened(), final(1, "Close Notepad.")), 1, "Close Notepad", ("Notepad",))
+    view = feed(view, Asking("confirm", "Close Notepad without saving?"), go("acting", "confirm"))
+    assert view.state == "confirm" and view.expanded and view.buttons == ("No", "Yes") and view.talk
+    assert view.question == "Close Notepad without saving?" and view.accent == ACCENTS["confirm"]
+    view = reduce(view, go("confirm", "acting"))
+    assert (view.state, view.beneath, view.steps) == ("session", "acting", ("Notepad",))  # the same command goes on
+    view = feed(view, CommandFinished(True, "Closed Notepad"), go("acting", "done"))
+    assert view.result == "Closed Notepad" and view.beneath == "done"
+    asked = feed(opened(), go("idle", "thinking"), Asking("clarify", "Which Chrome?", ("A", "B")), go("thinking", "clarify"))
+    assert asked.state == "clarify" and asked.choices == ("A", "B")
+    assert reduce(asked, go("clarify", "thinking")).question == "Which Chrome?"  # his answer goes back: same command
+
+
+def test_dictating_inside_a_session_then_back_to_the_pill():
+    view = feed(opened(), final(1, "Type this hello world."), talk("paused", "running"), go("idle", "thinking"),
+                clause(1, "type this hello world"), talk("paused", "dictating"), go("thinking", "dictating"))
+    assert view.state == "dictating" and view.accent == ACCENTS["dictating"] and view.placeholder == "Dictating…"
+    view = feed(view, final(2, "raw words"), DictatedText(2, "Hello world.", 0.0))
+    assert view.words == "Hello world."
+    view = feed(view, go("dictating", "idle", "tap"), talk("resumed", "done"))
+    assert (view.state, view.beneath, view.words) == ("session", "", "") and view.placeholder == "Listening…"
+    assert reduce(view, partial(1, "older words")).words == ""
+    assert reduce(view, partial(3, "open chrome")).words == "open chrome"
+
+
+def test_the_session_pill_takes_clicks():
+    view = opened()
+    assert view.interactive and view.buttons == ()  # the stop button
+    assert view.interactive == reduce(view, go("idle", "thinking")).interactive
+    assert not reduce(view, talk("closed", "stop button")).interactive
+
+
+def test_warming_inside_a_session_keeps_his_words():
+    view = feed(opened(), final(1, "make this bigger"), go("idle", "thinking"), clause(1, "make this bigger"),
+                BrainProgress("warming", WARMING))
+    assert view.warming and view.words == "make this bigger" and view.beneath == "thinking"
+    view = reduce(view, BrainProgress("thinking"))
+    assert not view.warming and view.words == "make this bigger"
+    closed = feed(opened(), go("idle", "thinking"), clause(2, "make it red"), BrainProgress("warming", WARMING),
+                  talk("closed", "tap"))
+    assert closed.state == "thinking" and closed.words == WARMING  # its own face again: says why it waits
+
+
+def test_a_command_that_opens_the_session_keeps_its_words():
+    view = feed(READY, final(1, "Nova, open Chrome."), talk("opened", "named"), go("idle", "thinking", "wake"),
+                gated(1, "open chrome"))
+    assert (view.state, view.beneath, view.words) == ("session", "thinking", "open chrome")
+    late = feed(READY, go("idle", "thinking", "wake"), gated(1, "open chrome"), talk("opened", "named"))
+    assert (late.state, late.beneath, late.words) == ("session", "thinking", "open chrome")  # either order

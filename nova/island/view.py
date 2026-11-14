@@ -16,6 +16,7 @@ from ..events import (
     AlwaysListeningChanged,
     Asking,
     BrainProgress,
+    ClausesSkipped,
     CommandFinished,
     ConfigChanged,
     DictatedText,
@@ -29,6 +30,7 @@ from ..events import (
     SpeechReady,
     StateChanged,
     StepsChanged,
+    TalkChanged,
 )
 
 # Machine state -> island state. Idle hides it, or shows the pinned status pill ("idle"); Off hides it.
@@ -48,12 +50,19 @@ ACCENTS = {  # one accent per state (iOS dark-mode system colours)
     "dictating": "#FF9F0A",  # orange
     "done": "#30D158",  # green
     "passthrough": "#BF5AF2",  # another app has the mic
+    "session": "#0A84FF",  # a talk session is open: the mic stays open between commands
 }
 EXPANDED = frozenset({"confirm", "clarify", "error"})
 BUTTONS = {"confirm": ("No", "Yes"), "error": ("Try again", "Show me")}
 TEACHING_NOTE = "Recording — do it, narrate if you like, say “done”"
 PASSTHROUGH_END = "tap Copilot to end"
 MAX_CHOICES = 4
+# Talk sessions (Stage 07b). The machine has no "session" state: while a talk is open, these machine states
+# show as the one session pill (so it never collapses between clauses); confirm, clarify and dictating keep
+# their own faces and the pill comes back after them.
+IN_SESSION = frozenset({"idle", "listening", "thinking", "acting", "done", "error"})
+BENEATH = frozenset({"thinking", "acting", "done", "error"})  # what the pill's second row shows
+MAX_SKIPPED = 44  # chars of "Skipped: …" (the pill is ~420 px wide and the failed step's result sits beside it)
 
 
 @dataclass(frozen=True)
@@ -88,6 +97,11 @@ class View:
     off: bool = False  # Nova is off: hidden even when pinned
     warming: bool = False  # thinking, but the local model is cold and loading first: "Warming up…" instead of words
     under: str = ""  # while warming: his command, shown again once the model is loaded
+    machine: str = "idle"  # the state machine's own state (the island's differs while a talk is open)
+    talk: bool = False  # a talk session is open (SPEC §5)
+    closing: bool = False  # its idle close is under 5 s away: the pill shrinks
+    beneath: str = ""  # the session pill's second row: thinking | acting | done | error | "" (none)
+    skipped: str = ""  # "Skipped: a, b…": what a stopped session queue won't run (until the next command)
 
     @property
     def accent(self) -> str:
@@ -115,7 +129,7 @@ class View:
         """Something to click or drag: buttons, choices, chips, the pinned pill (otherwise clicks go through)."""
         return (
             bool(self.buttons) or (self.state == "clarify" and bool(self.choices)) or bool(self.chips)
-            or (self.pinned and self.open)
+            or (self.pinned and self.open) or self.state == "session"  # the session pill's stop button
         )
 
     @property
@@ -180,6 +194,11 @@ def _resting(view: View) -> str:
 def _state(view: View, event: StateChanged) -> View:
     if (event.new == "off") != view.off:
         view = replace(view, off=event.new == "off")
+    before = view.machine
+    if event.new != before:
+        view = replace(view, machine=event.new)
+    if view.talk and event.new in IN_SESSION:
+        return _in_session(view, event.new, event.why, before)
     new = event.new if event.new in _SHOWN else _resting(view)
     if new == view.state:
         return view
@@ -206,15 +225,108 @@ def _state(view: View, event: StateChanged) -> View:
     return replace(view, state=new)
 
 
+# --- talk sessions ------------------------------------------------------------------------------------------
+
+
+def _in_session(view: View, new: str, why: str, before: str) -> View:
+    """The machine moved while a talk is open: the same pill stays, only its second row changes.
+
+    Row 1 (his words) is never cleared here: they keep rolling, and the final that started a clause
+    arrives before the move to thinking."""
+    if new != "thinking" and view.warming:
+        view = replace(view, warming=False, under="")
+    if new == "thinking" and before not in ("thinking", "confirm", "clarify"):
+        # the next clause: its own steps and result (an answer to a question goes back to the same command)
+        view = replace(view, steps=(), step=0, result="", icon="", question="", choices=())
+    elif new == "done":
+        view = replace(view, result=view.result or why, icon=view.icon if view.icon in ("ok", "skill") else "ok")
+    elif new == "error":
+        view = replace(view, result=view.result or why, icon="fail")
+    if view.state == "dictating":  # back from dictation: what was typed isn't something he said to Nova
+        view = replace(view, words="", final=False, fresh=0, windowed=False)
+    return replace(view, state="session", beneath=new if new in BENEATH else "")
+
+
+def _talk(view: View, event: TalkChanged) -> View:
+    if event.what == "opened":
+        return _opened(view)
+    if not view.talk:
+        return view
+    if event.what == "closing":
+        return replace(view, closing=True)
+    if event.what in ("paused", "resumed"):  # something happened: the clock stopped or starts again from full
+        return replace(view, closing=False)
+    if event.what == "closed":
+        return _closed(view)
+    return view
+
+
+def _opened(view: View) -> View:
+    view = replace(view, talk=True, closing=False, skipped="", beneath="")
+    if view.machine not in ("thinking", "acting"):  # "Nova, <command>": keep the command that opened it
+        view = _session(view)  # fresh words for the session
+    if view.off or view.machine not in IN_SESSION:
+        return view  # confirm / clarify / dictating keep their face; the pill comes after
+    return replace(view, state="session", beneath=view.machine if view.machine in BENEATH else "")
+
+
+def _closed(view: View) -> View:
+    view = replace(view, talk=False, closing=False, beneath="", skipped="")
+    if view.state != "session":
+        return view
+    shown = view.machine if view.machine in _SHOWN else _resting(view)
+    view = replace(view, state=shown)  # a step still running (tap close) shows its own face
+    return _warming(view) if shown == "thinking" and view.warming else view
+
+
+def _skipped(view: View, event: ClausesSkipped) -> View:
+    if not event.texts:
+        return view
+    return replace(view, skipped=cut("Skipped: " + ", ".join(event.texts), MAX_SKIPPED))
+
+
+def cut(text: str, limit: int) -> str:
+    """``text`` in at most ``limit`` chars, cut at a word with "…" (QML elides further if it must)."""
+    if len(text) <= limit:
+        return text
+    head = text[: limit - 1]
+    if " " in head:
+        head = head.rsplit(" ", 1)[0]
+    return head.rstrip(" ,") + "…"
+
+
+def _older(view: View, utterance: int) -> bool:
+    return view.utterance is not None and utterance < view.utterance
+
+
+def _talk_gated(view: View, event: Gated) -> View:
+    """Inside a talk only an accepted clause shows (small talk and "stop" change nothing)."""
+    if not event.accepted or event.wake_only:
+        return view
+    if view.skipped:
+        view = replace(view, skipped="")  # the next command: what was skipped is old news
+    if view.state == "dictating" or not event.text or _older(view, event.utterance):
+        return view
+    return _words(view, event.text, event.utterance, final=True)  # warming doesn't hide it: row 2 says so
+
+
 def reduce(view: View, event: object) -> View:
     if isinstance(event, StateChanged):
         return _state(view, event)
     state = view.state
-    if isinstance(event, PartialTranscript):
-        if state in ("listening", "dictating") and (view.utterance is None or event.utterance >= view.utterance):
+    if isinstance(event, TalkChanged):
+        return _talk(view, event)
+    if isinstance(event, ClausesSkipped):
+        return _skipped(view, event)
+    if isinstance(event, PartialTranscript):  # a talk keeps the mic open: his words roll in whatever Nova does
+        if (state in ("listening", "dictating") or view.talk) and not _older(view, event.utterance):
             return _words(view, event.text, event.utterance, final=False, windowed=event.windowed)
         return view
     if isinstance(event, FinalTranscript):
+        if view.talk:
+            if state != "dictating" and event.text and not _older(view, event.utterance):
+                return _words(view, event.text, event.utterance, final=True)
+            return view
         mine = view.utterance is None or event.utterance == view.utterance
         newer = view.utterance is not None and event.utterance > view.utterance and state == "listening"
         if state in ("listening", "thinking") and (mine or newer) and event.text and not view.warming:
@@ -231,6 +343,8 @@ def reduce(view: View, event: object) -> View:
             return _words(view, shown, utterance, final=True)
         return view
     if isinstance(event, Gated):
+        if view.talk:
+            return _talk_gated(view, event)
         if state == "listening" and event.wake_only:
             return replace(view, words="", final=False, fresh=0, windowed=False, utterance=None)
         if state == "thinking" and event.accepted and not event.wake_only and event.text:
