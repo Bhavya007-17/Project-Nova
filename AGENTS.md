@@ -17,7 +17,10 @@ Nova says when they're done. It started as Bhavya's personal project and is now 
 | Stage | | State |
 |---|---|---|
 | 00–06 | skeleton + doctor, ears (STT), triggers, island, Windows hands + Tier 0, local brain (Tier 1), Chrome + Canvas | done |
-| 07 | dictation | done, except the LLM misheard-word fix (`nova/dictation/cleanup.py`): built and unit-tested, not working live yet |
+| 07 | dictation | done, except the LLM misheard-word fix (`nova/dictation/cleanup.py`): built and unit-tested, not working live yet (07a finishes it) |
+| 07a | fast + hearing (model never times out, ~1 s loose requests, gate fixes) | not started |
+| 07b | talk sessions (open the mic once, act clause by clause) | not started |
+| 07c | control anything (scroll cascade, PDFs, click by name / number / grid, camera, screenshot) | not started |
 | 08 | teach + learn ("Show me?", learned skills ⚡) | not started — island UI states exist |
 | 09 | handoff to Claude / ChatGPT + done notifications | not started — island chips exist; router has a stub |
 | 10 | safety + polish (risk audit, settings panel, start with Windows) | not started |

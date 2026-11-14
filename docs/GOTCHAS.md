@@ -19,12 +19,17 @@ memories aren't shared, this file is.
   `IsPassword` false; later ones say Edit + `IsPassword` true. Nova re-asks after 150 ms and treats unclear focus as
   unknown → asks before typing. Don't query UIA on every command (it turns Chrome's accessibility tree on): only before
   typing.
+- **Synthesized Win+L does nothing** (Windows blocks it): lock with `LockWorkStation`. Print Screen isn't in Nova's
+  key table yet.
 - **Mic-in-use detection:** the registry `ConsentStore\microphone` timestamps stopped updating on Windows 11 25H2. Use
   WASAPI capture sessions (`IAudioSessionManager2`, state Active + another pid) — see `nova/detect.py`.
 
 ## Audio and speech-to-text
 - **Parakeet TDT 0.6B v3 int8 sometimes returns `""` for clear speech.** Re-decoding with 0.3 s of silence padded on
   both sides recovers ~70 %; `nova/stt/parakeet.py` retries once.
+- **Parakeet invents "Yeah." on tiny clips.** 12.6 % of a week's finals were a bare "yeah / okay / yes", and a Copilot
+  key release often starts a new ~200 ms utterance. One answered a Confirm 262 ms after it appeared. Never take a
+  yes from an utterance that began before the question or is shorter than ~400 ms.
 - **Name mishearings are normal:** "Chrome" → "foam"/"home", "Claude" → "Claire", "close the tab" → "clothes the stab".
   Tier 0 offers sound-alikes only for names in `config/aliases.yaml` and *asks* in keyed sessions; always-listening
   stays strict and ignores them. Never "fix" this with phrase lists.
@@ -58,6 +63,12 @@ memories aren't shared, this file is.
 - qwen3.5's Modelfile sets `presence_penalty 1.5` / `repeat_penalty 1.1` even at temp 0; Nova overrides them
   (`nova/brain/llm.py`). Compact few-shot JSON keeps grammar decoding at full speed.
 - Ollama ignores the Intel Arc iGPU unless `OLLAMA_IGPU_ENABLE=1`. Re-run `nova bench-llm` after any Ollama upgrade.
+- **A cold load outlasts the request timeout** (2026-11-11: qwen3.5:4b on the RTX loaded in 15.1 s; `llm.timeout_s` is 8).
+  Dropping the request also drops the load, so the retry starts from zero and `nova say` never warms itself.
+- **Two callers with different `num_ctx` make Ollama reload the model on every switch** (planner 4096 vs cleanup 2048:
+  10–27 s each time in `nova.log`). One set of load options per model.
+- **Warm Tier 1 is 1.8–3.2 s in-process** (2026-11-11, GPU): `load_ms` ≈ 800 on every call, cached prefix 90–440 ms,
+  and schema-constrained JSON at only 15–20 tokens/s (34 tokens = 1.6 s). Live traces: p50 1.4 s, p90 8.0 s (timeouts).
 
 ## Chrome extension
 - **Branded Chrome 137+ ignores `--load-extension`**: loading `extension/` unpacked is a one-time manual step.
@@ -66,6 +77,10 @@ memories aren't shared, this file is.
 - CfT reads native hosts from `HKCU\Software\Google\Chrome for Testing\NativeMessagingHosts`:
   `nova chrome --install --browser testing`. `extension/test/selftest.py` does all of this; quit the tray app first
   (it owns the pipe). Extend the self-test instead of asking a human to load things.
+
+- **Chrome's built-in PDF viewer can't be scripted.** The content script finds nothing scrollable and reports
+  `ok: true, moved: false`, which Nova reads as "Already at the bottom" (from the code, 2026-11-11 — not yet reproduced
+  live). Send real keys or the wheel to the focused PDF instead.
 
 ## Dictation
 - A RichEdit (what Notepad is built on) silently ignores Ctrl+V when the clipboard holds only `"\r\n\r\n"`: hold

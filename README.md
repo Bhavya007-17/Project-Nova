@@ -200,6 +200,9 @@ Island: key press → first frame 10–19 ms. Idle: ~2 % of one core.
 | 05 | Local brain (Tier 1 LLM, asks when unsure) | ✅ |
 | 06 | Chrome extension + Canvas | ✅ |
 | 07 | Dictation | ✅ — *except the AI misheard-word fix* |
+| 07a | Fast + hearing: reacts every time, loose requests in about a second | ⏳ |
+| 07b | Talk sessions: open the mic once, talk naturally, each clause acts | ⏳ |
+| 07c | Control anything: scroll PDFs, click by name or number, camera, screenshot | ⏳ |
 | 08 | Teach + learn: "Show me?", auto-learned shortcuts ⚡ | ⏳ |
 | 09 | Handoff to the Claude / ChatGPT apps, voice mode, done notifications | ⏳ |
 | 10 | Safety + polish: central risk audit, settings panel, start with Windows, crash watchdog | ⏳ |

@@ -20,13 +20,18 @@
 | 05-local-brain.md | Local brain | Loose phrasing understood locally; asks when unsure |
 | 06-chrome-canvas.md | Chrome + Canvas | Exact on-page clicks, "my assignment for today" |
 | 07-dictation.md | Dictation | Clean text at the cursor, Google Docs |
+| 07a-fast-hearing.md | Fast + hearing | Reacts every time; loose requests in ~1 s, never "took too long" |
+| 07b-sessions.md | Talk sessions | Open the mic once, talk naturally, each clause acts |
+| 07c-control-anything.md | Control anything | Scroll PDFs, click by name or number, grid, camera, screenshot, folders |
 | 08-teach-learn.md | Teach + learn | "Show me?" and auto-learned shortcuts |
 | 09-handoff.md | Handoff | Claude/ChatGPT apps, voice mode, done notifications |
 | 10-safety-polish.md | Safety + polish | Confirmations, settings, start with Windows |
 | 11-speed-soak.md | Speed + soak | Budgets met, stable all day |
 | 12-optional.md | Optional | Todoist/Notion/Calendar hooks, MCP server |
 
-First useful version: after 05. Daily driver: after 09.
+First useful version: after 05. Hands-free: after 07c. Daily driver: after 09.
+
+07a–07c were added on 2026-11-11 after a week of real use (what the logs showed is at the top of each file). Each lands on its own branch and pull request, with its live demo done before the next one starts.
 
 ## One manual step later
 Stage 06 asks you to load the Chrome extension once: chrome://extensions → Developer mode → Load unpacked → `C:\dev\nova\extension`.
