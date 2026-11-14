@@ -20,7 +20,7 @@ import threading
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 from .bus import Bus
 from .config import Settings
@@ -46,7 +46,7 @@ from .events import (
     SpeechStarted,
     StateChanged,
 )
-from .gate import Env, StubResolver, WakeName, strip_wake
+from .gate import Decision, Env, NoResolver, Resolver, WakeName, strip_wake
 from .keys import Cancel, Gestures, TriggerEvent, TriggerKeys, parse_chord
 from .log import TraceLog
 from .state import (
@@ -56,6 +56,7 @@ from .state import (
     Dictated,
     Dictation,
     Done,
+    Dropped,
     DropUtterance,
     EndUtterance,
     Heard,
@@ -65,6 +66,7 @@ from .state import (
     Power,
     Preload,
     Progress,
+    Queued,
     Sleep,
     SpeechEnd,
     SpeechStart,
@@ -72,6 +74,7 @@ from .state import (
     Tick,
     Transition,
     WakeHeard,
+    Warming,
     Woke,
     next_deadline,
     outputs,
@@ -100,13 +103,8 @@ class Detector(Protocol):
 
 
 @dataclass(frozen=True)
-class _Names:
-    names: tuple[str, ...]
-
-
-@dataclass(frozen=True)
 class _Resolver:
-    resolver: object
+    resolver: Resolver
 
 
 _STOP = object()
@@ -134,8 +132,10 @@ class Triggers:
         detector: Callable[[], Detector] | None = _audio_detector,
         trace: TraceLog | None = None,
         clock: Callable[[], float] = time.perf_counter,
-        names: Iterable[str] = (),
+        running: Callable[[], Iterable[str]] | None = None,
     ) -> None:
+        """``running``: the apps running now (a ~1 ms snapshot), taken here for each final and handed to the
+        resolver, so the gate stays pure."""
         self._bus = bus
         self._speech = speech
         self._keys = keys
@@ -146,7 +146,9 @@ class Triggers:
         self._queue: queue.SimpleQueue[object] = queue.SimpleQueue()
         self._machine = Machine()
         self._gestures = Gestures()
-        self._resolver = StubResolver(names)
+        self._resolver: Resolver = NoResolver()  # until the app catalog is read
+        self._running = running
+        self._running_failed = False
         self._settings = settings
         self._always = settings.triggers.always_listening
         self._wake = WakeName.of(settings.wake_name)
@@ -157,7 +159,10 @@ class Triggers:
         self._peaks: dict[int, list[float]] = {}
         self._recording: dict[int, list[str]] = {}
         self._wake_seen: list[int] = []
-        self._unsubscribe = [bus.subscribe(kind, self._queue.put) for kind in _SUBSCRIBED]
+        self._note: CommandFinished | None = None  # the last island note published from here
+        self._unsubscribe = [
+            bus.subscribe(kind, self._finished if kind is CommandFinished else self._queue.put) for kind in _SUBSCRIBED
+        ]
         self._thread = threading.Thread(target=self._run, name="nova-triggers", daemon=True)
 
     # --- any thread ------------------------------------------------------------------------------
@@ -176,12 +181,8 @@ class Triggers:
         """From inside the hook callback: hand over only."""
         self._queue.put(event)
 
-    def set_names(self, names: Iterable[str]) -> None:
-        """Known app names (Start menu) for the always-listening stub resolver."""
-        self._queue.put(_Names(tuple(names)))
-
-    def set_resolver(self, resolver: object) -> None:
-        """The always-listening resolver (Stage 04: strict Tier 0 against the app catalog)."""
+    def set_resolver(self, resolver: Resolver) -> None:
+        """The always-listening resolver: strict Tier 0 against the app catalog."""
         self._queue.put(_Resolver(resolver))
 
     @property
@@ -266,15 +267,15 @@ class Triggers:
             self._feed(Done(item.ok, now, item.detail, item.hold), now)
         elif isinstance(item, BrainProgress):
             state = _STATES.get(item.state)
-            if state is None:
+            if item.state == "warming":  # a signal, not a state: the command waits for the model to load
+                self._feed(Warming(now), now)
+            elif state is None:
                 _log.warning("brain asked for an unknown state %r", item.state)
             else:
                 self._feed(Progress(state, now, item.why), now)
         elif isinstance(item, IslandAction):
             if item.what == "no" and outputs(self._machine).asking:
                 self._feed(Cancel(now, "No"), now)  # the island's No = Esc; Yes / a choice is the brain's
-        elif isinstance(item, _Names):
-            self._resolver = self._resolver.with_names(item.names)
         elif isinstance(item, _Resolver):
             self._resolver = item.resolver
         elif isinstance(item, SleepRequested):
@@ -348,9 +349,23 @@ class Triggers:
         peaks = self._peaks.pop(utterance, [])
         recording = sorted(set(self._recording.pop(utterance, [])))
         return Env(
-            self._wake, self._always, self._resolver,
+            self._wake, self._always, self._seen(),
             mic_busy=", ".join(recording) or None, speakers=speakers_playing(peaks),
         )
+
+    def _seen(self) -> Resolver:
+        """The resolver with a snapshot of the apps running now (when it can use one)."""
+        seeing = getattr(self._resolver, "seeing", None)
+        if self._running is None or seeing is None:
+            return self._resolver
+        try:
+            running = frozenset(self._running())
+        except Exception:  # noqa: BLE001 - the gate still works, just without knowing what is open
+            if not self._running_failed:
+                self._running_failed = True
+                _log.warning("running apps unavailable: always-listening resolves without them", exc_info=True)
+            running = frozenset()
+        return seeing(running)
 
     def _feed(self, event: object, now: float) -> None:
         before = outputs(self._machine)
@@ -383,6 +398,13 @@ class Triggers:
             bus.publish(PreloadHint(effect.reason, now))
         elif isinstance(effect, (Command, Ignored, Woke)):
             self._gated(effect, now)
+        elif isinstance(effect, Queued):  # logged now; the brain and the island hear of it when its turn comes
+            self._trace_gate(effect.utterance, effect.decision, queued=True)
+        elif isinstance(effect, Dropped):
+            self._trace_gate(effect.utterance, effect.decision, accepted=False, via="dropped", why=effect.why)
+            if effect.stale:
+                self._note = CommandFinished(False, f"Skipped “{_cut(effect.decision.text)}” — it waited too long")
+                bus.publish(self._note)  # the island's result line (not a result of the running command)
         elif isinstance(effect, Answer):
             bus.publish(AnswerHeard(effect.utterance, effect.text, now))
         elif isinstance(effect, Dictated):
@@ -396,12 +418,38 @@ class Triggers:
 
     def _gated(self, effect: Command | Ignored | Woke, now: float) -> None:
         d = effect.decision
-        if self._trace is not None:
-            self._trace.write(
-                kind="gate", utterance=effect.utterance, accepted=d.accepted, via=d.via, why=d.why,
-                safe_only=d.safe_only, text=d.heard,
-            )
+        if not (isinstance(effect, Command) and effect.waited is not None):  # a queued one was logged when accepted
+            self._trace_gate(effect.utterance, d)
         self._bus.publish(Gated(effect.utterance, d.accepted, d.via, d.text, d.heard, d.why, d.safe_only, d.wake_only, now))
+
+    def _trace_gate(self, utterance: int, d: Decision, **changes: object) -> None:
+        if self._trace is not None:
+            record = {"accepted": d.accepted, "via": d.via, "why": d.why, "safe_only": d.safe_only, "text": d.heard}
+            self._trace.write(kind="gate", utterance=utterance, **{**record, **changes})
+
+    def _finished(self, event: CommandFinished) -> None:
+        """From the bus: the brain's results go to the state machine; the controller's own island notes don't."""
+        if event is not self._note:
+            self._queue.put(event)
+
+
+def _cut(text: str, limit: int = 32) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def running_now(catalogs: Any) -> Callable[[], frozenset[str]]:
+    """The running-apps provider for ``Triggers`` (0.4-0.9 ms a call after the first): the catalog names of the
+    open top-level windows. ``catalogs``: anything with ``current() -> Catalog``."""
+    from .actions import native  # imported now, not on the first final
+    from .actions.context import snapshot
+    from .brain.router import running_apps
+
+    def running() -> frozenset[str]:
+        native.com_init()  # once per thread
+        return running_apps(snapshot(catalogs.current()))
+
+    return running
 
 
 def stub_brain(bus: Bus) -> Callable[[], None]:

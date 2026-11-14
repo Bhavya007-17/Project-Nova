@@ -24,6 +24,10 @@ _log = logging.getLogger(__name__)
 
 GB = 1024**3
 REUSE_S = 120.0  # a choice this fresh is reused as-is
+# GPU = every layer on the GPU (Ollama passes num_gpu to llama-server as -ngl). Left to itself, Ollama 0.30's
+# llama-server fit reserved ~5.3 GB for qwen3.5's vision projector and put 0 of 33 layers on an RTX with 6.9 GB
+# free (2026-11-11, Fusion open): the "GPU" model ran on the CPU at 11-14 tokens/s. ``decide`` already checked room.
+ALL_LAYERS = 99
 _OVERHEAD_GB = 0.4  # KV cache (num_ctx 4096) + compute buffers on top of the weights
 
 
@@ -35,8 +39,8 @@ class Choice:
 
     @property
     def options(self) -> dict[str, Any]:
-        """Ollama runner options: CPU = no layers on the GPU."""
-        return {"num_gpu": 0} if self.device == "cpu" else {}
+        """Ollama runner options: CPU = no layers on the GPU, GPU = all of them."""
+        return {"num_gpu": 0 if self.device == "cpu" else ALL_LAYERS}
 
 
 def decide(llm: Llm, *, free_gb: float | None, need_gb: float, resident: bool = False) -> Choice:

@@ -324,10 +324,12 @@ def test_audio_device_must_be_text():
 # --- Stage 02: wake spellings, saving one value from the tray ---------------------------------------
 
 
-def test_wake_spellings_default_empty_and_parse_a_list():
-    assert Settings().wake_spellings == ()
+def test_wake_spellings_default_to_the_logged_mishearings_and_parse_a_list():
+    assert Settings().wake_spellings == ("no va", "noba", "noma")
+    assert load_text(DEFAULT_YAML).wake_spellings == Settings().wake_spellings  # the written file says the same
     assert load_text("wake_spellings: [Novah, no va]\n").wake_spellings == ("Novah", "no va")
     assert load_text("wake_spellings:\n  - Novah\n").wake_spellings == ("Novah",)
+    assert load_text("wake_spellings: []\n").wake_spellings == ()  # he can still turn them off
 
 
 @pytest.mark.parametrize(

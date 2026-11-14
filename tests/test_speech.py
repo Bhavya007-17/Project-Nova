@@ -58,10 +58,12 @@ class FakeStt:
     def __init__(self, partial_s=0.0, final_s=0.0):
         self.delays = {"nova-stt-partial": partial_s, "nova-stt-final": final_s}
         self.calls = []
+        self.retries = []
 
-    def transcribe(self, pcm):
+    def transcribe(self, pcm, *, retry_empty=True):
         lane = threading.current_thread().name
         self.calls.append((lane, len(pcm)))
+        self.retries.append((lane, retry_empty))
         time.sleep(self.delays.get(lane, 0.0))
         return f"{len(pcm) // FRAME} frames"
 
@@ -199,6 +201,32 @@ def test_key_release_ends_at_once(make):
     assert final.reason == "key"
 
 
+def test_words_trailing_after_a_key_release_start_nothing(make):
+    h = make(FakeStt())
+    h.source.feed(silence_ms=300)
+    h.source.feed(speech_ms=800)
+    h.next(SpeechStarted)
+    h.worker.end_now()
+    assert h.next(SpeechEnded).reason == "key"
+    h.source.feed(speech_ms=200, silence_ms=400)  # he let go mid-word
+    assert not [e for e in h.collect(0.4) if isinstance(e, SpeechStarted)]
+    h.source.feed(speech_ms=500, silence_ms=400)  # after the quiet, speech counts again
+    assert h.next(SpeechStarted).utterance == 2
+
+
+def test_a_second_press_right_after_a_release_is_heard(make):
+    h = make(FakeStt())
+    h.source.feed(silence_ms=300)
+    h.source.feed(speech_ms=800)
+    h.next(SpeechStarted)
+    h.worker.end_now()
+    assert h.next(SpeechEnded).reason == "key"
+    h.worker.set_held(True)
+    time.sleep(0.05)
+    h.source.feed(speech_ms=400)
+    assert h.next(SpeechStarted).utterance == 2
+
+
 def test_worker_survives_an_internal_error(make, monkeypatch):
     h = make(FakeStt())
     calls = {"n": 0}
@@ -304,3 +332,15 @@ def test_no_pause_candidates_for_commands(make):
     events = [*h.collect(0.5)]
     assert any(isinstance(e, FinalTranscript) for e in events)
     assert not any(isinstance(e, PauseCandidate) for e in events)
+
+
+def test_the_padded_retry_is_for_finals_only(make):
+    """A live-word decode that comes back empty is not worth a second, padded decode (it doubled p95: 800 ms live vs
+    339 ms in the bench); the final is."""
+    stt = FakeStt()
+    h = make(stt)
+    h.source.feed(silence_ms=500)
+    h.source.feed(speech_ms=1500, silence_ms=600)
+    h.next(FinalTranscript)
+    assert {lane for lane, _ in stt.retries} == {"nova-stt-partial", "nova-stt-final"}
+    assert all(retry == (lane == "nova-stt-final") for lane, retry in stt.retries)

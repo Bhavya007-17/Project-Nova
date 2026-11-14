@@ -74,6 +74,7 @@ class Llm:
     gpu_model: str = "qwen3.5:4b"
     cpu_model: str = "qwen3.5:2b-q4_K_M"
     device: str = "auto"  # auto | gpu | cpu
+    runtime: str = "auto"  # auto | ollama | llama-server (auto: llama-server, Ollama when it can't run)
     keep_alive: str = "10m"  # unload after this long unused
     headroom_gb: float = 1.0  # the GPU needs the model + this much free VRAM, else the CPU model runs
     timeout_s: float = 8.0
@@ -83,7 +84,8 @@ class Llm:
 @dataclass(frozen=True)
 class Settings:
     wake_name: str = "Nova"
-    wake_spellings: tuple[str, ...] = ()  # other ways speech-to-text writes the name
+    # Other ways speech-to-text writes the name. These three are what a week of logs held for "Nova".
+    wake_spellings: tuple[str, ...] = ("no va", "noba", "noma")
     chord: str = "ctrl+alt+n"
     triggers: Triggers = field(default_factory=Triggers)
     audio: Audio = field(default_factory=Audio)
@@ -99,8 +101,8 @@ DEFAULT_YAML = """\
 
 # Say this name to talk to Nova ("Nova, open Chrome").
 wake_name: Nova
-# Other ways speech-to-text writes the name, if Nova misses it, e.g. [Novah, no va].
-wake_spellings: []
+# Other ways speech-to-text writes the name (these were seen for "Nova"; change them with the name).
+wake_spellings: [no va, noba, noma]
 
 # Fallback chord: same hold / tap behaviour as the Copilot key.
 chord: ctrl+alt+n
@@ -126,6 +128,8 @@ llm:
   gpu_model: qwen3.5:4b          # on the RTX when it has room
   cpu_model: qwen3.5:2b-q4_K_M   # when the GPU is busy (Fusion) or device is cpu
   device: auto             # auto | gpu | cpu
+  runtime: auto            # auto | ollama | llama-server. auto = the llama-server that comes with Ollama
+                           # (about 0.3 s faster per request); Ollama itself when that can't start
   keep_alive: 10m          # unload the model after this long unused
   headroom_gb: 1.0         # GPU only if the model + this much VRAM is free
   timeout_s: 8.0
@@ -300,6 +304,8 @@ def _check_llm(llm: Llm) -> None:
             raise ConfigError(f"llm.{key}: {name} is a cloud model (runs off this laptop); use a local one")
     if llm.device not in ("auto", "gpu", "cpu"):
         raise ConfigError(f"llm.device must be auto, gpu or cpu, not {llm.device!r}")
+    if llm.runtime not in ("auto", "ollama", "llama-server"):
+        raise ConfigError(f"llm.runtime must be auto, ollama or llama-server, not {llm.runtime!r}")
     if not llm.keep_alive or not _DURATION.fullmatch(llm.keep_alive):
         raise ConfigError(f"llm.keep_alive must look like 10m, 30s, 1h or 0, not {llm.keep_alive!r}")
     if llm.headroom_gb < 0:

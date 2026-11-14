@@ -306,7 +306,7 @@ def _start_gate(bus: Bus, worker: SpeechWorker, settings, trace: TraceLog, scree
     from .keys import TriggerKeys, parse_chord
     from .actions.catalog import CatalogStore
     from .brain.tier0 import Tier0Resolver
-    from .triggers import Triggers, stub_brain
+    from .triggers import Triggers, running_now, stub_brain
 
     for kind, handler in (
         (Gated, view.gated), (StateChanged, view.state), (PreloadHint, view.preload),
@@ -314,8 +314,9 @@ def _start_gate(bus: Bus, worker: SpeechWorker, settings, trace: TraceLog, scree
     ):
         bus.subscribe(kind, handler)
     stub_brain(bus)
+    catalogs = CatalogStore(paths.CATALOG_CACHE, paths.ALIASES)
     trigger_keys = TriggerKeys() if keys else None
-    triggers = Triggers(bus, worker, settings, keys=trigger_keys, trace=trace)
+    triggers = Triggers(bus, worker, settings, keys=trigger_keys, trace=trace, running=running_now(catalogs))
     t = settings.triggers
     onoff = {True: "on", False: "off"}
     screen.line(
@@ -334,7 +335,6 @@ def _start_gate(bus: Bus, worker: SpeechWorker, settings, trace: TraceLog, scree
         triggers.set_resolver(Tier0Resolver(catalog))
         screen.line(_dim_status(screen._vt, f"[{len(catalog.apps)} Start-menu apps known to always-listening]"))
 
-    catalogs = CatalogStore(paths.CATALOG_CACHE, paths.ALIASES)
     catalogs.subscribe(catalog_loaded)
     catalogs.start()
     triggers.start()

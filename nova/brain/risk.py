@@ -68,7 +68,7 @@ class Scene:
     password: bool = False  # the focused control is a password field
     locked: bool = False
     windows: int = 0  # close_app: how many windows the app has open
-    focus_known: bool = True  # type_text: UI Automation said what the focused control is
+    focus_known: bool = True  # type_text / keys that enter text: UI Automation said what the focused control is
 
 
 @dataclass(frozen=True)
@@ -133,6 +133,40 @@ def sensitive_number(text: str) -> bool:
     return bool(_BANKING.search(text) and _LONG_NUMBER.search(text))
 
 
+_KEY_MODIFIERS = frozenset({"ctrl", "shift", "alt", "win"})
+_PASTES = {"v": ({"ctrl"}, {"ctrl", "shift"}, {"win"}), "insert": ({"shift"},)}  # Win+V: the clipboard history
+_CHARACTER_MODIFIERS = (frozenset(), {"shift"}, {"ctrl", "alt"}, {"ctrl", "alt", "shift"})  # Ctrl+Alt = AltGr
+
+
+def _chord(keys: str) -> tuple[frozenset[str], str] | None:
+    """(modifiers, key) of "ctrl+shift+v", in any order; None unless there is exactly one other key."""
+    parts = [part.strip() for part in keys.lower().split("+") if part.strip()]
+    rest = [part for part in parts if part not in _KEY_MODIFIERS]
+    return (frozenset(parts) & _KEY_MODIFIERS, rest[0]) if len(rest) == 1 else None
+
+
+def pastes(keys: str) -> bool:
+    chord = _chord(keys)
+    return chord is not None and chord[0] in _PASTES.get(chord[1], ())
+
+
+def enters_text(keys: str) -> bool:
+    """Does this chord put characters into the focused field: a paste, or a character key on its own / with
+    Shift / with AltGr? (Enter, Tab, Backspace, arrows and shortcuts like Ctrl+T enter nothing.) A chord with more
+    than one key besides the modifiers can't be judged ("ctrl+v+v" pastes): it counts as entering text."""
+    chord = _chord(keys)
+    if chord is None:
+        parts = [part.strip() for part in keys.lower().split("+") if part.strip()]
+        return sum(part not in _KEY_MODIFIERS for part in parts) > 1
+    mods, key = chord
+    return pastes(keys) or ((len(key) == 1 or key == "space") and mods in _CHARACTER_MODIFIERS)
+
+
+def needs_focus(s: Step) -> bool:
+    """Must the hands look at the focused control (UI Automation) before this step: is it about to get text?"""
+    return s.action == "type_text" or (s.action == "press" and enters_text(str(s.get("keys", ""))))
+
+
 def _quote(text: str, limit: int = 40) -> str:
     text = " ".join(text.split())
     return f"“{text if len(text) <= limit else text[: limit - 1] + '…'}”"
@@ -181,6 +215,12 @@ def assess(s: Step, scene: Scene) -> Risk | None:
                 return _refuse("I don't run commands in terminals.")
             if messaging(scene):
                 return _confirm("Send it?")
+        if enters_text(keys):  # keys are an input path too (SPEC §14): a paste would put the clipboard there
+            if scene.password:
+                return _refuse("That's a password field — I never type there.")
+            if not scene.focus_known:
+                what = "Paste" if pastes(keys) else f"Press {keys.replace('+', ' + ')}"
+                return _confirm(f"{what} here? (I couldn't check this field)")
         return None
     if action == "close_app":
         if scene.windows > 1:

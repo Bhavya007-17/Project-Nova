@@ -161,12 +161,19 @@ class CommandFinished:
     hold: float = 0.0
 
 
+WARMING = "Warming up…"
+
+
 @dataclass(frozen=True)
 class BrainProgress:
     """The brain moved on: acting / confirm / clarify / passthrough / teaching / dictating / idle.
 
     The controller feeds it to the state machine, which ignores moves it doesn't allow.
     why = island text where a state has one (passthrough: "Claude voice").
+
+    "warming" is not a state: still thinking, but the local model is cold and loading first (15 s+); the island says
+    WARMING instead of his words, and the controller gives the thinking deadline room for the load. "thinking" once
+    the load is done: the answer's own deadline starts then, and the island shows his words again.
     """
 
     state: str

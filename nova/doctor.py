@@ -271,6 +271,12 @@ def check_ollama(url: str, fetch: Callable[[str, float], Any] = _fetch_json) -> 
     return Check("Ollama", True, detail)
 
 
+def _llama_exe() -> Path | None:
+    from .brain.llama_server import find_exe
+
+    return find_exe()
+
+
 def check_llm(url: str, gpu_model: str, cpu_model: str, fetch: Callable[[str, float], Any] = _fetch_json) -> Check:
     """Tier 1's models (settings.yaml llm:) are pulled."""
     try:
@@ -285,6 +291,18 @@ def check_llm(url: str, gpu_model: str, cpu_model: str, fetch: Callable[[str, fl
     same = gpu_model == cpu_model
     detail = f"{gpu_model} (GPU and CPU)" if same else f"GPU {gpu_model}, CPU {cpu_model}"
     return Check("Local LLM", True, detail + " — loads on demand, unloads when idle")
+
+
+def check_runtime(runtime: str, exe: Path | None) -> Check:
+    """Which runtime answers Tier 1 (settings.yaml llm.runtime; ``exe``: the llama-server that comes with Ollama)."""
+    if runtime == "ollama":
+        return Check("LLM runtime", True, "Ollama (llm.runtime: ollama)")
+    if exe is not None:
+        return Check("LLM runtime", True, f"llama-server, started on demand ({exe})")
+    if runtime == "auto":
+        return Check("LLM runtime", True, "Ollama — its llama-server.exe wasn't found, so each request takes ~0.3 s longer")
+    return Check("LLM runtime", False, "llm.runtime is llama-server, but Ollama's llama-server.exe isn't on this laptop",
+                 "Install Ollama 0.30 or newer, or set llm.runtime: auto in config/settings.yaml.")
 
 
 _APP_PATHS = r"Software\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe"
@@ -520,6 +538,7 @@ def main() -> int:
             ("GPU", check_gpu),
             ("Ollama", lambda: check_ollama(settings.ollama.url)),
             ("Local LLM", lambda: check_llm(settings.ollama.url, settings.llm.gpu_model, settings.llm.cpu_model)),
+            ("LLM runtime", lambda: check_runtime(settings.llm.runtime, _llama_exe())),
             ("Chrome", check_chrome),
             ("Chrome extension", check_extension),
             ("Desktop apps", check_apps),

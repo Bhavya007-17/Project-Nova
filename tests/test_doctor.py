@@ -1,5 +1,6 @@
 import time
 import urllib.error
+from pathlib import Path
 
 import pytest
 
@@ -415,3 +416,13 @@ def test_llm_check_without_ollama():
         raise urllib.error.URLError("refused")
 
     assert not doctor.check_llm("http://127.0.0.1:11434", "a:1b", "a:1b", fetch=fetch).ok
+
+
+def test_llm_runtime_check_says_which_runtime_answers():
+    exe = Path("C:/o/llama-server.exe")
+    assert "llama-server" in doctor.check_runtime("auto", exe).detail
+    assert doctor.check_runtime("ollama", exe).detail.startswith("Ollama")
+    fallback = doctor.check_runtime("auto", None)
+    assert fallback.ok and fallback.detail.startswith("Ollama")
+    forced = doctor.check_runtime("llama-server", None)
+    assert not forced.ok and "llm.runtime: auto" in forced.fix

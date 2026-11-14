@@ -22,7 +22,7 @@ from .keys import TriggerKeys
 from .log import TraceLog, setup_app_log
 from .session import LockWatcher
 from .speech import standard_worker
-from .triggers import Triggers
+from .triggers import Triggers, running_now
 from .vocab import VocabFile
 
 MUTEX_NAME = "Local\\Nova.VoiceLayer"
@@ -93,13 +93,14 @@ def run() -> int:
         bus.subscribe(MicChanged, lambda e: _log.info("mic %s: %s (%s)", "open" if e.open else "closed", e.why, e.device)),
         bus.subscribe(SpeechReady, lambda e: _log.log(logging.INFO if e.ok else logging.ERROR, "speech: %s", e.detail)),
     ]
-    # Triggers (Stage 02): the state machine thread and the keyboard hook.
-    keys = TriggerKeys()
-    triggers = Triggers(bus, speech, store.settings, keys=keys, trace=trace)
-    hook = TriggerHook(keys, triggers.key_event)
     # Hands + Tier 0 (Stage 04): the app catalog (cached list now, Start menu re-read every 10 min) feeds the gate's
     # always-listening resolver and the brain.
     catalogs = CatalogStore(paths.CATALOG_CACHE, paths.ALIASES)
+    # Triggers (Stage 02): the state machine thread and the keyboard hook; it hands the resolver the running apps
+    # for each final.
+    keys = TriggerKeys()
+    triggers = Triggers(bus, speech, store.settings, keys=keys, trace=trace, running=running_now(catalogs))
+    hook = TriggerHook(keys, triggers.key_event)
     catalogs.subscribe(lambda catalog: triggers.set_resolver(Tier0Resolver(catalog)))
     catalogs.start()
     # Chrome (Stage 06): the extension's native host connects to this pipe; page clicks, tabs and Canvas go through it.

@@ -32,6 +32,15 @@ def _parser() -> argparse.ArgumentParser:
     island.add_argument("scene", nargs="?", choices=NAMES, metavar="SCENE", help="loop one scene: " + ", ".join(NAMES))
     bench = sub.add_parser("bench-stt", help="speech-to-text accuracy (WER) and speed on the recordings")
     bench.add_argument("--live", type=int, default=0, metavar="N", help="also replay N recordings in real time through the live worker")
+    bench.add_argument("--set", type=Path, metavar="DIR",
+                       help="score a `nova record-set` folder (app names, wake name, empties, WER, p50/p95) instead")
+    bench.add_argument("--backend", choices=("parakeet", "sherpa", "both"), default="parakeet",
+                       help="decoder: parakeet (default), sherpa (beam search + hotwords; get_models.py --sherpa), "
+                            "both (with --set: also says whether the candidate passes Stage 07a's rule)")
+    record_set = sub.add_parser("record-set", help="read 30 short commands aloud once (~3 min) for bench-stt --set")
+    record_set.add_argument("--list", action="store_true", help="only print the lines; record nothing")
+    record_set.add_argument("--seconds", type=float, default=4.0, metavar="S", help="length of each take (default 4)")
+    record_set.add_argument("--device", help="mic to use (part of its name); default: audio.device in settings.yaml")
     say = sub.add_parser("say", help="run a command from text, no mic (the whole brain + real actions)")
     say.add_argument("text")
     say.add_argument("--dry", action="store_true", help="only show the plan; do nothing")
@@ -49,6 +58,10 @@ def _parser() -> argparse.ArgumentParser:
     bench_llm.add_argument("--devices", default="gpu,cpu", help="comma list of gpu, cpu, arc (default gpu,cpu)")
     bench_llm.add_argument("--cpu-cases", type=int, default=40, metavar="N", help="cases timed on CPU / Arc (default 40)")
     bench_llm.add_argument("--save", action="store_true", help="write the recommended models to settings.yaml")
+    bench_llm.add_argument("--runtime", metavar="LIST",
+                           help="compare runtimes on the GPU model instead, e.g. ollama,llama-server")
+    bench_llm.add_argument("--cases", type=int, default=36, metavar="N", help="--runtime: warm cases (default 36)")
+    bench_llm.add_argument("--rounds", type=int, default=2, metavar="N", help="--runtime: back-to-back rounds")
     sub.add_parser("latency", help="p50/p95 per command type from the logs")
     chrome = sub.add_parser("chrome", help="Chrome extension: --install registers its native host (then load it once)")
     what = chrome.add_mutually_exclusive_group(required=True)
@@ -94,7 +107,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     if command == "bench-stt":
         from .stt import bench
 
-        return bench.run(live=args.live)
+        backends = bench.BACKENDS if args.backend == "both" else (args.backend,)
+        if args.set is not None:
+            return bench.run_set(args.set, backends)
+        codes = [bench.run(live=args.live, backend=backend) for backend in backends]
+        return max(codes)
+    if command == "record-set":
+        from . import recordset
+
+        return recordset.main(list_only=args.list, seconds=args.seconds, device=args.device)
     if command == "say":
         from . import say
 
@@ -111,6 +132,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if command == "bench-llm":
         from . import bench_llm
 
+        if args.runtime:
+            names = tuple(r.strip() for r in args.runtime.split(",") if r.strip())
+            return bench_llm.runtimes(names, cases=args.cases, rounds=args.rounds)
         devices = tuple(d.strip() for d in args.devices.split(",") if d.strip())
         return bench_llm.main(tuple(args.models), devices=devices, cpu_cases=args.cpu_cases, save=args.save)
     if command == "chrome":

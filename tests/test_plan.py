@@ -2,7 +2,7 @@
 
 import pytest
 
-from nova.brain.plan import Plan, PlanError, Step, act, from_dict, step
+from nova.brain.plan import Plan, PlanError, Step, act, from_dict, keys_ok, step
 
 
 def test_step_args_are_read_only_and_compare_by_value():
@@ -39,6 +39,18 @@ def test_act_plan_round_trips_through_dict():
 def test_bad_plans_are_refused(data):
     with pytest.raises(PlanError):
         from_dict(data)
+
+
+@pytest.mark.parametrize("keys", ["ctrl+v+v", "a+b", "shift+a+b"])
+def test_a_chord_with_two_keys_besides_modifiers_is_refused(keys):
+    assert not keys_ok(keys)
+    with pytest.raises(PlanError):
+        from_dict({"kind": "act", "steps": [{"action": "press", "keys": keys}]})
+
+
+@pytest.mark.parametrize("keys", ["ctrl+c", "alt+tab", "ctrl+shift+t", "enter", "v+ctrl", "win", "ctrl+alt+e"])
+def test_ordinary_chords_are_valid(keys):
+    assert keys_ok(keys)
 
 
 def test_clarify_plan_keeps_one_option_per_choice():

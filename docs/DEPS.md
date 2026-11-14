@@ -12,6 +12,7 @@ One line each: what, version, why. Ask before adding anything over ~50 MB or a n
 - **onnx-asr** 0.12 (~4 MB, pure Python) — Parakeet TDT loader/decoder for the local int8 files; no hub extra, so it can't download.
 - **rapidfuzz** 3.14 (~2 MB) — fuzzy spelling for the vocab fix-up; word-level Levenshtein for WER.
 - **jellyfish** 1.3 (~0.2 MB) — metaphone sound keys for the vocab fix-up ("crow labs" ≈ "CroLabs").
+- **sherpa-onnx** 2.0.1 (Apache-2.0; 2.2 MB wheel + sherpa-onnx-core 16.7 MB, which bundles its own `onnxruntime.dll`) — Stage 07a candidate only: the same Parakeet through a beam-search decoder with hotwords (`nova/stt/sherpa.py`, `nova bench-stt --backend sherpa`). Not on the live path.
 
 ## Windows APIs (ctypes, no new packages)
 - **WH_KEYBOARD_LL + raw input** (user32) — Copilot key / chord / Esc (`nova/hook.py`); raw input (RIDEV_INPUTSINK) counts keys so a hook Windows silently dropped is reinstalled.
@@ -47,6 +48,8 @@ One line each: what, version, why. Ask before adding anything over ~50 MB or a n
 ## Models and data (in the repo folder, git-ignored; Nova itself never downloads)
 - `models/parakeet/` — Parakeet TDT 0.6B v3, int8 ONNX for onnx-asr (`nemo-parakeet-tdt-0.6b-v3`, ~639 MB, CC-BY-4.0). STT (SPEC §4). `scripts/get_models.py` fetches it from huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx at commit 8f23f0c (SHA-256 checked; identical to the copy voicebar used).
 - `models/silero/silero_vad.onnx` — Silero VAD v6.2 (~2.2 MB, MIT). Speech start/end. Same script, from github.com/snakers4/silero-vad tag v6.2.
+- `models/sherpa-parakeet/` (optional, `get_models.py --sherpa`) — the same Parakeet v3 int8 in sherpa-onnx's layout (encoder / decoder / joiner + tokens, ~670 MB on disk, 487 MB download). From the `asr-models` release of github.com/k2-fsa/sherpa-onnx; archive and files SHA-256 pinned. Stage 07a name-biasing candidate; delete it if not adopted.
+- `fixtures/command-set/` — the 30 commands Bhavya reads once (`nova record-set`, git-ignored): app-name and wake-name errors for `nova bench-stt --set`.
 - `fixtures/voicebar-recordings/` — Bhavya's private recordings (4 sessions with `manifest.json`, 134 audio files), kept off GitHub; doctor shows them as optional. STT WER eval. Only the "check" session is clean: in "quiet" and "noise" the old recorder started late, so most files begin mid-word (`nova bench-stt` flags them).
 - `fixtures/voicebar-reference/` — voicebar phrasing fixtures (committed).
 
@@ -71,4 +74,5 @@ One line each: what, version, why. Ask before adding anything over ~50 MB or a n
 
 ## Outside Python (already on this laptop)
 - **uv** ≥ 0.12 recommended — 0.11 makes venvs whose `pythonw.exe` is a console exe (uv #19226); `nova doctor` checks this. The first `uv` on PATH here is a pip install (Python 3.11 Scripts); a second 0.11.19 sits in `~/.local/bin`.
-- **Ollama** 0.30 — local LLM runtime (Stage 05). Only local tags are allowed; `*-cloud` tags never.
+- **Ollama** 0.30 — model store and fallback LLM runtime (Stage 05). Only local tags are allowed; `*-cloud` tags never.
+- **llama-server** (llama.cpp's server, the copy Ollama 0.30 ships in `lib/ollama`; no download, no new package) — Tier 1's runtime since Stage 07a: 437 vs 716 ms warm p50 against Ollama's API on the same model (`nova bench-llm --runtime`). `llm.runtime: auto | ollama | llama-server`.

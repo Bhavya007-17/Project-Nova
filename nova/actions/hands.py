@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from urllib.parse import quote_plus, urlsplit
 
 from ..brain.plan import Step
-from ..brain.risk import Scene
+from ..brain.risk import Scene, needs_focus
 from . import apps, native, system, windows
 from . import input as keyboard
 from .apps import Outcome
@@ -126,7 +126,7 @@ class WindowsHands:
         catalog = self._catalog()
         app = catalog.app_for(win.exe, win.aumids) if win else None
         password, known = False, True
-        if s.action == "type_text":
+        if needs_focus(s):  # typing, a paste or a character key: never into a password field (SPEC §14)
             focus = self._focus.focused(0.4)
             if focus is not None and focus.control_type in _CONTAINERS:
                 # Chrome / Electron build their accessibility tree on the first UI Automation question and answer

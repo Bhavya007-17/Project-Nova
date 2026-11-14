@@ -15,7 +15,7 @@ from __future__ import annotations
 import math
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -43,6 +43,8 @@ class EndpointRules:
     long_after_ms: int = 2500  # speech at least this long uses the long silence
     tail_ms: int = 160  # audio kept after the last speech frame (a multiple of 32 ms)
     max_ms: int | None = 30_000  # cap for commands; None = no cap (dictation is segmented instead)
+    after_key_ms: int = 250  # after a key release: this much quiet before a new utterance may start (he often lets
+    # go mid-word, and the ~200 ms tail became an utterance that speech-to-text heard as "Yeah.")
 
     def __post_init__(self) -> None:
         if self.start_frames < 1:
@@ -63,6 +65,16 @@ class EndpointRules:
     @property
     def tail_samples(self) -> int:
         return _samples(self.tail_ms)
+
+
+UNADDRESSED_MAX_MS = 10_000  # no key, no session: a command is short; room chatter ran to the 30 s cap 148 times
+
+
+def unaddressed(rules: EndpointRules) -> EndpointRules:
+    """``rules`` for speech nobody has addressed to Nova (yet): the same endpoints, a 10 s cap."""
+    if rules.max_ms is not None and rules.max_ms <= UNADDRESSED_MAX_MS:
+        return rules
+    return replace(rules, max_ms=UNADDRESSED_MAX_MS)
 
 
 DICTATION_RULES = EndpointRules(short_silence_ms=600, long_silence_ms=600, max_ms=None)  # SPEC §11: segments on
@@ -122,7 +134,8 @@ class Endpointer:
         self._pcm: _Pcm | None = None
         self._probs: list[float] = []
         self._next_id = 1
-        self._draining = 0  # after a cap: samples of silence still needed before a new start (0 = not draining)
+        self._draining = 0  # after a cap / key release: samples of quiet still needed before a new start (0 = none)
+        self._drain_need = 0  # ...and how much quiet that is, counted again from every speech frame
         self.held = False  # push-to-talk key down: pauses never end the utterance (release does)
 
     def set_rules(self, rules: EndpointRules) -> None:
@@ -132,6 +145,7 @@ class Endpointer:
         self._long = _samples(rules.long_silence_ms)
         self._long_after = _samples(rules.long_after_ms)
         self._max = _samples(rules.max_ms) if rules.max_ms is not None else None
+        self._after_key = _samples(rules.after_key_ms)
         size = rules.pre_roll_frames + rules.start_frames
         if self._history.maxlen != size:
             self._history = deque(self._history, maxlen=size)
@@ -155,8 +169,8 @@ class Endpointer:
         end = pos + len(frame)
         utt = self._utt
         if utt is None and self._draining:
-            # The cap cut a monologue; its continuation must not start a new utterance.
-            self._draining = self._short if p >= r.stop_threshold else max(0, self._draining - len(frame))
+            # The cap cut a monologue, or he let go of the key mid-word: what follows must not start a new utterance.
+            self._draining = self._drain_need if p >= r.stop_threshold else max(0, self._draining - len(frame))
             if self._draining:
                 return None
         if utt is None:
@@ -202,6 +216,10 @@ class Endpointer:
         """Key release: end the utterance at once, keeping all audio up to now."""
         return self._finish("key") if self._utt is not None else None
 
+    def listen_now(self) -> None:
+        """A key went down: whatever he says next is for Nova, with no quiet to wait for first."""
+        self._draining = 0
+
     def cancel(self) -> SpeechEnded | None:
         """Mic closed (Off / lock / device change): drop the utterance; no text should follow."""
         ended = self._finish("cancel") if self._utt is not None else None
@@ -242,7 +260,8 @@ class Endpointer:
         self._pcm = None
         self._probs = []
         self._streak = 0
-        self._draining = self._short if reason == "cap" else 0
+        self._drain_need = {"cap": self._short, "key": self._after_key}.get(reason, 0)
+        self._draining = self._drain_need
         return ended
 
 
@@ -338,6 +357,6 @@ class Silero:
         return float(out[0, 0])
 
     def skip(self, frame: np.ndarray) -> None:
-        """The gate skipped this frame: start fresh next time, with this frame as context."""
-        self._state = self._zero_state
+        """The gate skipped this frame: it only becomes the next frame's context. The state stays — soft speech
+        hovers at the gate's threshold, and a model restarted from zero mid-word doesn't call the rest speech."""
         self._context = frame[None, -self.CONTEXT :]

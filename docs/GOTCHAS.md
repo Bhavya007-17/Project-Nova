@@ -39,6 +39,28 @@ memories aren't shared, this file is.
 - **Idle CPU:** measure with cycle counts (`nova/cpu.py`, `QueryProcessCycleTime`), not `GetProcessTimes` (15.6 ms tick
   billing misreads 32 ms audio callbacks). Thread wake-ups dominate idle cost. Mic noise suppression makes "quiet" swing
   −96…−58 dB, so the energy gate uses p80 of the last 3 s + 15 dB, clamped −75…−45 dB.
+- **sherpa-onnx hotwords on Parakeet TDT (2.0.1)** work only with `modeling_unit="bpe"` plus a SentencePiece vocab,
+  which the export lacks: `nova/stt/sherpa.py` writes one from `tokens.txt` (score = −id). With the default
+  "cjkchar" every name fails to encode (stderr says so; decoding goes on unbiased). Boost 2.0 fixed names on synthetic
+  speech where 1.5 didn't. Boosting every installed app (180) raised WER on "check" from 14.4 % to 19.0 %; his own
+  names only (32): 14.4 % vs 13.7 % greedy onnx-asr. Its wheel brings its own `onnxruntime.dll` (1.28); it loads
+  next to `onnxruntime` 1.31 in either import order (the Python package links ORT into its own `.pyd`).
+  2026-11-13, "check" session through Nova's own path (segmented, 40 recordings): sherpa + hotwords 15.7 % WER,
+  p95 196 ms; Parakeet as shipped 14.4 %, p95 156 ms; no empty outputs on either. Not adopted on that — the decision
+  waits for `nova record-set` (his voice, his app names): `nova bench-stt --set fixtures/command-set --backend both`.
+- **A Silero restarted from zero after every skipped frame misses soft speech.** The energy gate skips frames in the
+  middle of quiet words. 134 fixture recordings at −30 dB: 14 with no speech start when `skip` reset the state, 7
+  when it keeps it — the same 7 as with no gate at all (normal level: 4 → 3). The gate still skips ~55 % of frames.
+- **The padded empty-output retry belongs on finals only.** On partials it doubled the decode and held up the next
+  one: live stt p95 800 ms against 339 ms in the bench. `transcribe(pcm, retry_empty=False)` for live words.
+- **Judge the follow-up window by when he started speaking.** The text arrives 0.3–2 s after he stops; judged by
+  arrival, a command begun inside the 8 s window was rejected. Speech that began before the window opened is not a
+  follow-up either (chatter from before the command).
+- **Un-addressed speech is capped at 10 s** (no key, no session): room chatter ran to the 30 s cap 148 times in a
+  week, each one a 30 s decode. A key or the name lifts the cap, also mid-utterance.
+- **Replay before changing the gate.** A week of logged decisions (7,050) through the Stage 07a gate: accepted
+  314 → 326 (follow-up 9 → 14, name 110 → 116, always-listening 5 → 6), none that ran before is rejected now. The
+  throwaway script rebuilds each situation from the logged `via`; counts only, never the text.
 - **Recordings:** in the private voicebar sessions only "check" is clean; "quiet"/"noise" start mid-word (~46 % WER that
   says nothing about STT). `expected_text` is the WER reference. Score WER after normalizing case and punctuation.
 
@@ -56,19 +78,36 @@ memories aren't shared, this file is.
 - **`/api/chat` with `think: false` ignores `format` for qwen3.5.** Nova renders ChatML itself (+ empty
   `<think></think>`) and calls `/api/generate` with `raw: true` + `format` → schema enforced from token 1
   (`nova/brain/tier1.py`).
-- **~0.75–0.85 s fixed overhead per request** (Ollama re-opens the model per call) — about half of Tier 1's time.
-  Bypassing it means talking to `llama-server` directly: a new runtime, so ask first.
+- **Ollama's API costs ~0.3 s per request and re-reads the whole prompt** (3,090 tokens every time on the GPU).
+  The `llama-server.exe` it ships (`lib/ollama`), talked to directly with `cache_prompt`, reads ~50: warm p50
+  437 vs 716 ms, p95 ~660 vs 954, cold 7.2–8.0 vs 8.5–10.6 s (2026-11-13, same GGUF / prompt / schema, 36 cases × 2).
+  Nova runs it as a child (`nova/brain/llama_server.py`, `llm.runtime`). Re-measure after an Ollama upgrade:
+  `nova bench-llm --runtime ollama,llama-server`.
+- **That llama-server finds CUDA only with `lib/ollama/cuda_v13` on `PATH` and
+  `GGML_BACKEND_PATH=…/cuda_v13/ggml-cuda.dll`** — without them it runs on the CPU and says nothing. The model is
+  the first absolute `FROM` in `ollama show --modelfile` (the second is the vision projector: leave it out).
+- **A child that holds 3 GB of VRAM must die with Nova, however Nova ends:** a job object with
+  `KILL_ON_JOB_CLOSE` (checked: `taskkill /F` on the parent → child gone, VRAM back). `atexit` alone leaks it.
+- **One command per process can't keep a child warm:** `nova say` uses Ollama when `llm.runtime` is `auto`
+  (Ollama keeps the model between runs). With the tray app's model on the GPU, `nova say` may get the CPU model.
+- **Ollama 0.30 can leave the "GPU" model on the CPU:** its fit reserved ~5.3 GB for qwen3.5's vision projector
+  and put 0 of 33 layers on an RTX with 6.9 GB free — 11–20 tokens/s, warm calls of 1.8–3.2 s. Nova sends
+  `num_gpu: 99` for the GPU choice (0 for CPU): 80 tokens/s, with or without the schema (the grammar is free).
 - **qwen3.5 is hybrid-recurrent:** it can only resume from context checkpoints. A prefix-only warm-up request
   (`num_predict: 1`) cut CPU prompt eval from 2.6 s to 0.3 s.
 - qwen3.5's Modelfile sets `presence_penalty 1.5` / `repeat_penalty 1.1` even at temp 0; Nova overrides them
   (`nova/brain/llm.py`). Compact few-shot JSON keeps grammar decoding at full speed.
 - Ollama ignores the Intel Arc iGPU unless `OLLAMA_IGPU_ENABLE=1`. Re-run `nova bench-llm` after any Ollama upgrade.
-- **A cold load outlasts the request timeout** (2026-11-11: qwen3.5:4b on the RTX loaded in 15.1 s; `llm.timeout_s` is 8).
-  Dropping the request also drops the load, so the retry starts from zero and `nova say` never warms itself.
+- **A cold load outlasts the request timeout** (qwen3.5:4b on the RTX: 7–15 s; `llm.timeout_s` is 8), and dropping
+  the request drops the load. Loading is its own step on its own client (`llm.Loader`): a cold request waits for
+  it ("Warming up…"), Esc stops the wait, never the load; the timeout covers the answer only.
 - **Two callers with different `num_ctx` make Ollama reload the model on every switch** (planner 4096 vs cleanup 2048:
   10–27 s each time in `nova.log`). One set of load options per model.
-- **Warm Tier 1 is 1.8–3.2 s in-process** (2026-11-11, GPU): `load_ms` ≈ 800 on every call, cached prefix 90–440 ms,
-  and schema-constrained JSON at only 15–20 tokens/s (34 tokens = 1.6 s). Live traces: p50 1.4 s, p90 8.0 s (timeouts).
+- **Warm Tier 1: 418 ms p50 / 669 ms p95 through llama-server, 765 / 1,159 ms through Ollama** (2026-11-13, GPU,
+  196 eval calls in-process; 1.8–3.2 s before the two fixes above). Plans correct: 259/270 on both.
+- **qwen3.5 resumed from a cached prefix isn't bit-identical to a full re-read:** a near-tie flips (one eval
+  negative: p(act) 0.38 / p(ignore) 0.29 cached, 0.32 / 0.36 re-read). Don't chase single-case eval diffs
+  between runtimes; compare totals.
 
 ## Chrome extension
 - **Branded Chrome 137+ ignores `--load-extension`**: loading `extension/` unpacked is a one-time manual step.
@@ -100,6 +139,8 @@ memories aren't shared, this file is.
   `taskkill /F /T /PID <pid>`.
 - Bash heredocs eat backslashes on Windows (`"\\0"` became a NUL byte in a .py file): write files that contain
   backslashes with an editor tool, not heredocs.
+- Bare `python` in Git Bash can be the Microsoft Store stub: it hangs instead of failing, and `a || b` never reaches
+  `b`. Always `uv run python`. Give pytest a `timeout` when its output goes through a pipe.
 
 ## Working on someone's real laptop
 - Anything that sends keys, pastes or takes focus goes to whatever window is in front. Run focus-free checks first,

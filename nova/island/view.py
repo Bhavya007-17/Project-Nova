@@ -12,8 +12,10 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 
 from ..events import (
+    WARMING,
     AlwaysListeningChanged,
     Asking,
+    BrainProgress,
     CommandFinished,
     ConfigChanged,
     DictatedText,
@@ -84,6 +86,8 @@ class View:
     always: bool = True  # always-listening is on (the status pill's dot)
     file_always: bool = True  # what settings.yaml says: a tray toggle lasts until the file changes
     off: bool = False  # Nova is off: hidden even when pinned
+    warming: bool = False  # thinking, but the local model is cold and loading first: "Warming up…" instead of words
+    under: str = ""  # while warming: his command, shown again once the model is loaded
 
     @property
     def accent(self) -> str:
@@ -152,8 +156,20 @@ def _session(view: View) -> View:
     """A new listening session: forget the last one's content."""
     return replace(
         view, words="", final=False, fresh=0, windowed=False, utterance=None, note="", steps=(), step=0,
-        result="", icon="", question="", choices=(),
+        result="", icon="", question="", choices=(), under="",
     )
+
+
+def _warming(view: View) -> View:
+    under = view.under if view.words == WARMING else view.words
+    return replace(view, words=WARMING, under=under, final=True, fresh=0, windowed=False)
+
+
+def _warmed(view: View) -> View:
+    """Loaded: the model answers now — his words again (the thinking face)."""
+    if view.state != "thinking":
+        return replace(view, warming=False, under="")
+    return replace(view, warming=False, under="", words=view.under, final=True, fresh=0, windowed=False)
 
 
 def _resting(view: View) -> str:
@@ -167,6 +183,8 @@ def _state(view: View, event: StateChanged) -> View:
     new = event.new if event.new in _SHOWN else _resting(view)
     if new == view.state:
         return view
+    if new != "thinking" and view.warming:
+        view = replace(view, warming=False, under="")  # loaded (or gone): the next command starts clean
     if new == "listening":
         view = _session(view)
     elif new == "dictating":
@@ -182,7 +200,9 @@ def _state(view: View, event: StateChanged) -> View:
     elif new in ("confirm", "clarify"):
         view = replace(view, question=view.question or event.why)
     elif new == "thinking" and view.state in ("hidden", "idle", "done", "error"):
-        view = _session(view)  # a command without a session (always-listening / follow-up): it arrives with Gated
+        view = replace(_session(view), warming=view.warming)  # a command without a session: it arrives with Gated
+    if new == "thinking" and view.warming:
+        view = _warming(view)
     return replace(view, state=new)
 
 
@@ -197,7 +217,7 @@ def reduce(view: View, event: object) -> View:
     if isinstance(event, FinalTranscript):
         mine = view.utterance is None or event.utterance == view.utterance
         newer = view.utterance is not None and event.utterance > view.utterance and state == "listening"
-        if state in ("listening", "thinking") and (mine or newer) and event.text:
+        if state in ("listening", "thinking") and (mine or newer) and event.text and not view.warming:
             return _words(view, event.text, event.utterance, final=True)
         return view
     if isinstance(event, DictatedText):
@@ -214,8 +234,17 @@ def reduce(view: View, event: object) -> View:
         if state == "listening" and event.wake_only:
             return replace(view, words="", final=False, fresh=0, windowed=False, utterance=None)
         if state == "thinking" and event.accepted and not event.wake_only and event.text:
+            if view.warming:
+                return replace(view, under=event.text)  # shown once the model is loaded
             return _words(view, event.text, event.utterance, final=True)
         return view
+    if isinstance(event, BrainProgress):
+        if event.state == "thinking" and view.warming:
+            return _warmed(view)
+        if event.state != "warming":
+            return view  # the state machine turns the rest into StateChanged
+        view = replace(view, warming=True)
+        return _warming(view) if state == "thinking" else view
     if isinstance(event, StepsChanged):
         steps = tuple(event.steps)
         return replace(view, steps=steps, step=max(0, min(event.active, len(steps) - 1)))

@@ -43,6 +43,7 @@ from ..bus import Bus
 from ..events import (
     AlwaysListeningChanged,
     Asking,
+    BrainProgress,
     CommandFinished,
     ConfigChanged,
     DictatedText,
@@ -70,6 +71,7 @@ REACH = 60  # logical px: a dragged pill's centre stays at least this far inside
 _EVENTS = (
     StateChanged, PartialTranscript, FinalTranscript, DictatedText, Gated, CommandFinished, StepsChanged,
     Asking, JobChip, MicChanged, SpeechReady, PinToggled, AlwaysListeningChanged, ConfigChanged,
+    BrainProgress,  # "warming": the model is cold (Stage 07a)
 )
 _WDA_EXCLUDEFROMCAPTURE = 0x11
 _DWMWA_TRANSITIONS_FORCEDISABLED = 3

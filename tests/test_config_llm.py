@@ -59,3 +59,11 @@ def test_bench_can_save_the_models_in_place():
     text = with_value(DEFAULT_YAML, "llm.gpu_model", "qwen3.5:4b")
     assert load_text(text).llm.gpu_model == "qwen3.5:4b"
     assert "# Local LLM" in text  # comments kept
+
+
+def test_llm_runtime_is_auto_ollama_or_llama_server():
+    assert Settings().llm.runtime == "auto" and "runtime: auto" in DEFAULT_YAML
+    assert load_text("llm:\n  runtime: llama-server\n").llm.runtime == "llama-server"
+    assert load_text("llm:\n  runtime: ollama\n").llm.runtime == "ollama"
+    with pytest.raises(ConfigError, match="llm.runtime"):
+        load_text("llm:\n  runtime: vllm\n")
