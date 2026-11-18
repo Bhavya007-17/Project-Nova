@@ -56,6 +56,19 @@ def test_paths_per_tier_and_device():
     assert rows["tier 1 CPU"].p50 == 2100 and rows["(typed) tier 1 GPU"].count == 1
 
 
+def test_talk_commands_are_their_own_path():
+    records = [{**rec(start=40), "tier": "0"},
+               {**rec(start=500), "tier": "0", "talk": True, "queue_ms": None},
+               {**rec(start=1700), "tier": "0", "talk": True, "queue_ms": 1100.0},
+               {**rec(start=1300), "tier": "1", "device": "gpu", "talk": True, "queue_ms": None}]
+    rows = {row.name: row for row in summarize(records)}
+    assert rows["tier 0"].count == 1 and rows["tier 0"].p50 == 40  # outside a session only
+    assert rows["session tier 0"].count == 2 and rows["session tier 0"].p50 == 550  # the queue wait taken out
+    assert rows["session tier 1 GPU"].p50 == 1300
+    assert rows["session queue wait"].count == 1 and rows["session queue wait"].p50 == 1100
+    assert rows["all commands"].count == 4
+
+
 def test_dictation_segments_from_the_pause_and_from_speech():
     records = [
         {"kind": "dictation", "after_pause_ms": 80.0, "total_ms": 690.0, "llm": "pending", "landed": True},

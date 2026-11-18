@@ -41,7 +41,7 @@ from .events import (
 )
 from .log import TraceLog
 from .stt.base import Transcriber
-from .vad import DICTATION_RULES, FRAME, EndpointRules, Endpointer, EnergyGate, Silero, unaddressed
+from .vad import DICTATION_RULES, FRAME, TALK_RULES, EndpointRules, Endpointer, EnergyGate, Silero, unaddressed
 from .vocab import VocabFile
 
 _log = logging.getLogger(__name__)
@@ -228,6 +228,7 @@ class SpeechWorker:
         self._held = False
         self._attentive = False
         self._dictating = False  # requested (any thread)
+        self._talking = False  # a talk session listens (any thread)
         self._dictation_rules = False  # in effect (worker thread)
         self._idle = True
         self._stopping = threading.Event()
@@ -297,6 +298,11 @@ class SpeechWorker:
         self._dictating = bool(on)
         self._wake.set()
 
+    def set_talking(self, on: bool) -> None:
+        """A talk session: pieces of speech end on the talk endpoint (``vad.TALK_RULES``) so clauses act sooner."""
+        self._talking = bool(on)
+        self._wake.set()
+
     @property
     def idle(self) -> bool:
         """Nobody talking and no final pending (updated by the worker every loop)."""
@@ -340,7 +346,12 @@ class SpeechWorker:
         self._sync_source(time.perf_counter())
         self._dictation_rules = self._dictating
         addressed = self._held or self._attentive  # a key or a session: the full 30 s, also from mid-utterance on
-        wanted = DICTATION_RULES if self._dictating else (self._rules if addressed else self._idle_rules)
+        if self._dictating:
+            wanted = DICTATION_RULES
+        elif self._talking:
+            wanted = TALK_RULES
+        else:
+            wanted = self._rules if addressed else self._idle_rules
         if wanted is not self._ep.rules:
             self._ep.set_rules(wanted)
         if self._held:

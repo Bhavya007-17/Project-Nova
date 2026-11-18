@@ -1,0 +1,97 @@
+# Talk-session eval (Stage 07b, SPEC §5 / §18): `nova eval --sessions`, `nova eval --sessions --replay N`.
+#
+# One session = what he says between opening a talk and its end. Each line is one piece of speech: he pauses
+# after it (the replay puts `pause_ms` of silence there). `want` lists, in order, one `nova eval` want string
+# (the notation at the top of docs/eval/intents.yaml) per command the line should run; `[]` = nothing may run
+# and nothing may be asked. A want's `||` gives acceptable alternatives.
+#   open:  tap (default; a Copilot tap opens the talk before the first line) | name (the first line says "Nova, …")
+#   fail:  true = the fake hands report that line's commands as failed (what waits behind them must not run)
+#   screen: what is open and in front when the session starts (every wanted `open` brings that app to the front)
+# Phrases here are new: none is copied from intents.yaml.
+
+screen: {front: Google Chrome, open: [Google Chrome, Claude]}
+
+sessions:
+  - name: recording
+    note: the 48 s recording on Windows apps, camera left out (07c)
+    screen: {front: Claude, open: [Claude, Google Chrome]}
+    pause_ms: 900
+    lines:
+      - say: Alright, can you open up the notes app for me
+        want: [open Notepad || open Sticky Notes]
+      - say: and once you're there can you create a new note
+        want: [press ctrl+n || press ctrl+t]
+      - say: and inside this new note let's make the title say hello
+        want: [type hello]
+      - {say: "Great, okay.", want: []}
+      - say: Let's move on and can you open up the browser
+        want: [open Google Chrome]
+      - {say: google search Norbert Wiener, want: [search Norbert Wiener]}
+      - {say: now open x.com, want: [open x.com]}
+      - {say: Nice., want: []}
+      - {say: "Cool, thank you. That's all.", want: [listening end_session]}
+
+  - name: context
+    note: later clauses point at what the earlier ones did (it, that, in there)
+    lines:
+      - {say: bring the calculator up, want: [open Calculator]}
+      - say: snap that to the left
+        want: [window snap_left Calculator || window snap_left active]
+      - {say: now get notepad going, want: [open Notepad]}
+      - {say: type hello in there, want: [type hello in there]}
+      - say: and close it
+        want: [close Notepad || window close Notepad || window close active]
+      - {say: we're done, want: [listening end_session]}
+
+  - name: one breath
+    note: three commands in one breath, then a fourth that builds on them
+    pause_ms: 1200
+    lines:
+      - say: start spotify, put it on the right and then launch file explorer
+        want: [open Spotify, window snap_right Spotify, open File Explorer]
+      - say: maximize the explorer window
+        want: [window maximize|fullscreen File Explorer]
+      - {say: "okay, that's all for now", want: [listening end_session]}
+
+  - name: room chatter
+    note: people in the room and small talk; only the two real requests may run
+    lines:
+      - {say: wait, want: []}
+      - {say: never mind, want: []}
+      - {say: launch the calculator, want: [open Calculator]}
+      - {say: hold on, want: []}
+      - {say: great job, want: []}
+      - {say: my brother said we should close the garage before it rains, want: []}
+      - {say: "hmm, I wonder what time the game starts tonight", want: []}
+      - {say: "yeah, that one was really funny", want: []}
+      - {say: go ahead and minimize this window, want: [window minimize Calculator || window minimize active]}
+      - {say: "thanks, that's all", want: [listening end_session]}
+
+  - name: failing step
+    note: the first command fails; what was said behind it in the same breath is skipped, the next line runs
+    lines:
+      - say: get microsoft teams open and then maximize it
+        fail: true
+        want: [open Microsoft Teams]
+      - {say: switch over to edge instead, want: [open Microsoft Edge]}
+      - {say: end the session, want: [listening end_session]}
+
+  - name: opened by name
+    note: no tap; "Nova, <command>" runs and opens the talk, the clauses after it need no name
+    open: name
+    screen: {front: Google Chrome, open: [Google Chrome, Claude, Word]}
+    lines:
+      - {say: "Nova, switch to word", want: [open Word]}
+      - say: make it fill the screen
+        want: [window maximize|fullscreen Word || window maximize|fullscreen active]
+      - {say: then open the calculator too, want: [open Calculator]}
+      - {say: "perfect. I'm done", want: [listening end_session]}
+
+  - name: goodbye in the text
+    note: a closing phrase inside text to type must be typed, not end the session
+    screen: {front: Notepad, open: [Notepad, Google Chrome]}
+    lines:
+      - say: type see you tomorrow and then goodbye
+        want: [type see you tomorrow and then goodbye]
+      - {say: "lovely, thank you", want: []}
+      - {say: "that will be all", want: [listening end_session]}

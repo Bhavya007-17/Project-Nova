@@ -65,7 +65,7 @@ STEP_SCHEMAS = (
     _step("canvas_item_text", item=_TEXT),
     _step("dictation", op=_enum(("start", "stop", "paste"))),
     _step("docs_new"),
-    _step("listening", op=_enum(("sleep", "wake"))),
+    _step("listening", op=_enum(("sleep", "wake", "end_session"))),
 )
 
 # Required properties come out first, in this order (llama.cpp's schema grammar), then the optional ones.
@@ -104,7 +104,7 @@ tab{op,match}: browser tabs: new | close | next | prev (the tab before) | reopen
 nav{op}: back (the previous page) | forward | reload
 scroll{dir,amount}: dir up | down | left | right | top | bottom; amount small | page | large
 type_text{text,submit}: type at the cursor. submit: true only if he says enter, send or submit
-press{keys}: copy ctrl+c, paste ctrl+v, cut ctrl+x, undo ctrl+z, redo ctrl+y, save ctrl+s, select all ctrl+a, zoom in ctrl+=, zoom out ctrl+-, show the desktop win+d, enter, esc
+press{keys}: a new note, file, page or document in the app in front ctrl+n, copy ctrl+c, paste ctrl+v, cut ctrl+x, undo ctrl+z, redo ctrl+y, save ctrl+s, select all ctrl+a, zoom in ctrl+=, zoom out ctrl+-, show the desktop win+d, enter, esc
 volume{op,level}: up (louder) | down (quieter) | mute | unmute | set (only when he says a number: level 0-100)
 media{op}: play_pause | play | pause | next (skip) | prev | stop. Works on whatever is playing: never ask which app
 page_click{description,element}: click something on the web page in front. description: what he called it. element: its id in "page", if listed
@@ -114,8 +114,8 @@ canvas_due{range}: what's due on Canvas, his school site. range: today | tomorro
 canvas_open_item{item}: open one assignment, quiz or discussion on Canvas. item: his words for which one ("my assignment for today", "the thermo homework")
 canvas_item_text{item}: what an assignment on Canvas says (its instructions)
 dictation{op}: start | stop | paste (type his last dictation again)
-docs_new{}: a new blank Google Doc; what he wants written in it: a type_text step after it
-listening{op}: sleep | wake
+docs_new{}: a new blank Google Doc, only when he names a Google Doc or Docs; what he wants written in it: a type_text step after it
+listening{op}: sleep | wake | end_session (he's done talking to you: "that's all", "we're done")
 
 rules:
 - text, query and prompt are copied word for word from "said". Never add, fix, translate or reword them.
@@ -128,6 +128,7 @@ rules:
 - "asked" and "answer": you asked him something and this is his answer; now plan it.
 - "page": what's on the web page in front, one per line: number, role, name, [its part of the page], text beside it. For page_click / page_fill / scroll_to give the number he means as element; not listed: the description only.
 - Homework, assignments, quizzes and what's due are on Canvas (canvas_due, canvas_open_item), even when "page" is shown.
+- "before": what you just did for him, oldest first ("said: result"). It's done: never repeat, redo or continue it unless "said" asks for that now. It only tells what "there", "it", "that", "this new note" point at. Nothing they could point at: clarify. "said" asks for nothing new: ignore.
 """
 
 # (request, plan) pairs: worked examples that show the patterns. Different from docs/eval/intents.yaml on purpose.
@@ -173,6 +174,19 @@ EXAMPLES: tuple[tuple[dict[str, Any], dict[str, Any]], ...] = (
     ({"said": "open that thing", "front": "Google Chrome", "open": ["Google Chrome", "Notepad"],
       "asked": "Open which one?", "answer": "Notepad"},
      {"kind": "act", "steps": [{"action": "open_app", "app": "Notepad"}], "confidence": 0.9}),
+    # A talk session (07b): "before" is done already and only tells what "in there" / "the other one" mean.
+    ({"said": "start a blank page in there", "front": "Microsoft Word", "open": ["Microsoft Word", "Google Chrome"],
+      "before": ["bring up word: Opened Microsoft Word"]},
+     {"kind": "act", "steps": [{"action": "press", "keys": "ctrl+n"}], "confidence": 0.85}),
+    ({"said": "put the other one on the right half", "front": "Google Chrome",
+      "open": ["Google Chrome", "Spotify", "Notepad"],
+      "before": ["throw some spotify on: Opened Spotify", "go back to chrome: Switched to Google Chrome"]},
+     {"kind": "act", "steps": [{"action": "window", "op": "snap_right", "target": "Spotify"}], "confidence": 0.85}),
+    ({"said": "okay one sec", "front": "Spotify", "open": ["Spotify", "Google Chrome"],
+      "before": ["throw some spotify on: Opened Spotify"]},
+     {"kind": "ignore", "steps": [], "confidence": 0.9}),
+    ({"said": "make me a fresh file", "front": "Visual Studio Code", "open": ["Visual Studio Code", "Google Chrome"]},
+     {"kind": "act", "steps": [{"action": "press", "keys": "ctrl+n"}], "confidence": 0.85}),
     ({"said": "write a cover letter for the robotics internship", "front": "Google Chrome",
       "open": ["Google Chrome", "Claude"]},
      {"kind": "handoff", "steps": [], "confidence": 0.9,
@@ -261,7 +275,8 @@ def relevant_apps(text: str, catalog: Catalog, running: Iterable[str] = (), limi
 
 def request(text: str, *, front: str | None, open_apps: Sequence[str], tab: str | None,
             apps: Sequence[str], asked: str | None = None, answer: str | None = None,
-            page: Sequence[str] | None = None) -> dict[str, Any]:
+            page: Sequence[str] | None = None, before: Sequence[str] | None = None) -> dict[str, Any]:
+    """``before``: a talk session's last steps ("said: result", oldest first); only given inside a session."""
     data: dict[str, Any] = {"said": text.strip()}
     if front:
         data["front"] = front
@@ -269,6 +284,8 @@ def request(text: str, *, front: str | None, open_apps: Sequence[str], tab: str 
         data["open"] = list(open_apps)
     if tab:
         data["tab"] = tab
+    if before:
+        data["before"] = list(before)
     if apps:
         data["apps"] = list(apps)
     if page:

@@ -38,6 +38,37 @@ def test_examples_are_not_eval_items():
         assert f"say: {request_['said'].lower()}\n" not in eval_text
 
 
+def test_examples_are_not_session_eval_lines():
+    import yaml
+
+    from nova.evals import EVAL_FILE
+
+    sessions = yaml.safe_load((EVAL_FILE.parent / "sessions.yaml").read_text(encoding="utf-8"))["sessions"]
+    lines = {line["say"].lower().strip(" .,!?") for s in sessions for line in s["lines"]}
+    for request_, _ in prompt.EXAMPLES:
+        assert request_["said"].lower() not in lines
+        assert not any(request_["said"].lower() in line for line in lines)
+
+
+def test_prefix_rules_keep_before_as_context_only():
+    system = prompt.prefix(CATALOG.aliases)[0]["content"]
+    rule = next(line for line in system.splitlines() if line.startswith('- "before"'))
+    assert "never repeat, redo or continue" in rule and "ignore" in rule
+    # A worked example: with "before" set, words that ask for nothing new are ignored, nothing is redone.
+    assert any("before" in r and p["kind"] == "ignore" and not p["steps"] for r, p in prompt.EXAMPLES)
+
+
+def test_prefix_rules_new_document_in_the_app_in_front():
+    system = prompt.prefix(CATALOG.aliases)[0]["content"]
+    press = next(line for line in system.splitlines() if line.startswith("press{keys}:"))
+    assert "new" in press and "ctrl+n" in press
+    docs = next(line for line in system.splitlines() if line.startswith("docs_new{}:"))
+    assert "only when he names a Google Doc" in docs
+    # A worked example: a new file in a desktop app in front, no "before" -> ctrl+n (not docs_new, not open_app).
+    assert any("before" not in r and r.get("front") not in (None, "Google Chrome")
+               and p["steps"] == [{"action": "press", "keys": "ctrl+n"}] for r, p in prompt.EXAMPLES)
+
+
 def test_prefix_is_byte_identical_for_the_same_aliases():
     assert prompt.prefix(CATALOG.aliases) == prompt.prefix(CATALOG.aliases)
     system = prompt.prefix(CATALOG.aliases)[0]["content"]
@@ -59,6 +90,116 @@ def test_request_is_compact():
     again = prompt.request("open it", front=None, open_apps=(), tab=None, apps=(), asked="Open which one?",
                            answer="Notepad")
     assert again == {"said": "open it", "asked": "Open which one?", "answer": "Notepad"}
+
+
+def test_request_carries_before():
+    before = ("open notepad: Opened Notepad", "new note: failed, Notepad didn't answer")
+    data = prompt.request("type it in there", front="Notepad", open_apps=("Notepad",), tab="Inbox", apps=("Paint",),
+                          before=before)
+    assert list(data) == ["said", "front", "open", "tab", "before", "apps"]  # right after what's on screen
+    assert data["before"] == list(before)
+    assert "before" not in prompt.request("x", front=None, open_apps=(), tab=None, apps=())
+    assert "before" not in prompt.request("x", front=None, open_apps=(), tab=None, apps=(), before=())
+
+
+def test_schema_listening_has_end_session():
+    listening = next(s for s in prompt.STEP_SCHEMAS if s["properties"]["action"]["const"] == "listening")
+    assert "end_session" in listening["properties"]["op"]["enum"]
+    system = prompt.prefix(CATALOG.aliases)[0]["content"]
+    assert "end_session" in system and '"before"' in system
+    assert any("before" in request_ for request_, _ in prompt.EXAMPLES)  # worked examples show the field
+
+
+def test_prefix_stays_byte_identical():
+    first = chatml(prompt.prefix(CATALOG.aliases))
+    assert all(chatml(prompt.prefix(CATALOG.aliases)) == first for _ in range(3))
+    client = FakeOllama("qwen35")
+    t = tier1(client)
+    t.think("x", Seen())
+    t.think("put it on the left", Seen("Notepad"), before=("open notepad: Opened Notepad",))
+    a, b = (c[2] for c in requests(client))
+    assert a.startswith(first) and b.startswith(first)  # the context lives in the request, never the prefix
+    assert '"before":["open notepad: Opened Notepad"]' in b[len(first):] and '"before"' not in a[len(first):]
+
+
+def test_before_is_capped_on_the_cpu():
+    before = tuple(f"step {i}: Done {i}" for i in range(5))
+    gpu = FakeOllama("qwen35")
+    tier1(gpu).think("x", Seen(), before=before)
+    assert prompt.dumps(list(before)) in requests(gpu)[0][2]
+    cpu = FakeOllama("qwen35")
+    tier1(cpu, FakeGovernor(Choice("qwen3.5:2b-q4_K_M", "cpu"))).think("x", Seen(), before=before)
+    sent = requests(cpu)[0][2]
+    assert prompt.dumps(list(before[-3:])) in sent and "step 1:" not in sent  # the newest three
+
+
+def test_keep_warm_warms_in_the_background_with_the_current_keep_alive():
+    gate = threading.Event()
+    client = FakeOllama("qwen35", resident=(), load_gate=gate)
+    keep = ["24h"]
+    t = Tier1(client, FakeGovernor(), lambda: Llm(keep_alive=keep[0]), lambda: CATALOG, loader=Loader(client))
+    began = time.monotonic()
+    t.keep_warm()
+    assert time.monotonic() - began < 0.2  # never blocks the caller
+    assert wait_for(lambda: loads(client))
+    keep[0] = "10m"  # the session closed while the model was loading...
+    gate.set()
+    assert wait_for(lambda: len(loads(client)) == 2)  # ...so it says the normal keep_alive once loaded
+    assert [c[3]["keep_alive"] for c in loads(client)] == ["24h", "10m"]
+
+
+def test_keep_warm_only_if_resident_never_loads():
+    client = FakeOllama("qwen35", resident=())
+    governor = FakeGovernor()
+    t = tier1(client, governor)
+    t.keep_warm(only_if_resident=True)
+    time.sleep(0.1)
+    assert loads(client) == []  # nothing chosen or loaded: nothing to re-arm
+    client.resident.add("qwen3.5:2b-q4_K_M")
+    governor.current = governor.choice
+    t.keep_warm(only_if_resident=True)
+    assert wait_for(lambda: loads(client))
+    assert loads(client)[0][3]["keep_alive"] == "5m"
+
+
+def _ClosingGovernor():  # noqa: N802 - a fake governor that counts its unloads (FakeGovernor is defined below)
+    class Closing(FakeGovernor):
+        closes = 0
+
+        def close(self):
+            self.closes += 1
+
+    return Closing()
+
+
+def test_keep_warm_after_close_is_a_no_op():
+    client = FakeOllama("qwen35", resident=())
+    t = tier1(client, _ClosingGovernor())
+    t.close()
+    t.keep_warm()
+    t.keep_warm(only_if_resident=True)
+    time.sleep(0.1)
+    assert loads(client) == []
+
+
+def test_a_keep_warm_that_finishes_after_close_unloads():
+    gate = threading.Event()
+    client = FakeOllama("qwen35", resident=(), load_gate=gate)
+    governor = _ClosingGovernor()
+    t = Tier1(client, governor, lambda: Llm(keep_alive="24h"), lambda: CATALOG, loader=Loader(client))
+    t.keep_warm()  # a session opened just before Nova quits
+    assert wait_for(lambda: loads(client))
+    t.close()
+    assert governor.closes == 1
+    gate.set()  # the load lands after the governor unloaded: it must not stay resident for "24h"
+    assert wait_for(lambda: governor.closes == 2)
+    assert len(loads(client)) == 1  # and nothing is warmed again after the close
+
+
+def test_session_is_a_preload_reason():
+    from nova.brain.tier1 import CPU_BEFORE, PRELOAD_REASONS
+
+    assert "session" in PRELOAD_REASONS and CPU_BEFORE == 3
 
 
 def test_relevant_apps_match_his_words_only():
@@ -168,6 +309,7 @@ class FakeGovernor:
     def __init__(self, choice=Choice("qwen3.5:2b-q4_K_M", "gpu")):
         self.choice = choice
         self.used_count = 0
+        self.current = None  # what the real one chose last (None: nothing yet)
 
     def choose(self, *, fresh=False):
         return self.choice

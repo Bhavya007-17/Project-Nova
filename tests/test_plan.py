@@ -58,3 +58,10 @@ def test_clarify_plan_keeps_one_option_per_choice():
     plan = Plan("clarify", question="Which one?", choices=("Google Chrome", "Calculator"), options=options)
     assert plan.option(1) == options[1]
     assert plan.option(7) is None
+
+
+def test_listening_end_session_is_valid():
+    plan = from_dict({"kind": "act", "steps": [{"action": "listening", "op": "end_session"}]})
+    assert plan.steps == (step("listening", op="end_session"),)
+    with pytest.raises(PlanError):
+        from_dict({"kind": "act", "steps": [{"action": "listening", "op": "end_everything"}]})

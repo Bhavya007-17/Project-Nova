@@ -44,7 +44,7 @@ _EDGE_FILLERS = frozenset({"for", "some", "the", "a", "an", "about", "on", "plea
                            "pictures", "picture", "images", "photos"})
 _MODIFIERS = ("ctrl", "shift", "alt", "win")
 _SIMPLE = {"tab": frozenset({"new", "close", "next", "prev", "reopen", "goto"}), "nav": NAV_OPS, "media": MEDIA_OPS,
-           "dictation": frozenset({"start", "stop", "paste"}), "listening": frozenset({"sleep", "wake", "off"})}
+           "dictation": frozenset({"start", "stop", "paste"}), "listening": frozenset({"sleep", "wake", "off", "end_session"})}
 _VOLUME = frozenset({"up", "down", "mute", "unmute", "set"})
 
 

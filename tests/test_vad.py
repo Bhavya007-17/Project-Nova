@@ -111,6 +111,20 @@ def test_short_utterance_ends_after_300_ms_of_silence():
     assert len(ended.pcm) == ended.end - ended.start
 
 
+def test_talk_rules_end_long_speech_on_a_short_pause():
+    from nova.vad import TALK_RULES
+
+    f = Feed(TALK_RULES)
+    f.speech(3000)
+    assert f.silence(400) == []  # a hesitation inside a long clause doesn't cut it
+    events = f.silence(64)  # 464 ms
+    assert [type(e) for e in events] == [SpeechEnded] and events[0].reason == "silence"
+    short = Feed(TALK_RULES)
+    short.speech(1000)
+    assert [type(e) for e in short.silence(320)] == [SpeechEnded]  # short pieces keep 300 ms
+    assert TALK_RULES.max_ms == EndpointRules().max_ms  # the 30 s cap stays
+
+
 def test_long_utterance_needs_700_ms_of_silence():
     f = Feed()
     f.speech(2600)

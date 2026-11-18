@@ -19,7 +19,7 @@ Nova says when they're done. It started as Bhavya's personal project and is now 
 | 00–06 | skeleton + doctor, ears (STT), triggers, island, Windows hands + Tier 0, local brain (Tier 1), Chrome + Canvas | done |
 | 07 | dictation | done; the LLM misheard-word fix (`nova/dictation/cleanup.py`) shares the planner's model since 07a — check it in the 07a live demo |
 | 07a | fast + hearing (model never times out, ~1 s loose requests, gate fixes) | built and measured; still open: the live demo, and the name-biasing decision (needs `nova record-set`, 3 min of reading) |
-| 07b | talk sessions (open the mic once, act clause by clause) | not started |
+| 07b | talk sessions (open the mic once, act clause by clause) | built and measured (`nova eval --sessions` 40/40, 0 actions on small talk; TTS replay p50 0.32 s Tier 0 / 0.85 s Tier 1); still open: the live demo and the session pill seen on a real screen; known minor issue: a session opened by name while a tap-closed session's clauses still run mixes their context |
 | 07c | control anything (scroll cascade, PDFs, click by name / number / grid, camera, screenshot) | not started |
 | 08 | teach + learn ("Show me?", learned skills ⚡) | not started — island UI states exist |
 | 09 | handoff to Claude / ChatGPT + done notifications | not started — island chips exist; router has a stub |
@@ -53,7 +53,8 @@ Nova says when they're done. It started as Bhavya's personal project and is now 
 | `nova/dictation/` | dictation session, rules, target, LLM cleanup, history |
 | `nova/governor.py` | GPU vs CPU model choice from free VRAM |
 | `config/` | `settings.yaml`, `aliases.yaml` (short names → apps/sites), `vocab.yaml` (names to spell right) |
-| `docs/eval/intents.yaml` | intent eval used by `nova eval` |
+| `nova/clauses.py` | talk sessions: one final → ordered clauses, discourse and polite frames stripped, small talk marked (pure; runs in the state machine) |
+| `docs/eval/intents.yaml`, `sessions.yaml` | intent eval (`nova eval`) and scripted talk sessions (`nova eval --sessions`; `nova/session_eval.py`, `nova/tts.py` = SAPI voice into a WAV for the replay) |
 | `scripts/` | `setup.ps1`, `get_models.py`, `island_screenshots.py` |
 | `models/`, `logs/`, `data/`, `fixtures/voicebar-recordings/` | local only, git-ignored — never commit |
 
@@ -83,7 +84,7 @@ Nova says when they're done. It started as Bhavya's personal project and is now 
 
 ## Commands
 `uv run nova` (tray app) · `nova doctor` · `nova listen [--wav f]` · `nova keys --probe` · `nova island --demo [scene]` ·
-`nova say "<text>" [--dry]` · `nova eval` · `nova bench-stt [--set dir --backend both]` · `nova record-set` ·
+`nova say "<text>" [--dry]` · `nova eval [--sessions [--replay N]]` · `nova bench-stt [--set dir --backend both]` · `nova record-set` ·
 `nova bench-llm [--runtime ollama,llama-server]` · `nova latency` ·
 `nova chrome --install | --status` · `uv run pytest`
 Chrome self-test (Chrome for Testing, throwaway profile): `uv run python extension/test/selftest.py [--llm]`

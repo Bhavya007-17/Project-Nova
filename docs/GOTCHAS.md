@@ -72,6 +72,29 @@ memories aren't shared, this file is.
 - The island hides when idle (0 frames) and warm-starts the D3D device at launch (first show otherwise ~165 ms).
 - **Screenshots don't see the island** (`WDA_EXCLUDEFROMCAPTURE`). Set `NOVA_CAPTURABLE=1` to check layouts, or use
   `scripts/island_screenshots.py` (grabs Qt's own frames).
+- A `ScaleAnimator`'s `item.scale()` reads 1.0 from Python until the animator ends (it animates on the render
+  thread). An offscreen `QQuickView` does run Animators: test the end value, not the middle.
+
+## Talk sessions (07b)
+- **`TalkChanged(paused)` goes out before the clause's `Gated`** (the clock pauses, then the state moves, then the
+  brain gets the clause). Anything that keys off `Gated` sees a paused clock already.
+- **Tier 0 heard "great" as the verb "write"**: "Great great. Okay." became "Type 'great. Okay'?" until
+  acknowledgements were kept out of its verb guess. Every ack word must stay out of the guessers.
+- **`nova eval --sessions`** (2026-11-14, qwen3.5:4b on the GPU, 7 sessions / 38 lines): 34/41 clauses right
+  (82.9 %), 1 action on 10 small-talk lines — "hold on" went to Tier 1, which opened Calculator again (the session
+  context said "launch the calculator: Opened Calculator"). On his Start menu "the notes app" is Sticky Notes to
+  Tier 1, and the next clause then builds on Sticky Notes. "go ahead and minimize this window" splits after
+  "go ahead" (a clause of its own, which Tier 1 acted on).
+- **SAPI pauses at commas long enough for the 300 ms talk endpoint.** Replay of the recording (28 s WAV): "Alright,
+  can you open up the notes app…" came out as two finals and "Cool, thank you. That's all." as three. Harmless
+  there (the ack pieces drop) — expect the same from real speech with pauses at commas. Every final landed
+  321–482 ms after the speech ended.
+- **Replay timings, fake hands** (same run): end of clause → action start p50 323 ms on Tier 0 (3 clauses), 1,006 ms
+  on Tier 1 (4); nothing queued ahead of any of them. The fake hands take ~0 ms, so a real queue wait is longer by
+  the steps ahead.
+- The session context costs ~12–13 prompt tokens per `before` entry on qwen3.5:4b; five add ~64 tokens and
+  10–16 ms. llama-server's `prompt_tokens` counts only what isn't cached: 42–82 per Tier 1 clause in the replay,
+  the static prefix not included.
 
 ## Local LLM (Ollama 0.30)
 - **Never pick a `*-cloud` tag** — Ollama lists cloud models next to local ones. `is_cloud()` filters them.
@@ -97,6 +120,8 @@ memories aren't shared, this file is.
   (`num_predict: 1`) cut CPU prompt eval from 2.6 s to 0.3 s.
 - qwen3.5's Modelfile sets `presence_penalty 1.5` / `repeat_penalty 1.1` even at temp 0; Nova overrides them
   (`nova/brain/llm.py`). Compact few-shot JSON keeps grammar decoding at full speed.
+- **Ollama 0.30.10 rejects `keep_alive: "-1"` as a string** (HTTP 400 "missing unit"): keep a model for a whole
+  talk session with `"24h"`.
 - Ollama ignores the Intel Arc iGPU unless `OLLAMA_IGPU_ENABLE=1`. Re-run `nova bench-llm` after any Ollama upgrade.
 - **A cold load outlasts the request timeout** (qwen3.5:4b on the RTX: 7–15 s; `llm.timeout_s` is 8), and dropping
   the request drops the load. Loading is its own step on its own client (`llm.Loader`): a cold request waits for
@@ -141,6 +166,11 @@ memories aren't shared, this file is.
   backslashes with an editor tool, not heredocs.
 - Bare `python` in Git Bash can be the Microsoft Store stub: it hangs instead of failing, and `a || b` never reaches
   `b`. Always `uv run python`. Give pytest a `timeout` when its output goes through a pipe.
+- A git worktree has no `models/` (git-ignored): link it with a directory junction
+  (`mklink /J models C:\dev\nova\models`), and remove the junction before removing the worktree.
+- `nova eval --sessions --replay N` writes its WAV, SSML and traces to `.foreman/scratch/replay/`; SAPI speaks into
+  the file, never the speakers. Set `PYTHONIOENCODING=utf-8` when redirecting its output (the console code page
+  turns "…" and "≥" into "?").
 
 ## Working on someone's real laptop
 - Anything that sends keys, pastes or takes focus goes to whatever window is in front. Run focus-free checks first,

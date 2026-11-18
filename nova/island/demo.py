@@ -19,6 +19,7 @@ from ..bus import Bus
 from ..events import (
     AlwaysListeningChanged,
     Asking,
+    ClausesSkipped,
     CommandFinished,
     DictatedText,
     FinalTranscript,
@@ -31,6 +32,7 @@ from ..events import (
     SpeechReady,
     StateChanged,
     StepsChanged,
+    TalkChanged,
 )
 
 LEVEL_HZ = 30
@@ -74,6 +76,60 @@ def _say(utterance: int, *partials: str, final: str, accept: bool = True) -> lis
         events.append(Gated(utterance, True, "key", final, final, "Copilot key", False, False, 0.0))
     beats.append(Beat(0.2, tuple(events)))
     return beats
+
+
+def _talk(what: str, why: str) -> TalkChanged:
+    return TalkChanged(what, why, None if what in ("paused", "closed") else 30.0, 0.0)
+
+
+def _heard(utterance: int, *partials: str, final: str) -> list[Beat]:
+    """Inside a talk session: live words while he speaks, then the final (the gate's verdict comes after)."""
+    beats = [Beat(0.6, (Talk(True), PartialTranscript(utterance, partials[0])))]
+    beats += [Beat(0.4, (PartialTranscript(utterance, text),)) for text in partials[1:]]
+    beats.append(Beat(0.35, (Talk(False), FinalTranscript(utterance, final, final, "silence", 180.0, 300.0, 2000.0))))
+    return beats
+
+
+def _clause(utterance: int, final: str, text: str, index: int = 0, waited: float | None = None) -> Gated:
+    return Gated(utterance, True, "talk", text, final, "talk session", False, False, 0.0, True, True, index, waited)
+
+
+def _session() -> Scene:
+    """Flow D(1) of the 07b blueprint, then a failed step with two clauses waiting, the closing shrink
+    and "that's all" — events in the order the controller publishes them."""
+    first = "Open Notepad and then create a new note."
+    failing = "Open the notes app, then create a new note and make the title say hello."
+    return Scene("session", "tap Copilot: the session pill stays up, clause by clause; Stop closes it", (
+        Beat(0.0, (Go("listening", "Copilot key"),)),
+        Beat(0.15, (_talk("opened", "copilot"), Go("idle", "talk session"))),
+        *_heard(30, "open notepad", "open notepad and then", "open notepad and then create a new note", final=first),
+        Beat(0.05, (_talk("paused", "running"), Go("thinking", "talk"), _clause(30, first, "Open Notepad"))),
+        Beat(0.25, (Go("acting", "plan"), StepsChanged(("Notepad",), 0))),
+        Beat(0.7, (CommandFinished(True, "Opened Notepad"), Go("thinking", "next clause"),
+                   _clause(30, first, "create a new note", 1, 1.0))),
+        Beat(0.6, (Go("acting", "plan"), StepsChanged(("Notepad", "new note"), 1))),
+        Beat(0.6, (CommandFinished(True, "New note in Notepad"), Go("done", "New note in Notepad"),
+                   _talk("resumed", "done"))),
+        Beat(1.5, (Go("idle", "done"),)),
+        *_heard(31, "great", final="Great, okay."),  # small talk: dropped, nothing changes
+        Beat(0.05, (Gated(31, False, "small-talk", "Great, okay.", "Great, okay.", "small talk", False, False, 0.0,
+                          True),)),
+        *_heard(32, "open the notes app", "open the notes app then create a new note", failing.lower(), final=failing),
+        Beat(0.05, (_talk("paused", "running"), Go("thinking", "talk"), _clause(32, failing, "Open the notes app"))),
+        Beat(0.7, (CommandFinished(False, "Couldn't find the notes app"), Go("error", "Couldn't find the notes app"),
+                   ClausesSkipped(("create a new note", "make the title say hello"), "the step before it didn't finish",
+                                  0.0),
+                   _talk("resumed", "done"))),
+        Beat(3.0, (Go("idle", "error shown"),)),
+        Beat(1.5, (_talk("closing", "idle"),)),  # 5 s before the idle close: the pill shrinks
+        *_heard(33, "that's", "that's all", final="That's all."),  # he speaks: it snaps back
+        Beat(0.05, (_talk("paused", "running"), Go("thinking", "talk"), _clause(33, "That's all.", "That's all."))),
+        Beat(0.2, (Go("acting", "plan"), StepsChanged(("End the talk session",), 0))),
+        Beat(0.2, (_talk("closed", "phrase"), CommandFinished(True, "Talk session ended"),
+                   Go("done", "Talk session ended"))),
+        Beat(1.5, (Go("idle", "done"),)),
+        Beat(1.2),
+    ))
 
 
 def _scenes() -> tuple[Scene, ...]:
@@ -145,6 +201,7 @@ def _scenes() -> tuple[Scene, ...]:
             Beat(3.0, (Go("idle", "voice mode ended"),)),
             Beat(1.2),
         )),
+        _session(),
         Scene("pinned", "Ctrl+Copilot: a status pill stays between commands (drag it; double-click = back)", (
             Beat(0.0, (PinToggled(0.0),)),
             Beat(2.5, (AlwaysListeningChanged(False),)),

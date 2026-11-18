@@ -27,6 +27,20 @@ def test_eval_and_bench_dispatch(monkeypatch):
     assert seen[1] == ("bench", ("a:1b", "b:2b"), {"devices": ("gpu", "arc"), "cpu_cases": 40, "save": True})
 
 
+def test_eval_sessions_flags_parse(monkeypatch):
+    seen = []
+    monkeypatch.setattr("nova.session_eval.main", lambda **kw: seen.append(kw) or 0)
+    monkeypatch.setattr("nova.evals.main", lambda **kw: seen.append("intents") or 0)
+    assert cli.main(["eval", "--sessions"]) == 0
+    assert cli.main(["eval", "--sessions", "--replay", "1", "--device", "gpu", "--quiet"]) == 0
+    assert seen == [{"replay": 0, "model": None, "device": None, "misses": True},
+                    {"replay": 1, "model": None, "device": "gpu", "misses": False}]
+    with pytest.raises(SystemExit):
+        cli.main(["eval", "--replay", "1"])  # the replay is of a session
+    with pytest.raises(SystemExit):
+        cli.main(["eval", "--sessions", "--tier1"])  # sessions run Tier 0 -> Tier 1 as live
+
+
 def test_say_and_latency_dispatch(monkeypatch):
     seen = []
     monkeypatch.setattr("nova.say.main", lambda text, dry=False, chrome_wait=0.0: seen.append((text, dry)) or 0)

@@ -1,6 +1,7 @@
 import os
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import pytest
 
@@ -382,3 +383,23 @@ def test_save_value_refuses_a_broken_file(tmp_path):
     with pytest.raises(ConfigError):
         store.save_value("triggers.always_listening", False)
     assert path.read_text(encoding="utf-8") == "triggers: [oops\n"
+
+
+# --- Stage 07b: talk sessions -----------------------------------------------------------------------
+
+
+def test_session_idle_s_default_and_range():
+    assert Settings().session.idle_s == 30.0
+    assert load_text(DEFAULT_YAML).session == Settings().session  # the written file says the same
+    assert load_text("session:\n  idle_s: 45\n").session.idle_s == 45.0
+    assert load_text("session:\n  idle_s: 10\n").session.idle_s == 10.0
+    assert load_text("session:\n  idle_s: 600\n").session.idle_s == 600.0
+    for bad in (9, 9.5, 601, 0, -30):
+        with pytest.raises(ConfigError, match=r"^session\.idle_s must be between 10 and 600 seconds$"):
+            load_text(f"session:\n  idle_s: {bad}\n")
+    with pytest.raises(ConfigError, match=r"session\.idle_s must be a number"):
+        load_text("session:\n  idle_s: soon\n")
+    assert "copilot_key: true        # hold = push-to-talk, tap = a talk session\n" in DEFAULT_YAML
+    # The checked-in settings.yaml is the default file, word for word.
+    shipped = Path(__file__).resolve().parents[1] / "config" / "settings.yaml"
+    assert shipped.read_text(encoding="utf-8") == DEFAULT_YAML

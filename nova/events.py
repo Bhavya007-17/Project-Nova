@@ -145,6 +145,39 @@ class Gated:
     safe_only: bool  # always-listening: only safe actions may run
     wake_only: bool  # only the name: Nova is listening for the command
     at: float
+    # Talk sessions (Stage 07b). Defaulted so every positional constructor above keeps working.
+    talk: bool = False  # a clause of a talk session: no name needed
+    request: bool = True  # worded as a request (verb first or a polite frame); False: an unsure plan is dropped quietly
+    clause: int = 0  # which clause of the final, 0-based
+    waited: float | None = None  # seconds it waited in the queue behind earlier clauses
+
+
+@dataclass(frozen=True)
+class TalkChanged:
+    """A talk session (SPEC §5) opened, closed, or its idle clock moved. Drives the session pill."""
+
+    what: str  # opened | closed | paused | resumed | closing
+    # opened: copilot | chord | wake | named · closed: phrase | tap | Esc | stop button | idle | off | asleep |
+    # voice mode | teaching · paused: running | dictating · resumed: done | ignored | name · closing: idle
+    why: str
+    closes_at: float | None  # perf_counter time it closes if nothing happens; None = clock paused, or closed
+    at: float
+
+
+@dataclass(frozen=True)
+class ClausesSkipped:
+    """A talk session's queue stopped (failed step, declined / timed-out Confirm, stop, Esc, too old)."""
+
+    texts: tuple[str, ...]  # the clause texts that won't run, in order
+    why: str
+    at: float
+
+
+@dataclass(frozen=True)
+class TalkEndRequested:
+    """The brain ran the closing phrase (listening end_session): the controller closes the talk."""
+
+    why: str = "phrase"
 
 
 @dataclass(frozen=True)
@@ -228,7 +261,8 @@ class PinToggled:
 class IslandAction:
     """He answered in the island without speaking (the island never takes focus; keys come from the hook).
 
-    what: yes | no | choice (index = 0-based) | retry | show-me | chip (chip = its id). via: click | key.
+    what: yes | no | choice (index = 0-based) | retry | show-me | chip (chip = its id) | stop-session (the session
+    pill's stop button: closes the talk session like Esc). via: click | key.
     """
 
     what: str

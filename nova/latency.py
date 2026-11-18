@@ -2,7 +2,9 @@
 
 "start" = end of speech (key release counts) -> the first action began; "total" = end of
 speech -> done (app start-up and the like included). Typed `nova say` commands have no
-speech, so they're listed apart. Path rows (SPEC §16 budgets): tier 0, tier 1 GPU / CPU.
+speech, so they're listed apart. Path rows (SPEC §16 budgets): tier 0, tier 1 GPU / CPU; talk-session clauses
+(07b) have their own "session tier …" rows without the time they waited behind earlier clauses, which is
+the "session queue wait" row.
 Dictation rows (SPEC §11: a segment lands <= 1 s after the pause): p50 / p95 from the moment
 the pause ended the segment to the text landing; "done" = from the end of his speech. A misheard
 word the local model found is fixed in place later: its row says when the fix landed.
@@ -88,8 +90,16 @@ def summarize(records: Iterable[dict]) -> list[Row]:
         path = "tier 0" if tier == "0" else (f"tier 1 {str(record.get('device') or '?').upper()}" if tier == "1" else "")
         if path and record.get("via") == "say":
             path = f"(typed) {path}"
+        # A talk-session clause (07b) may wait behind earlier ones: its path row takes that wait out, and the wait
+        # gets a row of its own.
+        waited = record.get("queue_ms") if record.get("talk") else None
+        waited = float(waited) if isinstance(waited, (int, float)) else 0.0
+        if path and record.get("talk"):
+            path = f"session {path}"
+            if waited:
+                starts.setdefault("session queue wait", []).append(waited)
         for key in (name,) if record.get("asked") else tuple(k for k in (name, overall, path) if k):
-            starts.setdefault(key, []).append(float(record["start_ms"]))
+            starts.setdefault(key, []).append(float(record["start_ms"]) - (waited if key == path else 0.0))
             if isinstance(record.get("total_ms"), (int, float)):
                 totals.setdefault(key, []).append(float(record["total_ms"]))
             oks[key] = oks.get(key, 0) + (1 if record.get("ok") else 0)
@@ -101,7 +111,7 @@ def summarize(records: Iterable[dict]) -> list[Row]:
             after, total, landed = dictated[key]
             rows.append(Row(key, len(after), percentile(after, 50), percentile(after, 95),
                             percentile(total, 50) if total else None, sum(landed)))
-    for name in sorted(starts, key=lambda n: (n.startswith(("all", "(typed)", "tier")), n)):
+    for name in sorted(starts, key=lambda n: (n.startswith(("all", "(typed)", "tier", "session")), n)):
         values = starts[name]
         total = totals.get(name)
         rows.append(Row(name, len(values), percentile(values, 50), percentile(values, 95),

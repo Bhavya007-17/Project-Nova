@@ -80,6 +80,11 @@ def unaddressed(rules: EndpointRules) -> EndpointRules:
 DICTATION_RULES = EndpointRules(short_silence_ms=600, long_silence_ms=600, max_ms=None)  # SPEC §11: segments on
 # pauses of 600 ms; no cap (a long sentence is one segment)
 
+# A talk session (SPEC §5): every short pause ends a piece, so clauses act while he keeps talking. Pieces over 2.5 s
+# end on 450 ms, not 700 (one less beat before a long clause acts) and not 300: a hesitation inside a long clause
+# ("google search ... Norbert Wiener") must not cut it in two. Short pieces keep 300 ms; the 30 s cap stays.
+TALK_RULES = EndpointRules(long_silence_ms=450)
+
 
 @dataclass
 class Utterance:

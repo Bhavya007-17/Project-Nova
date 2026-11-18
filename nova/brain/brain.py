@@ -15,7 +15,7 @@ import queue
 import threading
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from .. import paths
 from ..actions import native
@@ -25,7 +25,7 @@ from ..actions.context import Context, snapshot
 from ..actions.hands import NovaControls, WindowsHands
 from ..bus import Bus
 from ..chrome.bridge import Bridge
-from ..config import Settings
+from ..config import Llm, Settings
 from ..dictation.cleanup import Cleaner
 from ..dictation.history import History
 from ..dictation.session import Dictation
@@ -44,6 +44,8 @@ from ..events import (
     SleepRequested,
     SpeechEnded,
     StepsChanged,
+    TalkChanged,
+    TalkEndRequested,
 )
 from ..governor import Governor
 from ..log import TraceLog
@@ -59,6 +61,12 @@ _log = logging.getLogger(__name__)
 
 _KEEP = 16
 _STOP = object()
+_FORGET_TALK = object()  # on the command queue: a talk session opened (FIFO: it runs before that session's commands)
+# keep_alive while a talk session is open: resident for the whole session. Not "-1": Ollama 0.30.10 answers a string
+# "-1" with HTTP 400 "time: missing unit in duration" (only the number -1 means forever there), and llm.keep_alive is
+# a string. "24h" reads the same on both runtimes (llama-server: an idle timer of a day). Closing re-arms the normal one.
+TALK_KEEP_ALIVE = "24h"
+_READ_OUT = "read it out"  # what the session context says for an answer read from a site (SPEC §14: never its text)
 
 
 class IslandAsker:
@@ -181,6 +189,9 @@ class Command:
     strict: bool = False  # always-listening: whole names only, safe actions only
     at: float = 0.0  # perf_counter when it arrived
     speech_end_at: float | None = None
+    talk: bool = False  # a command of a talk session (07b): Tier 1 sees the session's last steps
+    request: bool = True  # worded as a request; a session clause that isn't and that Nova isn't sure of is dropped
+    waited: float | None = None  # seconds it waited in the session queue behind earlier clauses
 
 
 def command_type(plan: Plan | None) -> str:
@@ -210,7 +221,8 @@ def handle(
     ctx: Context = snap(catalog)  # first: which apps are open helps Tier 0 with misheard names
     running = running_apps(ctx)
     router = router or Router()  # Tier 0 only
-    routed = router.route(command.text, ctx, catalog, strict=command.strict, via=command.via, running=running)
+    routed = router.route(command.text, ctx, catalog, strict=command.strict, via=command.via, running=running,
+                          talk=command.talk, request=command.request)
     settled: Settled = router.settle(routed, command.text, ctx, catalog, asker or executor.asker, via=command.via,
                                      running=running, progress=lambda state: publish(BrainProgress(state)))
     result: RunResult | None = None
@@ -232,6 +244,10 @@ def handle(
         detail = result.detail
         if not result.cancelled:
             publish(CommandFinished(result.ok, detail, hold=result.hold))
+    if command.talk and plan is not None and not (result and result.cancelled):
+        # The next clauses may point at this step ("there", "it"). An answer read from a site stays out (SPEC §14).
+        ok = result.ok if result is not None else True
+        router.remember(command.text, ok, _READ_OUT if result is not None and result.hold else detail)
     done = time.perf_counter()
     ran = result.plan if result and result.plan else plan
     thought = next((r.thought for r in settled.rounds if r.thought is not None), None)
@@ -240,6 +256,7 @@ def handle(
         "kind": "command",
         "utterance": command.utterance,
         "via": command.via,
+        "talk": command.talk,
         "text": command.text,
         "tier": routed.tier,
         "plan_kind": ran.kind if ran else (routed.kind or "none"),
@@ -255,6 +272,7 @@ def handle(
         **(thought.trace() if thought is not None else {}),
         "rounds": len(settled.rounds),
         "wait_ms": round((began - origin) * 1000, 1),
+        "queue_ms": round(command.waited * 1000, 1) if command.waited is not None else None,  # behind earlier clauses
         "start_ms": round((result.started_at - origin) * 1000, 1) if result and result.started_at else None,
         "exec_ms": round(sum(s.ms for s in result.steps), 1) if result else None,
         "total_ms": round((done - origin) * 1000, 1),
@@ -273,6 +291,8 @@ class Brain:
         self._bus = bus
         self._catalogs = catalogs
         self._trace = trace
+        self._settings = settings
+        self._talk_open = False  # a talk session is open: the model stays resident until it closes (07b)
         self._commands: queue.SimpleQueue[object] = queue.SimpleQueue()
         self._answers: queue.SimpleQueue[object] = queue.SimpleQueue()
         self._ends: dict[int, float] = {}
@@ -283,12 +303,12 @@ class Brain:
         self._executor = Executor(self._hands, IslandAsker(bus, self._answers), progress=self._progress)
         client = connect(settings().ollama.url, lambda: settings().llm.runtime)
         self._governor = Governor(client, lambda: settings().llm)
-        self._tier1 = Tier1(client, self._governor, lambda: settings().llm, catalogs.current,
+        self._tier1 = Tier1(client, self._governor, self._llm, catalogs.current,
                             warming=lambda: bus.publish(BrainProgress("warming", WARMING)),
                             warmed=lambda: bus.publish(BrainProgress("thinking")))
         self._router = Router(self._tier1, page=chrome.page_rows if chrome is not None else None)
         # Dictation (Stage 07): the same model as Tier 1 cleans it up, through the same governor and loader.
-        self._cleaner = Cleaner(self._governor, lambda: settings().llm, terms,
+        self._cleaner = Cleaner(self._governor, self._llm, terms,
                                 client=client.sibling,
                                 enabled=lambda: settings().dictation.cleanup, loader=self._tier1.loader)
         self.dictation = Dictation(bus, self._cleaner, Target(catalogs.current, browser),
@@ -304,6 +324,7 @@ class Brain:
             bus.subscribe(SessionCancelled, self._on_cancelled),
             bus.subscribe(PreloadHint, lambda event: self._tier1.preload(event.reason)),
             bus.subscribe(ConfigChanged, self._on_config),
+            bus.subscribe(TalkChanged, self._on_talk),
         ]
         self._thread = threading.Thread(target=self._run, name="nova-brain", daemon=True)
 
@@ -329,7 +350,25 @@ class Brain:
         if not event.accepted or event.wake_only:
             return
         end = self._ends.get(event.utterance)
-        self._commands.put(Command(event.text, event.utterance, event.via, event.safe_only, event.at, end))
+        self._commands.put(Command(event.text, event.utterance, event.via, event.safe_only, event.at, end,
+                                   talk=event.talk, request=event.request, waited=event.waited))
+
+    def _llm(self) -> Llm:
+        """The model settings Tier 1 and dictation cleanup use: while a talk session is open, the model stays."""
+        llm = self._settings().llm
+        return replace(llm, keep_alive=TALK_KEEP_ALIVE) if self._talk_open else llm
+
+    def _on_talk(self, event: TalkChanged) -> None:
+        """Bus thread: only flags and background work here; the session context is the brain thread's."""
+        if event.what == "opened":
+            self._talk_open = True
+            # A new session starts with nothing to point at. Cleared at the opening, not the close: clauses still
+            # running after a tap-close keep their context, and "opened" comes before the command that opens it.
+            self._commands.put(_FORGET_TALK)
+            self._tier1.keep_warm()  # load it now, while he says the first thing (no PreloadHint inside a session)
+        elif event.what == "closed":
+            self._talk_open = False
+            self._tier1.keep_warm(only_if_resident=True)  # the normal keep_alive again; never loads for it
 
     def _on_speech_end(self, event: SpeechEnded) -> None:
         if event.reason != "cancel":
@@ -356,6 +395,9 @@ class Brain:
             item = self._commands.get()
             if item is _STOP:
                 return
+            if item is _FORGET_TALK:
+                self._router.forget_talk()
+                continue
             if not isinstance(item, Command):
                 continue
             self._busy = True
@@ -403,6 +445,9 @@ class Brain:
         return "Dictation isn't on"
 
     def _listening(self, op: str) -> str:
+        if op == "end_session":  # "that's all": the controller closes the talk session; Nova stays awake
+            self._bus.publish(TalkEndRequested("phrase"))
+            return "Talk session ended"
         asleep = op != "wake"
         self._bus.publish(SleepRequested(asleep))
         return "Sleeping — say Nova or press Copilot to wake me" if asleep else "Listening again"

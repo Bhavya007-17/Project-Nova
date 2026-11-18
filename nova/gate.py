@@ -213,6 +213,7 @@ class Addressing:
     asleep: bool = False  # "stop listening": only the name or the key count
     busy: bool = False  # a key / wake session is waiting for its own words: this isn't them
     working: bool = False  # thinking / acting on a command: what passes now runs next (the state machine queues it)
+    talk: bool = False  # a clause of a talk session (SPEC §5): no name needed
 
 
 @dataclass(frozen=True)
@@ -234,6 +235,9 @@ class Decision:
     heard: str  # the whole final
     why: str  # plain words for logs and `nova listen --gate`
     safe_only: bool = False  # always-listening: only safe actions may run
+    talk: bool = False  # a clause of a talk session
+    request: bool = True  # worded as a request (the state machine fills it from the clause)
+    clause: int = 0  # which clause of the final, 0-based (the state machine fills it)
 
     @property
     def wake_only(self) -> bool:
@@ -254,11 +258,13 @@ def decide(text: str, addressing: Addressing, env: Env) -> Decision:
     if addressing.session is not None:
         via = "wake" if addressing.session == "wake" else "key"
         why = f"you said {name} first" if via == "wake" else ("Copilot key" if addressing.session == "copilot" else "chord")
-        return Decision(True, via, rest if rest is not None else heard, heard, why)
+        return Decision(True, via, rest if rest is not None else heard, heard, why, talk=addressing.talk)
     if rest is not None:
-        return Decision(True, "wake", rest, heard, f"starts with {name}")
+        return Decision(True, "wake", rest, heard, f"starts with {name}", talk=addressing.talk)
     if addressing.busy:
         return ignored("busy", f"listening for something else: say {name} or use the key")
+    if addressing.talk:
+        return _talk(heard, env)
     if addressing.passthrough:
         return ignored("passthrough", f"voice mode is on: say {name} or use the key")
     if addressing.asleep:
@@ -290,3 +296,21 @@ def decide(text: str, addressing: Addressing, env: Env) -> Decision:
         return over_speakers  # "pause" and "volume down" have to work over a video; a video can't open apps
     target = f" {resolved.target}" if resolved.target and resolved.target != "active" else ""
     return Decision(True, "always", resolved.text or heard, heard, f"{resolved.action}{target}", safe_only=True)
+
+
+def _talk(heard: str, env: Env) -> Decision:
+    """A talk clause: every action class as if keyed - unless the speakers play or another app holds the mic, when
+    only what strict Tier 0 calls safe runs without the name (SPEC §5; a video must not type or close)."""
+    if not (env.mic_busy or env.speakers):
+        return Decision(True, "talk", heard, heard, "talk session", talk=True)
+    words = command_words(heard)
+    resolved = env.resolver.resolve(words, media=env.speakers) if words is not None else None
+    if resolved is None or not resolved.safe:
+        name = env.wake.name
+        if env.mic_busy:
+            return Decision(False, "mic-busy", heard, heard, f"{env.mic_busy} is using the mic: say {name} or use the key",
+                            talk=True)
+        return Decision(False, "speakers", heard, heard, f"the speakers are playing: say {name} or use the key",
+                        talk=True)
+    return Decision(True, "talk", resolved.text or heard, heard, "talk session: safe actions only", safe_only=True,
+                    talk=True)

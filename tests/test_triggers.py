@@ -54,6 +54,9 @@ class FakeSpeech:
     def set_dictating(self, on):
         self.calls.put(("dictating", on))
 
+    def set_talking(self, on):
+        self.calls.put(("talking", on))
+
     def drain(self, wait=0.2):
         out, deadline = [], time.monotonic() + wait
         while time.monotonic() < deadline:
@@ -220,8 +223,8 @@ def test_stub_brain_finishes_commands_and_opens_the_follow_up_window(rig):
     stub_brain(r.bus)
     finished = []
     r.bus.subscribe(CommandFinished, finished.append)
-    assert r.say("Nova, open Chrome").accepted
-    assert [f.detail for f in finished] == ["open Chrome"]  # the island shows ✓ + the command
+    assert r.say("open spotify").accepted  # outside a session ("Nova, ..." opens one: no follow-up window)
+    assert [f.detail for f in finished] == ["open spotify"]  # the island shows ✓ + the command
     assert r.next(StateChanged, where=lambda e: e.new == "done")
     assert r.say("now close Spotify").via == "follow-up"
 
@@ -296,7 +299,7 @@ def test_a_running_apps_provider_that_raises_never_breaks_the_gate(rig, caplog):
 
 
 def asking(r, kind):
-    assert r.say("Nova, do the thing").accepted
+    assert r.say("open spotify").accepted  # outside a session: after a No, Esc is disarmed again
     r.bus.publish(BrainProgress(kind))
     r.next(StateChanged, where=lambda e: e.new == kind)
     deadline = time.monotonic() + 1.0
@@ -361,7 +364,7 @@ def test_stop_while_busy_cancels_the_running_command(rig):
 def test_a_command_that_waited_too_long_is_skipped_with_a_note(rig):
     now = [100.0]
     r = rig(clock=lambda: now[0])
-    r.bus.publish(FinalTranscript(1, "Nova, open Chrome", "x", "silence", 1.0, 1.0, 1.0))
+    r.bus.publish(FinalTranscript(1, "open notepad", "x", "silence", 1.0, 1.0, 1.0))  # outside a session (07b)
     assert r.next(Gated).accepted
     r.bus.publish(BrainProgress("acting"))
     r.bus.publish(FinalTranscript(2, "open spotify", "x", "silence", 1.0, 1.0, 1.0))
@@ -437,3 +440,106 @@ def test_warming_moves_the_thinking_deadline_and_thinking_brings_it_back(rig, ca
     assert deadline_is(now[0] + HEARD_WAIT_S)
     assert r.triggers.machine.state.value == "thinking"
     assert not [e for e in r.events.queue if isinstance(e, SessionCancelled)]
+
+
+# --- talk sessions (Stage 07b) ---------------------------------------------------------------------------------
+
+from nova.config import SessionSettings  # noqa: E402
+from nova.events import ClausesSkipped, TalkChanged, TalkEndRequested  # noqa: E402
+
+
+def tap(r):
+    r.key(True)
+    r.key(False)  # well under HOLD_S: a tap
+    return r.next(TalkChanged, where=lambda e: e.what == "opened")
+
+
+def eventually(check, timeout=1.0):
+    deadline = time.monotonic() + timeout
+    while not check() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    return check()
+
+
+def test_a_tap_switches_the_speech_worker_to_talk_rules(rig):
+    r = rig()
+    tap(r)
+    calls = r.speech.drain()
+    assert ("talking", True) in calls and ("attentive", True) in calls
+    assert eventually(lambda: r.keys.esc_armed)
+    r.triggers.key_event(TriggerEvent("esc", True, time.perf_counter()))
+    assert r.next(TalkChanged, where=lambda e: e.what == "closed").why == "Esc"
+    assert ("talking", False) in r.speech.drain()
+    assert eventually(lambda: not r.keys.esc_armed)
+
+
+def test_talk_changes_reach_the_bus(rig):
+    r = rig()
+    opened = tap(r)
+    assert opened.why == "copilot" and opened.closes_at is not None and opened.closes_at > opened.at
+    speak(r, 1, "open notepad", talk_s=0.15)
+    assert r.next(TalkChanged, where=lambda e: e.what == "paused").why == "running"  # before the clause's Gated
+    gated = r.next(Gated, where=lambda e: e.utterance == 1)
+    assert gated.accepted and gated.talk and gated.via == "talk"
+    r.bus.publish(CommandFinished(True, "Opened Notepad"))
+    resumed = r.next(TalkChanged, where=lambda e: e.what == "resumed")
+    assert resumed.why == "done" and resumed.closes_at is not None
+
+
+def test_talk_end_requested_closes_the_session(rig):
+    r = rig()
+    tap(r)
+    r.bus.publish(TalkEndRequested())
+    assert r.next(TalkChanged, where=lambda e: e.what == "closed").why == "phrase"
+    assert eventually(lambda: r.triggers.machine.talk is None)
+
+
+def test_stop_button_closes_the_session(rig):
+    r = rig()
+    tap(r)
+    r.bus.publish(IslandAction("stop-session", time.perf_counter()))
+    assert r.next(TalkChanged, where=lambda e: e.what == "closed").why == "stop button"
+
+
+def test_session_idle_s_follows_settings(rig):
+    r = rig(settings=Settings(session=SessionSettings(idle_s=12.0)))
+    assert r.triggers.machine.idle_s == 12.0
+    opened = tap(r)
+    assert opened.closes_at - opened.at == pytest.approx(12.0, abs=0.5)
+    r.bus.publish(ConfigChanged(Settings(session=SessionSettings(idle_s=45.0))))
+    assert eventually(lambda: r.triggers.machine.idle_s == 45.0)
+
+
+def test_skipped_clauses_reach_the_bus(rig):
+    r = rig()
+    tap(r)
+    assert r.say("open notepad and then create a new note").accepted
+    r.bus.publish(CommandFinished(False, "Couldn't find Notepad"))
+    skipped = r.next(ClausesSkipped)
+    assert skipped.texts == ("create a new note",) and skipped.why == "the step before it didn't finish"
+
+
+def test_gated_carries_clause_and_wait(rig):
+    r = rig()
+    tap(r)
+    first = r.say("open notepad and then create a new note")
+    assert (first.talk, first.clause, first.request, first.waited) == (True, 0, True, None)
+    assert first.text == "open notepad" and first.heard == "open notepad and then create a new note"
+    r.bus.publish(CommandFinished(True, "Opened Notepad"))
+    second = r.next(Gated, where=lambda e: e.clause == 1)
+    assert second.accepted and second.text == "create a new note" and second.waited is not None
+    assert second.waited >= 0.0
+    small = r.say("great, okay")
+    assert not small.accepted and small.via == "small-talk" and small.talk
+
+
+def test_no_preload_hint_on_speech_inside_a_session(rig):
+    r = rig()
+    tap(r)
+    r.bus.publish(CommandFinished(True, "x"))  # nothing runs: no effect
+    time.sleep(0.05)
+    while not r.events.empty():
+        r.events.get()
+    r.say("great")
+    time.sleep(0.1)
+    assert not [e for e in r.events.queue if isinstance(e, PreloadHint)]

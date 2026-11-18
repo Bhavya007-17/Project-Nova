@@ -19,7 +19,7 @@ import queue
 import threading
 import time
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
 from .bus import Bus
@@ -28,6 +28,7 @@ from .events import (
     AlwaysListeningChanged,
     AnswerHeard,
     BrainProgress,
+    ClausesSkipped,
     CommandFinished,
     ConfigChanged,
     DictatedText,
@@ -45,6 +46,8 @@ from .events import (
     SpeechEnded,
     SpeechStarted,
     StateChanged,
+    TalkChanged,
+    TalkEndRequested,
 )
 from .gate import Decision, Env, NoResolver, Resolver, WakeName, strip_wake
 from .keys import Cancel, Gestures, TriggerEvent, TriggerKeys, parse_chord
@@ -58,6 +61,7 @@ from .state import (
     Done,
     Dropped,
     DropUtterance,
+    EndTalk,
     EndUtterance,
     Heard,
     Ignored,
@@ -67,10 +71,12 @@ from .state import (
     Preload,
     Progress,
     Queued,
+    Skipped,
     Sleep,
     SpeechEnd,
     SpeechStart,
     State,
+    TalkEvent,
     Tick,
     Transition,
     WakeHeard,
@@ -93,6 +99,7 @@ class SpeechControl(Protocol):
     def set_held(self, held: bool) -> None: ...
     def set_attentive(self, on: bool) -> None: ...
     def set_dictating(self, on: bool) -> None: ...
+    def set_talking(self, on: bool) -> None: ...
 
 
 class Detector(Protocol):
@@ -110,7 +117,7 @@ class _Resolver:
 _STOP = object()
 _SUBSCRIBED = (
     SpeechStarted, SpeechEnded, PartialTranscript, FinalTranscript, PowerChanged, ConfigChanged,
-    AlwaysListeningChanged, CommandFinished, BrainProgress, IslandAction, SleepRequested,
+    AlwaysListeningChanged, CommandFinished, BrainProgress, IslandAction, SleepRequested, TalkEndRequested,
 )
 _STATES = {state.value: state for state in State}
 
@@ -276,6 +283,10 @@ class Triggers:
         elif isinstance(item, IslandAction):
             if item.what == "no" and outputs(self._machine).asking:
                 self._feed(Cancel(now, "No"), now)  # the island's No = Esc; Yes / a choice is the brain's
+            elif item.what == "stop-session":
+                self._feed(Cancel(now, "stop button"), now)  # the session pill's stop button = Esc
+        elif isinstance(item, TalkEndRequested):
+            self._feed(EndTalk(now, item.why), now)  # the brain ran "that's all"
         elif isinstance(item, _Resolver):
             self._resolver = item.resolver
         elif isinstance(item, SleepRequested):
@@ -295,6 +306,7 @@ class Triggers:
         if first or triggers.always_listening != self._settings.triggers.always_listening:
             self._always = triggers.always_listening  # a tray toggle stays until the file says otherwise
         self._settings = settings
+        self._machine = replace(self._machine, idle_s=settings.session.idle_s)  # an open talk keeps its clock
         self._configure_keys()
 
     def _configure_keys(self) -> None:
@@ -323,7 +335,8 @@ class Triggers:
                 notes.pop(next(iter(notes)))
         self._feed(SpeechStart(utterance, event.at), now)
         m = self._machine
-        if m.state in (State.IDLE, State.DONE, State.ERROR) and m.session is None:
+        # Inside a talk the model is kept warm for the whole session already (the brain preloads on TalkChanged).
+        if m.state in (State.IDLE, State.DONE, State.ERROR) and m.session is None and m.talk is None:
             # A follow-up may need the LLM; always-listening only acts on what Tier 0 resolves, so "always" is a
             # hint the LLM ignores (room chatter must not keep a model loaded).
             if now < m.follow_up_until:
@@ -380,6 +393,8 @@ class Triggers:
             self._speech.set_attentive(after.attentive)
         if after.dictating != before.dictating:
             self._speech.set_dictating(after.dictating)
+        if after.talking != before.talking:
+            self._speech.set_talking(after.talking)
         if self._keys is not None and after.esc != before.esc:
             self._keys.esc_armed = after.esc
         if self._keys is not None and after.asking != before.asking:
@@ -402,7 +417,7 @@ class Triggers:
             self._trace_gate(effect.utterance, effect.decision, queued=True)
         elif isinstance(effect, Dropped):
             self._trace_gate(effect.utterance, effect.decision, accepted=False, via="dropped", why=effect.why)
-            if effect.stale:
+            if effect.stale and not effect.decision.talk:  # a talk's skipped clauses go out as ClausesSkipped
                 self._note = CommandFinished(False, f"Skipped “{_cut(effect.decision.text)}” — it waited too long")
                 bus.publish(self._note)  # the island's result line (not a result of the running command)
         elif isinstance(effect, Answer):
@@ -415,16 +430,25 @@ class Triggers:
             bus.publish(SessionCancelled(effect.why, now))
         elif isinstance(effect, PassthroughEnded):
             bus.publish(PassthroughStopped(effect.why, now))
+        elif isinstance(effect, TalkEvent):
+            _log.info("talk session %s (%s)", effect.what, effect.why)
+            bus.publish(TalkChanged(effect.what, effect.why, effect.closes_at, now))
+        elif isinstance(effect, Skipped):
+            bus.publish(ClausesSkipped(effect.texts, effect.why, now))
 
     def _gated(self, effect: Command | Ignored | Woke, now: float) -> None:
         d = effect.decision
-        if not (isinstance(effect, Command) and effect.waited is not None):  # a queued one was logged when accepted
+        waited = effect.waited if isinstance(effect, Command) else None
+        if waited is None:  # a queued one was logged when accepted
             self._trace_gate(effect.utterance, d)
-        self._bus.publish(Gated(effect.utterance, d.accepted, d.via, d.text, d.heard, d.why, d.safe_only, d.wake_only, now))
+        self._bus.publish(Gated(effect.utterance, d.accepted, d.via, d.text, d.heard, d.why, d.safe_only, d.wake_only,
+                                now, d.talk, d.request, d.clause, waited))
 
     def _trace_gate(self, utterance: int, d: Decision, **changes: object) -> None:
         if self._trace is not None:
             record = {"accepted": d.accepted, "via": d.via, "why": d.why, "safe_only": d.safe_only, "text": d.heard}
+            if d.talk:
+                record = {**record, "talk": True, "clause": d.clause, "request": d.request, "act_on": d.text}
             self._trace.write(kind="gate", utterance=utterance, **{**record, **changes})
 
     def _finished(self, event: CommandFinished) -> None:
