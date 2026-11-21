@@ -96,6 +96,8 @@ _bind(user32, "SetWindowPos", wintypes.BOOL, wintypes.HWND, wintypes.HWND, ctype
       ctypes.c_int, wintypes.UINT)
 _bind(user32, "PostMessageW", wintypes.BOOL, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
 _bind(user32, "GetCursorPos", wintypes.BOOL, POINTER(wintypes.POINT))
+_bind(user32, "GetSystemMetrics", ctypes.c_int, ctypes.c_int)
+_bind(user32, "GetDoubleClickTime", wintypes.UINT)
 _bind(user32, "WindowFromPoint", wintypes.HWND, wintypes.POINT)
 _bind(user32, "MonitorFromWindow", wintypes.HMONITOR, wintypes.HWND, wintypes.DWORD)
 _bind(user32, "MonitorFromPoint", wintypes.HMONITOR, wintypes.POINT, wintypes.DWORD)
@@ -625,3 +627,80 @@ _PHYSICAL_MODIFIERS = (0x10, 0x11, 0x12, 0x5B, 0x5C)  # shift, ctrl, alt, left /
 
 def modifiers_down() -> bool:
     return any(user32.GetAsyncKeyState(vk) & 0x8000 for vk in _PHYSICAL_MODIFIERS)
+
+
+# --- the mouse (SPEC §8.1): absolute SendInput on the virtual desktop, physical pixels -----------------------------
+
+_MOUSEEVENTF_MOVE, _MOUSEEVENTF_HWHEEL, _MOUSEEVENTF_VIRTUALDESK, _MOUSEEVENTF_ABSOLUTE = 0x1, 0x1000, 0x4000, 0x8000
+_BUTTON_FLAGS = {"left": (0x2, 0x4), "right": (0x8, 0x10), "middle": (0x20, 0x40)}
+
+
+def _virtual_desktop() -> tuple[int, int, int, int]:
+    """Left, top, width, height of all monitors together, physical pixels."""
+    with dpi_aware():
+        return tuple(int(user32.GetSystemMetrics(i)) for i in (76, 77, 78, 79))  # type: ignore[return-value]
+
+
+def _normalized(x: int, y: int, desk: tuple[int, int, int, int]) -> tuple[int, int]:
+    left, top, width, height = desk
+    return ((x - left) * 65535 + (width - 1) // 2) // max(1, width - 1),         ((y - top) * 65535 + (height - 1) // 2) // max(1, height - 1)
+
+
+def _mouse(flags: int, x: int = 0, y: int = 0, data: int = 0) -> INPUT:
+    item = INPUT(type=_INPUT_MOUSE)
+    item.u.mi = MOUSEINPUT(x, y, ctypes.c_uint32(data).value, flags, 0, NOVA_MARK)
+    return item
+
+
+def _move(x: int, y: int, desk: tuple[int, int, int, int]) -> INPUT:
+    nx, ny = _normalized(x, y, desk)
+    return _mouse(_MOUSEEVENTF_MOVE | _MOUSEEVENTF_ABSOLUTE | _MOUSEEVENTF_VIRTUALDESK, nx, ny)
+
+
+def _send(items: list[INPUT]) -> None:
+    array = (INPUT * len(items))(*items)
+    sent = int(user32.SendInput(len(items), array, ctypes.sizeof(INPUT)))
+    if sent != len(items):
+        raise ActionError("Windows blocked the mouse (a window running as administrator is in front?).")
+
+
+def cursor() -> tuple[int, int]:
+    point = wintypes.POINT()
+    with dpi_aware():
+        user32.GetCursorPos(byref(point))
+    return point.x, point.y
+
+
+def click_at(x: int, y: int, button: str = "left", count: int = 1) -> None:
+    """Move to (x, y) and click ``count`` times (2 = a double click: both inside the double-click time)."""
+    down, up = _BUTTON_FLAGS[button]
+    desk = _virtual_desktop()
+    _send([_move(x, y, desk)] + [_mouse(flag) for _ in range(count) for flag in (down, up)])
+
+
+def hover_at(x: int, y: int) -> None:
+    _send([_move(x, y, _virtual_desktop())])
+
+
+def drag(start: tuple[int, int], end: tuple[int, int], button: str = "left", steps: int = 12) -> None:
+    """Press at ``start``, move in steps (apps start a drag only after the mouse travels), release at ``end``."""
+    down, up = _BUTTON_FLAGS[button]
+    desk = _virtual_desktop()
+    _send([_move(*start, desk), _mouse(down)])
+    time.sleep(0.05)
+    for i in range(1, steps + 1):
+        x = start[0] + (end[0] - start[0]) * i // steps
+        y = start[1] + (end[1] - start[1]) * i // steps
+        _send([_move(x, y, desk)])
+        time.sleep(0.015)
+    time.sleep(0.05)
+    _send([_mouse(up)])
+
+
+def wheel_at(x: int, y: int, notches: int, horizontal: bool = False) -> None:
+    """Wheel ``notches`` (positive = down / right) over (x, y), then put the cursor back where it was. One batch,
+    so the wheel lands on what's under (x, y) even if he moves the mouse meanwhile."""
+    desk = _virtual_desktop()
+    home = cursor()
+    flag, sign = (_MOUSEEVENTF_HWHEEL, 1) if horizontal else (_MOUSEEVENTF_WHEEL, -1)
+    _send([_move(x, y, desk), _mouse(flag, data=sign * 120 * notches), _move(*home, desk)])
