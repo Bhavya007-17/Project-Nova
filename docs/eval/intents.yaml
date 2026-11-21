@@ -10,6 +10,8 @@
 #   dictation OP · listening OP · click · clarify · teach · handoff [claude|chatgpt]
 #   scroll_to · fill · canvas_due RANGE · canvas_open · canvas_text   (page / Canvas steps, Stage 06)
 #   docs_new (a new Google Doc, Stage 07)
+#   pick N [VERB] [to M] · numbers OP · grid · autoscroll OP · doc OP [PAGE] · screenshot [TARGET] · camera
+#   system OP · open_path NAME · nova OP   (Stage 07c)
 # Negatives: conversation that must not cause an action (asking is fine, acting is not).
 # Every item's screen: Chrome in front, these apps open (an item can set its own `front` / `open`).
 
@@ -375,7 +377,7 @@ positives:
   - say: can you scroll up
     want: scroll up
   - say: keep scrolling down
-    want: scroll down
+    want: autoscroll start || scroll down
 
   # --- typing and keys ----------------------------------------------------------------------------------------
   - say: type hello world
@@ -401,13 +403,13 @@ positives:
   - say: paste it
     want: press ctrl+v
   - say: undo that
-    want: press ctrl+z
+    want: nova undo || press ctrl+z
   - say: select everything
     want: press ctrl+a
   - say: save my work
     want: press ctrl+s
   - say: zoom in
-    want: press ctrl+=
+    want: doc zoom_in || press ctrl+=
   - say: show me the desktop
     want: press win+d
 
@@ -588,6 +590,66 @@ positives:
   - say: explain how a kalman filter works
     want: handoff claude
 
+  # --- control anything on screen (Stage 07c) -------------------------------------------------------------------
+  - say: show me the numbers
+    want: numbers show
+  - say: put numbers on everything on the screen
+    want: numbers show
+  - say: get rid of the numbers
+    want: numbers hide
+  - say: click number fourteen
+    want: pick 14
+  - say: right click on seven
+    want: pick 7 right
+  - say: double click 3
+    want: pick 3 double
+  - say: drag five over to nine
+    want: pick 5 to 9
+  - say: give me the grid
+    want: grid
+  - say: click the sign in button
+    want: click
+  - say: open the projects folder with a double click
+    want: click || open_path projects || clarify
+  - say: keep going down the page, slowly
+    want: autoscroll start || scroll down
+  - say: scroll slowly through this
+    want: autoscroll start
+  - say: go a little faster
+    want: autoscroll faster
+  - say: stop scrolling
+    want: autoscroll stop
+  - say: skip ahead to page thirty one
+    want: doc goto_page 31
+  - say: go to page 7
+    want: doc goto_page 7
+  - say: next page
+    want: doc next_page || scroll down page
+  - say: zoom out a bit
+    want: doc zoom_out || press ctrl+-
+  - say: make it fit the width
+    want: doc fit_width
+  - say: take a screenshot
+    want: screenshot
+  - say: grab a screenshot of just this window
+    want: screenshot window
+  - say: take a picture with the webcam
+    want: camera
+  - say: lock my computer
+    want: system lock
+  - say: put the laptop to sleep
+    want: system sleep
+  - say: open my downloads folder
+    want: open_path downloads
+  - say: find my cover letter in downloads
+    want: open_path cover letter
+  - say: go up one folder
+    want: nav up
+  - say: what can I say
+    want: nova help
+  - say: do that again
+    want: nova again
+
   # --- things Nova can't do yet: "show me?" ----------------------------------------------------------------------
   - say: switch fusion over to the dark theme
     want: teach || clarify
@@ -698,3 +760,8 @@ negatives:
   - I love this song
   - ok so the plan is we meet at six
   - he's minimizing his screen time this month
+  - I took a screenshot of the lecture slides yesterday
+  - my computer went to sleep during the exam
+  - page twelve of the textbook is so confusing
+  - the numbers on this report don't add up
+  - keep scrolling through tiktok is all he does

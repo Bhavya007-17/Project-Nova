@@ -37,7 +37,7 @@ IMPERATIVE_VERBS: frozenset[str] = frozenset({
     "fire", "boot", "focus", "navigate", "jump", "take", "get", "show", "minimize", "minimise", "maximize",
     "maximise", "restore", "snap", "move", "put", "make", "click", "press", "hit", "type", "write", "scroll",
     "search", "play", "pause", "resume", "unpause", "stop", "skip", "next", "previous", "mute", "unmute", "turn",
-    "volume", "new", "reload", "refresh", "reopen",
+    "volume", "new", "reload", "refresh", "reopen", "keep", "hover", "numbers", "grid", "screenshot",
     # Tier 0's other verbs and fixed commands
     "gimme", "hide", "unmaximize", "unminimize", "center", "centre", "throw", "send", "stick", "shove", "place",
     "drag", "push", "dock", "toss", "slide", "chuck", "park", "tap", "undo", "redo", "copy", "paste", "cut", "save",

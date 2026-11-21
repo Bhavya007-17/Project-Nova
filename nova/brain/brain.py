@@ -308,7 +308,9 @@ class Brain:
         self._tier1 = Tier1(client, self._governor, self._llm, catalogs.current,
                             warming=lambda: bus.publish(BrainProgress("warming", WARMING)),
                             warmed=lambda: bus.publish(BrainProgress("thinking")))
-        self._router = Router(self._tier1, page=chrome.page_rows if chrome is not None else None)
+        self._router = Router(self._tier1, page=chrome.page_rows if chrome is not None else None,
+                              numbers=lambda: self._hands.pointer.showing or self._hands.pointer.grid_on,
+                              scrolling=lambda: self._hands.scroller.scrolling)
         # Dictation (Stage 07): the same model as Tier 1 cleans it up, through the same governor and loader.
         self._cleaner = Cleaner(self._governor, self._llm, terms,
                                 client=client.sibling,
@@ -385,6 +387,7 @@ class Brain:
 
     def _on_cancelled(self, event: SessionCancelled) -> None:
         self._answers.put(event)
+        self._hands.scroller.stop()  # Esc / "stop" ends steady scrolling too (it runs on its own thread)
         if self._busy:  # Esc / superseded while thinking or acting: drop the LLM call, stop before the next step
             self._executor.cancel()
             self._router.abort()

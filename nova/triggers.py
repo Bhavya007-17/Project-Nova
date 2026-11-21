@@ -34,6 +34,7 @@ from .events import (
     MarksHidden,
     MarksHide,
     MarksShown,
+    SteadyScroll,
     DictatedText,
     DictationChanged,
     FinalTranscript,
@@ -121,7 +122,7 @@ _STOP = object()
 _SUBSCRIBED = (
     SpeechStarted, SpeechEnded, PartialTranscript, FinalTranscript, PowerChanged, ConfigChanged,
     AlwaysListeningChanged, CommandFinished, BrainProgress, IslandAction, SleepRequested, TalkEndRequested,
-    MarksShown, MarksHidden,
+    MarksShown, MarksHidden, SteadyScroll,
 )
 _STATES = {state.value: state for state in State}
 
@@ -163,6 +164,7 @@ class Triggers:
         self._settings = settings
         self._always = settings.triggers.always_listening
         self._marks_up = False  # numbers / a grid are on screen (Esc hides them first)
+        self._scrolling = False  # steady scrolling runs (a bare "stop" reaches it)
         self._wake = WakeName.of(settings.wake_name)
         self._apply_settings(settings, first=True)
         # Per-utterance detector notes (controller thread only).
@@ -304,6 +306,8 @@ class Triggers:
             self._marks_up = isinstance(item, MarksShown)
             if self._keys is not None:
                 self._keys.marks_up = self._marks_up
+        elif isinstance(item, SteadyScroll):
+            self._scrolling = item.on
 
     def _answer_key(self, event: TriggerEvent, now: float) -> None:
         """Enter / 1-4 from the hook while the island asks: the same as clicking it."""
@@ -377,6 +381,7 @@ class Triggers:
         return Env(
             self._wake, self._always, self._seen(),
             mic_busy=", ".join(recording) or None, speakers=speakers_playing(peaks),
+            numbers=self._marks_up, scrolling=self._scrolling,
         )
 
     def _seen(self) -> Resolver:

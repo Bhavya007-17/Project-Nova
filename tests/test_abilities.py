@@ -22,3 +22,9 @@ def test_topic_quotes_a_few_phrases():
     assert text.startswith("“scroll down”") and text.count("“") == abilities.MAX_EXAMPLES
     assert len(text) <= 110  # two lines in the pill
     assert "what can I say" in abilities.topic("nonsense")
+
+
+def test_every_plan_action_is_on_the_card():
+    from nova.brain import plan
+
+    assert set(abilities.ACTIONS) == set(plan.ACTIONS)

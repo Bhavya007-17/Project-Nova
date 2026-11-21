@@ -202,3 +202,47 @@ def test_dictation_never_lands_in_passwords_terminals_or_with_card_numbers():
     assert assess_dictation("ls\n", Scene(exe="WindowsTerminal.exe")).refuse
     assert assess_dictation("my card is 4111 1111 1111 1111", Scene(app="Notepad")).refuse
     assert assess_dictation("hi", Scene(locked=True)).refuse
+
+
+# --- 07c: clicks by name or number, dialogs, files, sleep ---------------------------------------------------------
+
+
+def test_clicking_or_picking_a_delete_in_file_explorer_is_refused():
+    assert assess(step("ui_click", name="delete"), EXPLORER).refuse
+    assert assess(step("pick", n=7, label="Delete"), EXPLORER).refuse
+    assert assess(step("ui_click", name="ok", label="OK", dialog="Move this file to the Recycle Bin?"), EXPLORER).refuse
+
+
+def test_ok_is_judged_by_the_dialog_it_answers():
+    risk = assess(step("ui_click", name="ok", label="OK", dialog="Delete 3 items?"), NOTEPAD)
+    assert risk.kind == "confirm" and "Delete 3 items?" in risk.question
+    assert assess(step("ui_click", name="ok", label="OK", dialog="Replace the existing file?"), NOTEPAD) is None
+    assert assess(step("pick", n=2, label="Yes", dialog="Send this message now?"), NOTEPAD).kind == "confirm"
+
+
+def test_dont_save_and_ordinary_clicks_go_straight_through():
+    assert assess(step("ui_click", name="don't save", label="Don't Save"), NOTEPAD) is None
+    assert assess(step("ui_click", name="save"), NOTEPAD) is None
+    assert assess(step("pick", n=4, label="Downloads"), EXPLORER) is None
+
+
+def test_a_numbered_click_on_a_risky_label_asks_first():
+    assert assess(step("pick", n=3, label="Submit Assignment"), CANVAS).question == "Click “Submit Assignment” on Canvas?"
+
+
+def test_dragging_files_asks_first():
+    risk = assess(step("pick", n=3, to=9, label="report.pdf"), EXPLORER)
+    assert risk.kind == "confirm" and "report.pdf" in risk.question
+    assert assess(step("pick", n=3, to=9, label="slider"), NOTEPAD) is None
+
+
+def test_sleep_asks_first_lock_does_not():
+    assert assess(step("system", op="sleep"), NOTEPAD).kind == "confirm"
+    assert assess(step("system", op="lock"), NOTEPAD) is None
+
+
+def test_programs_and_scripts_never_open_from_voice():
+    assert assess(step("open_path", name="setup", path=r"C:\Users\b\Downloads\setup.exe"), NOTEPAD).refuse
+    assert assess(step("open_path", name="run", path=r"C:\Users\b\Desktop\run.LNK"), NOTEPAD).refuse
+    assert assess(step("open_path", name="tools.py", path=r"C:\Users\b\Downloads\tools.py", dir=True), NOTEPAD) is None
+    assert assess(step("open_path", name="budget", path=r"C:\Users\b\Documents\budget.xlsx"), NOTEPAD) is None

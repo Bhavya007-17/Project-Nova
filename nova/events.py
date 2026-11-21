@@ -354,3 +354,10 @@ class MarksHide:
     """Asked to hide the numbers (Esc while they show)."""
 
     why: str
+
+
+@dataclass(frozen=True)
+class SteadyScroll:
+    """Steady scrolling started / stopped (the gate lets a bare "stop" through while it runs)."""
+
+    on: bool

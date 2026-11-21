@@ -38,6 +38,7 @@ _SUBMIT_WORDS = re.compile(r"\b(enter|return|send|submit|post)\b", re.IGNORECASE
 _GENERIC = frozenset({"app", "application", "program", "browser", "window", "website", "site", "page"})
 _POINTER_WORDS = frozenset({"active", "it", "this", "that", "here", "current", "window", "app", "one", "the", "my",
                             "focused", "front"})
+_RESOLVED = frozenset({"label", "dialog", "located", "path", "dir"})  # set by resolving, so the risk check sees truth
 _HOSTISH = frozenset({"www", "com", "org", "net", "edu", "io", "ai", "gov", "co", "app", "dev", "me", "tv", "us", "uk",
                       "m", "en", "web"})
 
@@ -293,6 +294,8 @@ def _fix(action: str, args: Mapping[str, Any], said: str, catalog: Catalog,
             return step("dictation", op=args.get("op"), **({"text": cut} if cut else {}))  # only words he said
         case "docs_new":
             return step("docs_new")
+        case "ui_click" | "pick" | "open_path":  # what's on screen / on disk is found by the hands, never the model
+            return Step(action, {k: v for k, v in args.items() if k not in _RESOLVED})
     return Step(action, dict(args))
 
 

@@ -16,6 +16,7 @@ from pathlib import Path
 
 from rapidfuzz import fuzz
 
+from ..brain.risk import runs_program
 from . import native
 from .native import ActionError
 
@@ -43,14 +44,11 @@ _KF_FLAG_CREATE = 0x8000
 THRESHOLD = 80.0  # WRatio of the spoken name against a file's name
 TIE = 5.0  # runners-up this close to the best are offered too
 MAX_FOUND = 4  # the island shows four choices
-RISKY_EXTENSIONS = frozenset({
-    ".exe", ".bat", ".cmd", ".com", ".ps1", ".psm1", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".wsh", ".msi", ".msp",
-    ".scr", ".pif", ".hta", ".cpl", ".reg", ".lnk", ".url", ".appref-ms", ".jar", ".py", ".pyw",
-})
 # words that say what kind of file, not its name: "the budget spreadsheet" is budget.xlsx
 _KINDS = {
     "pdf": (".pdf",), "spreadsheet": (".xlsx", ".xls", ".xlsm", ".csv", ".ods"), "excel": (".xlsx", ".xls", ".xlsm"),
     "csv": (".csv",), "word": (".docx", ".doc", ".rtf", ".odt"), "doc": (".docx", ".doc", ".rtf", ".odt"),
+    "document": (".docx", ".doc", ".rtf", ".odt", ".pdf"),
     "presentation": (".pptx", ".ppt", ".odp"), "slides": (".pptx", ".ppt", ".odp"), "powerpoint": (".pptx", ".ppt"),
     "photo": (".jpg", ".jpeg", ".png", ".heic", ".webp", ".gif", ".bmp"),
     "picture": (".jpg", ".jpeg", ".png", ".heic", ".webp", ".gif", ".bmp"),
@@ -136,7 +134,7 @@ def best(spoken: str, entries: list[Entry]) -> list[Entry]:
 
 def risky(path: str) -> bool:
     """Would opening this run something (a program, a script, a shortcut to one)?"""
-    return os.path.splitext(path)[1].lower() in RISKY_EXTENSIONS
+    return runs_program(path)
 
 
 # --- the disk ----------------------------------------------------------------------------------------------------
@@ -189,9 +187,35 @@ def find(spoken: str, folder: str | None = None) -> list[Entry]:
     return best(spoken, entries)
 
 
+def inside(path: str, roots: list[str]) -> bool:
+    """Is ``path`` (links and junctions followed) one of ``roots`` or under one of them?"""
+    real = os.path.normcase(os.path.realpath(path))
+    for root in roots:
+        base = os.path.normcase(os.path.realpath(root)).rstrip("\\/")
+        if real == base or real.startswith(base + os.sep):
+            return True
+    return False
+
+
+def _roots() -> list[str]:
+    roots = []
+    for key in _KNOWN:
+        try:
+            roots.append(str(known_folder(key)))
+        except ActionError:
+            continue
+    return roots
+
+
 def open_path(path: str, title: str) -> str:
+    """Opens his own file or folder with its default app. Checked here, where it opens, whatever the caller did:
+    nothing that runs a program, nothing outside his known folders."""
     if not os.path.exists(path):
         raise ActionError(f"{title} isn't there any more.")
+    if risky(path) and not os.path.isdir(path):
+        raise ActionError(f"I don't open programs or scripts from voice — {title} would run one.")
+    if not inside(path, _roots()):
+        raise ActionError("I only open things in your own folders.")
     native.grant_foreground()
     try:
         os.startfile(path)  # noqa: S606 - his own file, opened with its default app (executables are refused first)

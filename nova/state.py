@@ -698,7 +698,7 @@ def _talk_heard(m: Machine, e: Heard) -> Step:
         talk = replace(m.talk, left=m.idle_s, since=at, warned=False)
         ignored = Decision(False, "wake-only", heard, heard, "already listening: a talk session is open", talk=True)
         return Step(replace(m, talk=talk), (Ignored(ignored, utterance), TalkEvent("resumed", "name", talk.closes_at())))
-    if not running and not m.queue and not e.env.speakers and is_stop(heard, e.env.wake):
+    if not running and not m.queue and not e.env.speakers and not e.env.scrolling and is_stop(heard, e.env.wake):
         # "wait" / "hold on" with nothing running or waiting: nothing to stop, so it is small talk, not a clause for
         # the model to guess at. While the speakers play it stays a clause: "stop" has to reach the player.
         dropped = Decision(False, "stop", heard, heard, "nothing to stop", talk=True)

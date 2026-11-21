@@ -25,12 +25,19 @@ from . import paths
 from .actions.catalog import Catalog, words_of
 from .brain.plan import (
     AREAS,
+    AUTOSCROLL_OPS,
     CANVAS_RANGES,
+    CLICK_VERBS,
+    DOC_OPS,
     ENGINES,
     MEDIA_OPS,
     NAV_OPS,
+    NOVA_OPS,
+    NUMBERS_OPS,
     SCROLL_AMOUNTS,
     SCROLL_DIRS,
+    SHOT_TARGETS,
+    SYSTEM_OPS,
     WINDOW_OPS,
     Plan,
     Step,
@@ -44,7 +51,10 @@ _EDGE_FILLERS = frozenset({"for", "some", "the", "a", "an", "about", "on", "plea
                            "pictures", "picture", "images", "photos"})
 _MODIFIERS = ("ctrl", "shift", "alt", "win")
 _SIMPLE = {"tab": frozenset({"new", "close", "next", "prev", "reopen", "goto"}), "nav": NAV_OPS, "media": MEDIA_OPS,
-           "dictation": frozenset({"start", "stop", "paste"}), "listening": frozenset({"sleep", "wake", "off", "end_session"})}
+           "dictation": frozenset({"start", "stop", "paste"}), "listening": frozenset({"sleep", "wake", "off", "end_session"}),
+           "autoscroll": AUTOSCROLL_OPS, "numbers": NUMBERS_OPS, "system": SYSTEM_OPS, "nova": NOVA_OPS}
+# Words a file or folder name doesn't need ("my documents folder" = "documents").
+_PATH_FILLERS = frozenset({"the", "my", "a", "folder", "file"})
 _VOLUME = frozenset({"up", "down", "mute", "unmute", "set"})
 
 
@@ -97,6 +107,10 @@ def _norm_query(text: str) -> str:
     while words and words[-1] in _EDGE_FILLERS:
         words.pop()
     return " ".join(words)
+
+
+def _norm_path(text: str) -> str:
+    return " ".join(w for w in words_of(text) if w not in _PATH_FILLERS)
 
 
 def _norm_keys(keys: str) -> str:
@@ -163,8 +177,28 @@ def _want_step(text: str, catalog: Catalog) -> tuple:
         return ("volume", _ops(ops, _VOLUME, "volume"), int(level) if level else None)
     if head == "click" and not rest:
         return ("click",)
-    if head in ("scroll_to", "fill", "canvas_open", "canvas_text", "docs_new") and not rest:
+    if head in ("scroll_to", "fill", "canvas_open", "canvas_text", "docs_new", "camera", "grid") and not rest:
         return (head,)
+    if head == "doc" and rest:
+        op, _, page = rest.partition(" ")
+        return ("doc", _ops(op, DOC_OPS, "doc"), int(page) if page else None)
+    if head == "screenshot":
+        if rest and rest not in SHOT_TARGETS:
+            raise ValueError(f"screenshot target {rest!r}")
+        return ("screenshot", rest or None)
+    if head == "pick" and rest:  # pick N [VERB] [to M]
+        words = rest.split()
+        n, verb, to = int(words[0]), "click", None
+        for i, w in enumerate(words[1:], 1):
+            if w == "to":
+                to = int(words[i + 1])
+                break
+            if w not in CLICK_VERBS:
+                raise ValueError(f"pick verb {w!r}")
+            verb = w
+        return ("pick", n, verb, to)
+    if head == "open_path" and rest:
+        return ("open_path", _norm_path(rest))
     if head == "canvas_due" and rest in CANVAS_RANGES:
         return ("canvas_due", rest)
     raise ValueError(f"can't read want step {text!r}")
@@ -228,6 +262,18 @@ def _canon(s: Step) -> tuple:
             return ("canvas_text",)
         case "docs_new":
             return ("docs_new",)
+        case "camera" | "grid":
+            return (s.action,)
+        case "numbers":
+            return ("numbers", a.get("op") or "show")
+        case "doc":
+            return ("doc", a.get("op"), a.get("page"))
+        case "screenshot":
+            return ("screenshot", a.get("target") or "screen")
+        case "pick":
+            return ("pick", a.get("n"), a.get("verb") or "click", a.get("to"))
+        case "open_path":
+            return ("open_path", _norm_path(str(a.get("name", ""))))
     return (s.action, a.get("op"))
 
 
@@ -241,8 +287,10 @@ def _matches(pattern: tuple, got: tuple) -> bool:
         return got[1] in pattern[1]
     if kind == "scroll":
         return got[1] in pattern[1] and (pattern[2] is None or pattern[2] == got[2])
-    if kind == "volume":
+    if kind in ("volume", "doc"):
         return got[1] in pattern[1] and (pattern[2] is None or pattern[2] == got[2])
+    if kind == "screenshot":
+        return pattern[1] is None or pattern[1] == got[1]
     return pattern == got
 
 

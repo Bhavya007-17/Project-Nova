@@ -17,6 +17,7 @@ from ..brain import abilities
 from ..brain.executor import Pick
 from ..brain.plan import Step
 from ..brain.risk import Scene, needs_focus
+from ..events import SteadyScroll
 from . import apps, capture, native, places, system, windows
 from .scrolling import Scroller
 from . import input as keyboard
@@ -75,7 +76,8 @@ class WindowsHands:
         self._nova = nova or NovaControls()
         self._chrome = chrome
         self.stop = threading.Event()
-        self.scroller = Scroller(self._focus, lambda: self._chrome.chrome if self._chrome is not None else None)
+        self.scroller = Scroller(self._focus, lambda: self._chrome.chrome if self._chrome is not None else None,
+                                 on_change=lambda on: (publish or (lambda event: None))(SteadyScroll(on)))
         self.pointer = pointer or Pointer(self._focus, publish or (lambda event: None))
         self._found: Found | None = None  # what the last ui_click resolved to (brain thread only)
         self._located = 0
@@ -139,7 +141,7 @@ class WindowsHands:
         if not found:
             where = places.folder_title(places.folder_key(folder) or "") if folder else "your usual folders"
             raise ActionError(f"I couldn't find “{_cut(name)}” in {where}.")
-        steps = tuple(Step("open_path", {**s.args, "path": e.path, "label": e.name}) for e in found)
+        steps = tuple(Step("open_path", {**s.args, "path": e.path, "label": e.name, "dir": e.is_dir}) for e in found)
         if len(steps) == 1:
             return steps[0]
         return Pick(f"Which “{_cut(name)}”?", tuple(e.where for e in found), steps)

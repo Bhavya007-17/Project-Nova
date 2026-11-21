@@ -256,3 +256,15 @@ def test_dictation_text_must_be_his_words():
     plan = check({"kind": "act", "confidence": 0.9, "steps": [{"action": "dictation", "op": "start", "text": "hi"}]},
                  said)
     assert plan.plan.steps == (step("dictation", op="start"),)
+
+
+def test_what_the_hands_resolve_never_comes_from_the_model():
+    plan = check(act({"action": "ui_click", "name": "ok", "label": "Cancel", "dialog": "Save?", "located": True}),
+                 "click ok").plan
+    assert plan.steps[0].args == {"name": "ok"}
+    plan = check(act({"action": "pick", "n": 4, "label": "Downloads", "dialog": "x"}), "click four").plan
+    assert plan.steps[0].args == {"n": 4}
+    plan = check(act({"action": "open_path", "name": "budget", "path": r"C:\Windows\System32\cmd.exe", "dir": True}),
+                 "open budget").plan
+    assert plan.steps[0].args == {"name": "budget"}
+    assert check(act({"action": "open_path", "path": r"C:\Windows\System32\cmd.exe"}), "open it").plan is None

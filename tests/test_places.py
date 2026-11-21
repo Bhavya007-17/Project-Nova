@@ -53,3 +53,16 @@ def test_where_and_risky():
     assert entry("a.pdf").where == "a.pdf · Downloads"
     assert risky("C:/x/setup.EXE") and risky("run.ps1") and risky("thing.lnk")
     assert not risky("budget.xlsx") and not risky("Physics")
+
+
+def test_inside_follows_the_real_path(tmp_path):
+    from nova.actions.places import inside
+
+    home = tmp_path / "home"
+    (home / "Downloads").mkdir(parents=True)
+    (tmp_path / "elsewhere").mkdir()
+    assert inside(str(home / "Downloads" / "a.pdf"), [str(home)])
+    assert inside(str(home), [str(home) + "\\"])
+    assert not inside(str(tmp_path / "elsewhere" / "a.pdf"), [str(home)])
+    assert not inside(str(tmp_path / "home2" / "a.pdf"), [str(home)])  # a prefix isn't a parent
+    assert not inside(str(home / ".." / "elsewhere" / "a.pdf"), [str(home)])

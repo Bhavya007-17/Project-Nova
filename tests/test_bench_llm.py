@@ -26,7 +26,7 @@ def test_server_runs_the_same_model_without_the_projector_on_loopback():
     assert args[0].endswith("llama-server.exe")
     joined = " ".join(args)
     assert "-m C:/blobs/sha256-aaa" in joined and "--host 127.0.0.1" in joined and "--port 8091" in joined
-    assert "-c 4096" in joined and "-np 1" in joined and "-ngl 99" in joined
+    assert "-c 6144" in joined and "-np 1" in joined and "-ngl 99" in joined
     assert "--mmproj" not in joined  # no vision model in v1
 
 

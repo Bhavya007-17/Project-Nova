@@ -142,10 +142,12 @@ class Scroller:
     """The scroll cascade, steady scrolling and document moves for the window in front."""
 
     def __init__(self, focus: object | None, chrome: Callable[[], object | None],
-                 notify: Callable[[str], None] = lambda text: None) -> None:
+                 notify: Callable[[str], None] = lambda text: None,
+                 on_change: Callable[[bool], None] = lambda on: None) -> None:
         self._focus = focus  # uia.FocusReader (ScrollPattern, SetFocus)
         self._chrome = chrome  # -> actions.chrome.Chrome, or None
         self._notify = notify
+        self._on_change = on_change  # steady scrolling started (True) / stopped (False)
         self._steady: Steady | None = None
         self._lock = threading.Lock()
 
@@ -226,6 +228,7 @@ class Scroller:
         with self._lock:
             self._steady = steady
         steady.start()
+        self._on_change(True)
         return Outcome(f"Scrolling {direction} — say “stop”", "steady")
 
     def change_speed(self, faster: bool) -> Outcome:
@@ -244,6 +247,7 @@ class Scroller:
         if steady is None or not steady.running:
             return False
         steady.stop()
+        self._on_change(False)
         return True
 
     @property
@@ -253,8 +257,11 @@ class Scroller:
 
     def _ended(self, steady: Steady, why: str) -> None:
         with self._lock:
-            if self._steady is steady:
+            current = self._steady is steady
+            if current:
                 self._steady = None
+        if current:  # a run that was replaced or stopped has said so already
+            self._on_change(False)
         if why == "end":
             self._notify(f"Reached the {edge(steady.direction)}")
 

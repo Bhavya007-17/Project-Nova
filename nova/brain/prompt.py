@@ -15,7 +15,10 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from ..actions.catalog import Catalog, Target, words_of
-from .plan import AREAS, CANVAS_RANGES, ENGINES, MEDIA_OPS, NAV_OPS, SCROLL_AMOUNTS, SCROLL_DIRS, WINDOW_OPS
+from .plan import (
+    AREAS, AUTOSCROLL_DIRS, AUTOSCROLL_OPS, BUTTONS, CANVAS_RANGES, CLICK_VERBS, DOC_OPS, ENGINES, HELP_TOPICS, MEDIA_OPS,
+    NAV_OPS, NOVA_OPS, NUMBERS_OPS, SCOPES, SCROLL_AMOUNTS, SCROLL_DIRS, SHOT_TARGETS, SPEEDS, SYSTEM_OPS, WINDOW_OPS,
+)
 
 MAX_APPS = 12  # installed apps named in one request (the whole Start menu is ~1,200 tokens)
 
@@ -66,6 +69,17 @@ STEP_SCHEMAS = (
     _step("dictation", op=_enum(("start", "stop", "paste"))),
     _step("docs_new"),
     _step("listening", op=_enum(("sleep", "wake", "end_session"))),
+    _step("ui_click", ("button", "count"), name=_TEXT, button=_enum(BUTTONS), count={"type": "integer"}),
+    _step("numbers", ("scope",), op=_enum(NUMBERS_OPS), scope=_enum(SCOPES)),
+    _step("grid", ("scope",), scope=_enum(SCOPES)),
+    _step("pick", ("verb", "to"), n={"type": "integer"}, verb=_enum(CLICK_VERBS), to={"type": "integer"}),
+    _step("autoscroll", ("dir", "speed"), op=_enum(AUTOSCROLL_OPS), dir=_enum(AUTOSCROLL_DIRS), speed=_enum(SPEEDS)),
+    _step("doc", ("page",), op=_enum(DOC_OPS), page={"type": "integer"}),
+    _step("screenshot", ("target",), target=_enum(SHOT_TARGETS)),
+    _step("camera"),
+    _step("system", op=_enum(SYSTEM_OPS)),
+    _step("open_path", ("folder",), name=_TEXT, folder=_TEXT),
+    _step("nova", ("topic",), op=_enum(NOVA_OPS), topic=_enum(HELP_TOPICS)),
 )
 
 # Required properties come out first, in this order (llama.cpp's schema grammar), then the optional ones.
@@ -101,10 +115,10 @@ layout{slots:[{app,area}]}: several windows at once. area: left | right (halves)
 open_url{url}: a website, full https address
 web_search{query,engine}: query: what to look for. engine: google unless he names youtube, bing, duckduckgo, wikipedia, amazon, github, maps or images (pictures). Play, watch or find something on youtube: engine youtube
 tab{op,match}: browser tabs: new | close | next | prev (the tab before) | reopen (bring back a closed tab) | goto (a tab he names; match: its name)
-nav{op}: back (the previous page) | forward | reload
+nav{op}: back (the previous page) | forward | reload | up (the folder above)
 scroll{dir,amount}: dir up | down | left | right | top | bottom; amount small | page | large
 type_text{text,submit}: type at the cursor. submit: true only if he says enter, send or submit
-press{keys}: a new note, file, page or document in the app in front ctrl+n, copy ctrl+c, paste ctrl+v, cut ctrl+x, undo ctrl+z, redo ctrl+y, save ctrl+s, select all ctrl+a, zoom in ctrl+=, zoom out ctrl+-, show the desktop win+d, enter, esc
+press{keys}: a new note, file, page or document in the app in front ctrl+n, copy ctrl+c, paste ctrl+v, cut ctrl+x, redo ctrl+y, save ctrl+s, select all ctrl+a, show the desktop win+d, enter, esc
 volume{op,level}: up (louder) | down (quieter) | mute | unmute | set (only when he says a number: level 0-100)
 media{op}: play_pause | play | pause | next (skip) | prev | stop. Works on whatever is playing: never ask which app
 page_click{description,element}: click something on the web page in front. description: what he called it. element: its id in "page", if listed
@@ -115,7 +129,18 @@ canvas_open_item{item}: open one assignment, quiz or discussion on Canvas. item:
 canvas_item_text{item}: what an assignment on Canvas says (its instructions)
 dictation{op}: start | stop | paste (type his last dictation again)
 docs_new{}: a new blank Google Doc, only when he names a Google Doc or Docs; what he wants written in it: a type_text step after it
-listening{op}: sleep | wake | end_session (he's done talking to you: "that's all", "we're done")
+listening{op}: sleep (you stop listening) | wake | end_session (he's done talking to you: "that's all", "we're done")
+ui_click{name,button,count}: click a button, link, file, folder or menu item by its name, in any app. button: right | middle | hover (point at it). count: 2 to double-click
+numbers{op,scope}: numbered tags on what he can click: show | hide | more (smaller things too). scope: here (this window) | everywhere (the screen)
+grid{scope}: a numbered grid, to point anywhere
+pick{n,verb,to}: the thing with tag n: verb click | right | double | middle | hover; to: drag it onto tag to
+autoscroll{op,dir,speed}: keep scrolling until he says stop: start | faster | slower | stop. speed: slow | keep | fast
+doc{op,page}: the PDF or document in front: goto_page | next_page | prev_page | zoom_in | zoom_out | zoom_reset | fit_width
+screenshot{target}: screen | window
+camera{}: take a photo with the webcam now (only opening the Camera app is open_app)
+system{op}: lock | sleep (the computer itself)
+open_path{name,folder}: a file or folder by name. folder: where he says it is (downloads, documents, desktop ...)
+nova{op,topic}: help (what he can say; topic apps | web | screen | system) | again (repeat the last command) | undo (the last thing typed or clicked)
 
 rules:
 - text, query and prompt are copied word for word from "said". Never add, fix, translate or reword them.
@@ -207,6 +232,10 @@ EXAMPLES: tuple[tuple[dict[str, Any], dict[str, Any]], ...] = (
       "page": ["1 link: Sign up [header]", "2 link: Sign in [header]",
                "3 button: Sign up for GitHub [Build and ship software]"]},
      {"kind": "act", "steps": [{"action": "page_click", "description": "sign up", "element": 1}], "confidence": 0.85}),
+    ({"said": "double click on the budget folder", "front": "File Explorer", "open": ["File Explorer", "Google Chrome"]},
+     {"kind": "act", "steps": [{"action": "ui_click", "name": "the budget folder", "count": 2}], "confidence": 0.9}),
+    ({"said": "jump to page forty two", "front": "Google Chrome", "open": ["Google Chrome"], "tab": "lecture7.pdf"},
+     {"kind": "act", "steps": [{"action": "doc", "op": "goto_page", "page": 42}], "confidence": 0.9}),
     ({"said": "take me down to the reviews", "front": "Google Chrome", "open": ["Google Chrome"],
       "page": ["1 heading: Customer reviews", "2 link: Write a review [Customer reviews]"]},
      {"kind": "act", "steps": [{"action": "scroll_to", "description": "the reviews", "element": 1}], "confidence": 0.85}),
