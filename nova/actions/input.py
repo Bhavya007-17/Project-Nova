@@ -270,6 +270,27 @@ def _paste(text: str, target: Win | None) -> None:
             u32.DestroyWindow(owner)
 
 
+def put_clipboard(items: list[tuple[int, bytes]]) -> None:
+    """Leave ``items`` ((format, bytes) pairs) on the clipboard, like a copy he made himself (a screenshot)."""
+    with _clipboard_lock:
+        owner = u32.CreateWindowExW(0, "STATIC", "Nova clipboard", 0, 0, 0, 0, 0, _HWND_MESSAGE, None, None, None)
+        if not owner:
+            raise ActionError("Couldn't reach the clipboard.")
+        try:
+            _open_clipboard(owner)
+            try:
+                if not u32.EmptyClipboard() or not all([_put(fmt, data) for fmt, data in items]):
+                    raise ActionError("Couldn't put it on the clipboard.")
+            finally:
+                u32.CloseClipboard()
+        finally:
+            u32.DestroyWindow(owner)
+
+
+def clipboard_format(name: str) -> int:
+    return int(u32.RegisterClipboardFormatW(name))
+
+
 def _clipboard_free(owner: int, timeout: float = 0.15) -> None:
     """Wait until nobody holds the clipboard: listeners (clipboard history, other apps) open it right after it
     changes, and an editor that finds it busy drops the paste without a word."""

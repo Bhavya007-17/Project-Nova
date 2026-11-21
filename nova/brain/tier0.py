@@ -1079,7 +1079,7 @@ def parse(text: str, catalog: Catalog, *, strict: bool = False, running: Iterabl
     plan = _plan(items, st.confidence)
     if plan is not None and guessed:
         said = describe(plan)
-        return Plan("clarify", question=f"{said}?", choices=(said,), options=(plan,), confidence=0.5)
+        return Plan("clarify", question=f"{said}?", choices=(said,), options=(plan,), confidence=0.5, guess=True)
     return plan
 
 

@@ -210,3 +210,35 @@ def test_a_list_or_an_answer_counts_as_the_start():
     result, _, _ = run(act(step("canvas_due", range="today")),
                        hands=ResolvingHands({"canvas_due": Outcome("Nothing due today", hold=6.0)}))
     assert result.started_at is not None
+
+
+def test_do_that_again_repeats_the_last_plan():
+    hands, asker = FakeHands(), FakeAsker()
+    executor = Executor(hands, asker)
+    again = act(step("nova", op="again"))
+    first = executor.run(again, ctx=None)
+    assert not first.ok and first.detail == "Nothing to repeat yet." and hands.ran == []
+    executor.run(act(step("scroll", dir="down")), ctx=None)
+    result = executor.run(again, ctx=None)
+    assert result.ok and [s.action for s in hands.ran] == ["scroll", "scroll"]
+    executor.run(act(step("nova", op="help")), ctx=None)  # help is never what "again" repeats
+    executor.run(again, ctx=None)
+    assert [s.action for s in hands.ran][-1] == "scroll"
+
+
+def test_again_skips_failed_and_cancelled_plans():
+    hands = FakeHands(fail="close_app")
+    executor = Executor(hands, FakeAsker())
+    executor.run(act(step("volume", op="up")), ctx=None)
+    executor.run(act(step("close_app", app="Notepad")), ctx=None)
+    executor.run(act(step("nova", op="again")), ctx=None)
+    assert [s.action for s in hands.ran] == ["volume", "volume"]
+
+
+def test_again_after_a_clarify_repeats_the_chosen_option():
+    hands = FakeHands()
+    executor = Executor(hands, FakeAsker(choose=1))
+    options = (act(step("open_app", app="Notepad")), act(step("open_app", app="Notion")))
+    executor.run(Plan("clarify", question="Which?", choices=("Notepad", "Notion"), options=options), ctx=None)
+    executor.run(act(step("nova", op="again")), ctx=None)
+    assert [s.get("app") for s in hands.ran] == ["Notion", "Notion"]

@@ -13,9 +13,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from urllib.parse import quote_plus, urlsplit
 
+from ..brain import abilities
+from ..brain.executor import Pick
 from ..brain.plan import Step
 from ..brain.risk import Scene, needs_focus
-from . import apps, native, system, windows
+from . import apps, capture, native, places, system, windows
 from .scrolling import Scroller
 from . import input as keyboard
 from .apps import Outcome
@@ -41,8 +43,11 @@ ENGINES = {
 _TAB_KEYS = {"new": "ctrl+t", "close": "ctrl+w", "next": "ctrl+tab", "prev": "ctrl+shift+tab", "reopen": "ctrl+shift+t"}
 _TAB_TEXT = {"new": "New tab", "close": "Closed the tab", "next": "Next tab", "prev": "Previous tab",
              "reopen": "Reopened the tab"}
-_NAV_KEYS = {"back": "alt+left", "forward": "alt+right", "reload": "f5"}
-_NAV_TEXT = {"back": "Back", "forward": "Forward", "reload": "Reloaded"}
+_NAV_KEYS = {"back": "alt+left", "forward": "alt+right", "reload": "f5", "up": "alt+up"}
+_NAV_TEXT = {"back": "Back", "forward": "Forward", "reload": "Reloaded", "up": "Up a folder"}
+_EXPLORER = "CabinetWClass"
+# what "undo that" undoes: the last of these, with Ctrl+Z in the window it happened in
+_UNDOABLE = frozenset({"type_text", "press", "ui_click", "pick", "page_fill"})
 _OP_LABEL = {"maximize": "Maximize", "minimize": "Minimize", "restore": "Restore", "close": "Close",
              "fullscreen": "Full screen", "snap_left": "← left", "snap_right": "→ right", "snap_top": "↑ top",
              "snap_bottom": "↓ bottom", "center": "Center", "move_monitor": "Other monitor"}
@@ -74,6 +79,7 @@ class WindowsHands:
         self.pointer = pointer or Pointer(self._focus, publish or (lambda event: None))
         self._found: Found | None = None  # what the last ui_click resolved to (brain thread only)
         self._located = 0
+        self._edited = 0  # the window the last undoable step ran in (brain thread only)
 
     @property
     def chrome(self) -> ChromeHands | None:
@@ -88,6 +94,10 @@ class WindowsHands:
             return self._resolve_click(s, ctx)
         if s.action == "pick":
             return self._resolve_pick(s)
+        if s.action == "open_path" and not s.get("path"):
+            return self._resolve_path(s)
+        if s.action == "nova" and s.get("op") == "help":
+            return self._help(s.get("topic"))
         if self._chrome is not None and self._chrome.handles(s):
             return self._chrome.resolve(s, ctx)
         return s
@@ -120,6 +130,27 @@ class WindowsHands:
                 raise ActionError(f"There's no number {number}.")
             raise ActionError("No numbers are showing — say “show numbers” first.")
         return Step("pick", {**s.args, "label": target.name, "dialog": self.pointer.dialog_text()})
+
+    @staticmethod
+    def _resolve_path(s: Step) -> Step | Pick:
+        name = str(s.get("name") or "")
+        folder = s.get("folder")
+        found = places.find(name, folder)
+        if not found:
+            where = places.folder_title(places.folder_key(folder) or "") if folder else "your usual folders"
+            raise ActionError(f"I couldn't find “{_cut(name)}” in {where}.")
+        steps = tuple(Step("open_path", {**s.args, "path": e.path, "label": e.name}) for e in found)
+        if len(steps) == 1:
+            return steps[0]
+        return Pick(f"Which “{_cut(name)}”?", tuple(e.where for e in found), steps)
+
+    @staticmethod
+    def _help(topic: object) -> Pick | Outcome:
+        if topic:
+            return Outcome(abilities.topic(str(topic)), "help", hold=abilities.HOLD_S)
+        question, choices, topics = abilities.card()
+        return Pick(question, choices, tuple(Step("nova", {"op": "help", "topic": t}) for t in topics),
+                    optional=True, detail="Say “what can I say?” any time", hold=2.0)
 
     def preview(self, s: Step, on: bool) -> None:
         if self._chrome is not None:
@@ -178,6 +209,16 @@ class WindowsHands:
                 verb = _VERB_LABEL[a.get("verb") or "click"]
                 what = f"“{_cut(a['label'], 24)}”" if a.get("label") else str(a.get("n") or "")
                 return f"Drag {what} to {a['to']}" if a.get("to") is not None else f"{verb} {what}".strip()
+            case "screenshot":
+                return "Window screenshot" if a.get("target") == "window" else "Screenshot"
+            case "camera":
+                return "Photo"
+            case "system":
+                return {"lock": "Lock", "sleep": "Sleep"}.get(a["op"], "System")
+            case "open_path":
+                return f"Open {_cut(a.get('label') or a.get('name') or '')}".strip()
+            case "nova":
+                return {"help": "What can I say", "again": "Again", "undo": "Undo"}.get(a.get("op"), "Nova")
         return s.action.replace("_", " ").capitalize()
 
     def scene(self, s: Step, ctx: object) -> Scene:
@@ -212,7 +253,12 @@ class WindowsHands:
 
     def run(self, s: Step, ctx: object) -> Outcome:
         native.com_init()
-        catalog = self._catalog()
+        outcome = self._do(s, self._catalog())
+        if s.action in _UNDOABLE:
+            self._edited = outcome.win.hwnd if outcome.win is not None else native.foreground()
+        return outcome
+
+    def _do(self, s: Step, catalog: Catalog) -> Outcome:
         a = s.args
         match s.action:
             case "open_app" | "switch_app":
@@ -236,7 +282,7 @@ class WindowsHands:
             case "tab":
                 return self._browser_keys(catalog, _TAB_KEYS[a["op"]], _TAB_TEXT[a["op"]], a["op"] != "close")
             case "nav":
-                return self._browser_keys(catalog, _NAV_KEYS[a["op"]], _NAV_TEXT[a["op"]], a["op"] != "reload")
+                return self._nav(catalog, a["op"])
             case "scroll":
                 return self.scroller.scroll(self._front(), a["dir"], a.get("amount") or "page")
             case "autoscroll":
@@ -272,6 +318,18 @@ class WindowsHands:
                 return self.pointer.grid(self._front(), a.get("scope") or "everywhere")
             case "pick":
                 return self.pointer.pick(a.get("n"), a.get("verb"), a.get("to"))
+            case "screenshot":
+                front = native.describe(native.foreground())
+                return capture.screenshot(a.get("target") or "screen",
+                                          front if front is not None and front.cls not in _NOT_WINDOWS else None)
+            case "camera":
+                return capture.photo(catalog, self._focus, self.stop.is_set)
+            case "system":
+                return Outcome(system.lock() if a["op"] == "lock" else system.sleep(), "system")
+            case "open_path":
+                return Outcome(places.open_path(a["path"], a.get("label") or a.get("name") or "it"), "shell")
+            case "nova":
+                return self._nova_op(catalog, a.get("op"), a.get("topic"))
         raise ActionError(f"I can't do {s.action.replace('_', ' ')} yet.")
 
     def _click(self, s: Step) -> Outcome:
@@ -299,6 +357,35 @@ class WindowsHands:
             return None
         host = _host(url)
         return Outcome(f"Switched to {host}" if reused else f"Opened {host}", "tab-reused" if reused else "tab")
+
+    def _nova_op(self, catalog: Catalog, op: object, topic: object) -> Outcome:
+        if op == "help":  # resolve() shows the card; this is a topic picked from it
+            outcome = self._help(topic or "system")
+            if isinstance(outcome, Outcome):
+                return outcome
+        if op == "undo":
+            return self._undo(catalog)
+        raise ActionError("Nothing to repeat yet.")  # "again" is the executor's (it remembers the last plan)
+
+    def _undo(self, catalog: Catalog) -> Outcome:
+        """Ctrl+Z in the window the last typing / click / key happened in (brought back first), else the front one."""
+        win = native.describe(self._edited) if native.is_window(self._edited) else None
+        if win is None:
+            win = self._front()
+        method = native.activate(win.hwnd) if native.root(native.foreground()) != win.hwnd else "front"
+        keyboard.press("ctrl+z", win)
+        app = catalog.app_for(win.exe, win.aumids)
+        return Outcome(f"Undid the last change in {short_name(app.name) if app else 'that window'}", method, win)
+
+    def _nav(self, catalog: Catalog, op: str) -> Outcome:
+        """Back / forward / up in File Explorer when it's in front; back / forward / reload in the browser otherwise."""
+        front = native.describe(native.foreground())
+        if front is not None and front.cls == _EXPLORER and op != "reload":
+            keyboard.press(_NAV_KEYS[op], front)
+            return Outcome(_NAV_TEXT[op], "keys", front)
+        if op == "up":
+            raise ActionError("“Up a folder” works in File Explorer.")
+        return self._browser_keys(catalog, _NAV_KEYS[op], _NAV_TEXT[op], op != "reload")
 
     def _autoscroll(self, op: str, direction: str, speed: str) -> Outcome:
         match op:
