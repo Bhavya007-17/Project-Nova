@@ -348,26 +348,3 @@ def erase(count: int, target: Win | None) -> None:
     strokes = chord("backspace") * count
     if native.send_keys(strokes) != len(strokes):
         raise ActionError("Windows blocked the keys.")
-
-
-def scroll(direction: str, amount: str, target: Win | None) -> str:
-    """Wheel when the mouse is over the window, else keys (PageDown / arrows / Ctrl+Home)."""
-    _wait_for_hands_off()
-    _guard(target)
-    if direction in ("top", "bottom"):
-        native.send_keys(chord("ctrl+home" if direction == "top" else "ctrl+end"))
-        return f"Scrolled to the {direction}"
-    notches = {"small": 2, "page": 5, "large": 15}.get(amount or "page", 5)
-    if direction in ("up", "down") and target is not None and native.cursor_over(target.hwnd):
-        native.send_wheel(notches if direction == "up" else -notches)
-    else:
-        key = {"up": "up", "down": "down", "left": "left", "right": "right"}[direction]
-        if amount in ("page", "large") and direction in ("up", "down"):
-            page = "pageup" if direction == "up" else "pagedown"
-            for _ in range(1 if amount == "page" else 3):
-                native.send_keys(chord(page))
-        else:
-            for _ in range(3):
-                native.send_keys(chord(key))
-    return f"Scrolled {direction}"
-

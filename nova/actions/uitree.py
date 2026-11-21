@@ -11,6 +11,7 @@ from __future__ import annotations
 import ctypes
 import logging
 import threading
+import time
 from ctypes import POINTER, byref, c_double, c_int, c_void_p, wintypes
 from dataclasses import dataclass
 
@@ -26,7 +27,7 @@ _oleaut32.SysFreeString.restype = None
 _ELEMENT_FROM_HANDLE, _ELEMENT_FROM_POINT, _GET_FOCUSED, _ELEMENT_FROM_HANDLE_BUILD_CACHE = 6, 7, 8, 10
 _CREATE_TREE_WALKER, _CONTROL_VIEW_CONDITION, _CREATE_CACHE_REQUEST = 13, 18, 20
 # IUIAutomationElement
-_GET_CACHED_PROPERTY_VALUE, _GET_CURRENT_PATTERN_AS, _GET_CACHED_CHILDREN = 12, 14, 19
+_SET_FOCUS, _GET_CACHED_PROPERTY_VALUE, _GET_CURRENT_PATTERN_AS, _GET_CACHED_CHILDREN = 3, 12, 14, 19
 _CURRENT_BOUNDING_RECTANGLE = 43
 _CACHED_CONTROL_TYPE, _CACHED_NAME, _CACHED_IS_ENABLED = 53, 55, 60
 _CACHED_IS_OFFSCREEN, _CACHED_BOUNDING_RECTANGLE = 70, 75
@@ -369,7 +370,11 @@ def scroll(automation: c_void_p, direction: str, amount: str, x: int | None = No
         else:
             h, v = (_NO_SCROLL, target) if vertical else (target, _NO_SCROLL)
             native.com_call(pattern, _SET_PERCENT, c_double(h), c_double(v), types=(c_double, c_double))
-        return ScrollReceipt(before, _double(pattern, percent_slot), view)
+        after = _double(pattern, percent_slot)
+        if abs(after - before) <= 0.05:  # some controls move a beat later
+            time.sleep(0.12)
+            after = _double(pattern, percent_slot)
+        return ScrollReceipt(before, after, view)
     finally:
         native.com_release(pattern)
 
@@ -387,3 +392,19 @@ def scroll_target(before: float, view: float, direction: str, amount: str) -> fl
     if share is None:
         return None
     return max(0.0, min(100.0, before + sign * page * share))
+
+
+def focus_at(automation: c_void_p, x: int, y: int) -> bool:
+    """Give keyboard focus to what's under (x, y) without clicking it (a Chrome PDF's content takes PageDown only
+    once it has focus). False = nothing there, or it refused."""
+    with native.dpi_aware():
+        element = _out_pointer(automation, _ELEMENT_FROM_POINT, wintypes.POINT(x, y), types=(wintypes.POINT,))
+    if element is None:
+        return False
+    try:
+        hr = native.com_call(element, _SET_FOCUS)
+        if hr < 0:
+            _log.info("SetFocus refused: 0x%08x", hr & 0xFFFFFFFF)
+        return hr >= 0
+    finally:
+        native.com_release(element)

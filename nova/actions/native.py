@@ -697,10 +697,10 @@ def drag(start: tuple[int, int], end: tuple[int, int], button: str = "left", ste
     _send([_mouse(up)])
 
 
-def wheel_at(x: int, y: int, notches: int, horizontal: bool = False) -> None:
+def wheel_at(x: int, y: int, notches: float, horizontal: bool = False) -> None:
     """Wheel ``notches`` (positive = down / right) over (x, y), then put the cursor back where it was. One batch,
     so the wheel lands on what's under (x, y) even if he moves the mouse meanwhile."""
     desk = _virtual_desktop()
     home = cursor()
     flag, sign = (_MOUSEEVENTF_HWHEEL, 1) if horizontal else (_MOUSEEVENTF_WHEEL, -1)
-    _send([_move(x, y, desk), _mouse(flag, data=sign * 120 * notches), _move(*home, desk)])
+    _send([_move(x, y, desk), _mouse(flag, data=sign * round(120 * notches)), _move(*home, desk)])

@@ -16,6 +16,7 @@ from urllib.parse import quote_plus, urlsplit
 from ..brain.plan import Step
 from ..brain.risk import Scene, needs_focus
 from . import apps, native, system, windows
+from .scrolling import Scroller
 from . import input as keyboard
 from .apps import Outcome
 from .catalog import App, Catalog, short_name
@@ -65,6 +66,7 @@ class WindowsHands:
         self._nova = nova or NovaControls()
         self._chrome = chrome
         self.stop = threading.Event()
+        self.scroller = Scroller(self._focus, lambda: self._chrome.chrome if self._chrome is not None else None)
 
     @property
     def chrome(self) -> ChromeHands | None:
@@ -109,6 +111,11 @@ class WindowsHands:
                 return _NAV_TEXT[a["op"]]
             case "scroll":
                 return f"Scroll {a['dir']}"
+            case "autoscroll":
+                return {"start": f"Keep scrolling {a.get('dir') or 'down'}", "faster": "Faster",
+                        "slower": "Slower", "stop": "Stop scrolling"}.get(a["op"], "Scroll")
+            case "doc":
+                return f"Page {a.get('page')}" if a["op"] == "goto_page" else a["op"].replace("_", " ").capitalize()
             case "type_text":
                 return f"Type “{_cut(a['text'])}”" + (" ⏎" if a.get("submit") else "")
             case "press":
@@ -179,8 +186,11 @@ class WindowsHands:
             case "nav":
                 return self._browser_keys(catalog, _NAV_KEYS[a["op"]], _NAV_TEXT[a["op"]], a["op"] != "reload")
             case "scroll":
-                return self._page_scroll(a["dir"], a.get("amount")) or Outcome(
-                    keyboard.scroll(a["dir"], a.get("amount", "page"), self._front()))
+                return self.scroller.scroll(self._front(), a["dir"], a.get("amount") or "page")
+            case "autoscroll":
+                return self._autoscroll(a["op"], a.get("dir") or "down", a.get("speed") or "keep")
+            case "doc":
+                return self.scroller.doc(self._front(), a["op"], a.get("page"))
             case "page_click" | "page_fill" | "page_read" | "scroll_to" | "canvas_due" | "canvas_open_item" \
                     | "canvas_item_text" | "canvas_open":
                 return self._chrome_run(s)
@@ -218,21 +228,15 @@ class WindowsHands:
         host = _host(url)
         return Outcome(f"Switched to {host}" if reused else f"Opened {host}", "tab-reused" if reused else "tab")
 
-    def _page_scroll(self, direction: str, amount: str | None) -> Outcome | None:
-        """Scroll the page in front through the extension (whatever has keyboard focus). None = use keys."""
-        if self._chrome is None or not self._chrome.chrome.connected or not self._chrome.chrome.chrome_in_front():
-            return None
-        try:
-            result = self._chrome.chrome.scroll(direction, amount)
-        except ActionError as error:
-            _log.info("page scroll failed (%s); using keys", error)
-            return None
-        if not result.get("ok"):
-            return None
-        if not result.get("moved"):
-            edge = "top" if direction in ("up", "top") else "bottom" if direction in ("down", "bottom") else "edge"
-            return Outcome(f"Already at the {edge}", "page")
-        return Outcome(f"Scrolled {direction}", "page")
+    def _autoscroll(self, op: str, direction: str, speed: str) -> Outcome:
+        match op:
+            case "start":
+                return self.scroller.steady(self._front(), direction, speed)
+            case "faster" | "slower":
+                return self.scroller.change_speed(op == "faster")
+            case "stop":
+                return Outcome("Stopped" if self.scroller.stop() else "I wasn't scrolling", "steady")
+        raise ActionError(f"I can't {op} scrolling.")
 
     # --- helpers ---------------------------------------------------------------------------------------------
 

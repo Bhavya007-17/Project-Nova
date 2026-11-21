@@ -122,6 +122,10 @@ class FocusReader:
         value = self._ask(lambda automation: uitree.scroll(automation, direction, amount, x, y), timeout)
         return value if isinstance(value, uitree.ScrollReceipt) else None
 
+    def focus_at(self, x: int, y: int, timeout: float = 0.4) -> bool:
+        """UIA SetFocus on what's under (x, y): keys go there next, nothing gets clicked."""
+        return self._ask(lambda automation: uitree.focus_at(automation, x, y), timeout) is True
+
     def close(self) -> None:
         if self._thread is not None:
             self._requests.put(None)

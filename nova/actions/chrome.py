@@ -216,6 +216,10 @@ class Chrome:
     def scroll(self, direction: str, amount: str | None) -> dict[str, Any]:
         return self.call("scroll", direction, amount)
 
+    def kind(self) -> dict[str, Any]:
+        """{type, pdf, url} of the active tab's page (a PDF is Chrome's viewer: keys / wheel scroll it)."""
+        return self.call("kind", timeout=1.0)
+
     # --- Canvas -----------------------------------------------------------------------------------------------
 
     def canvas_origin(self) -> str:
