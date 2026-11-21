@@ -37,6 +37,7 @@ from ..events import (
     BrainProgress,
     CommandFinished,
     ConfigChanged,
+    MarksHide,
     Gated,
     IslandAction,
     PreloadHint,
@@ -299,7 +300,8 @@ class Brain:
         browser = Chrome(bridge, catalogs.current) if bridge is not None else None
         chrome = ChromeHands(browser) if browser is not None else None
         self._snap: Callable[[Catalog], Context] = lambda catalog: snapshot(catalog, bridge)
-        self._hands = WindowsHands(catalogs.current, nova=NovaControls(self._dictation, self._listening), chrome=chrome)
+        self._hands = WindowsHands(catalogs.current, nova=NovaControls(self._dictation, self._listening), chrome=chrome,
+                                   publish=bus.publish)
         self._executor = Executor(self._hands, IslandAsker(bus, self._answers), progress=self._progress)
         client = connect(settings().ollama.url, lambda: settings().llm.runtime)
         self._governor = Governor(client, lambda: settings().llm)
@@ -325,6 +327,7 @@ class Brain:
             bus.subscribe(PreloadHint, lambda event: self._tier1.preload(event.reason)),
             bus.subscribe(ConfigChanged, self._on_config),
             bus.subscribe(TalkChanged, self._on_talk),
+            bus.subscribe(MarksHide, lambda event: self._hands.pointer.hide(event.why)),
         ]
         self._thread = threading.Thread(target=self._run, name="nova-brain", daemon=True)
 

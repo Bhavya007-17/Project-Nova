@@ -31,6 +31,9 @@ from .events import (
     ClausesSkipped,
     CommandFinished,
     ConfigChanged,
+    MarksHidden,
+    MarksHide,
+    MarksShown,
     DictatedText,
     DictationChanged,
     FinalTranscript,
@@ -118,6 +121,7 @@ _STOP = object()
 _SUBSCRIBED = (
     SpeechStarted, SpeechEnded, PartialTranscript, FinalTranscript, PowerChanged, ConfigChanged,
     AlwaysListeningChanged, CommandFinished, BrainProgress, IslandAction, SleepRequested, TalkEndRequested,
+    MarksShown, MarksHidden,
 )
 _STATES = {state.value: state for state in State}
 
@@ -158,6 +162,7 @@ class Triggers:
         self._running_failed = False
         self._settings = settings
         self._always = settings.triggers.always_listening
+        self._marks_up = False  # numbers / a grid are on screen (Esc hides them first)
         self._wake = WakeName.of(settings.wake_name)
         self._apply_settings(settings, first=True)
         # Per-utterance detector notes (controller thread only).
@@ -247,6 +252,10 @@ class Triggers:
                 if item.down:
                     self._bus.publish(PinToggled(now))
                 return
+            if item.source == "esc" and self._marks_up:
+                if item.down:  # one Esc, one thing: the numbers go first, a second Esc cancels the session
+                    self._bus.publish(MarksHide("esc"))
+                return
             for gesture in self._gestures.feed(item):
                 self._feed(gesture, now)
         elif isinstance(item, SpeechStarted):
@@ -291,6 +300,10 @@ class Triggers:
             self._resolver = item.resolver
         elif isinstance(item, SleepRequested):
             self._feed(Sleep(item.on, now), now)
+        elif isinstance(item, (MarksShown, MarksHidden)):
+            self._marks_up = isinstance(item, MarksShown)
+            if self._keys is not None:
+                self._keys.marks_up = self._marks_up
 
     def _answer_key(self, event: TriggerEvent, now: float) -> None:
         """Enter / 1-4 from the hook while the island asks: the same as clicking it."""

@@ -209,6 +209,17 @@ def _start_island(bus: Bus, tray: Tray, always: bool):
         return None
 
 
+def _start_overlay(bus: Bus):
+    """The numbers / grid layer (Stage 07c). Without it numbers still work, he just can't see them."""
+    try:
+        from .island.overlay import Overlay
+
+        return Overlay(bus)
+    except Exception:  # noqa: BLE001
+        _log.exception("the numbers overlay failed to start")
+        return None
+
+
 def run_tray(bus: Bus, store: ConfigStore, notices: tuple[tuple[str, str], ...] = ()) -> int:
     app = QApplication.instance() or QApplication(["nova"])
     app.setApplicationName("Nova")
@@ -219,6 +230,7 @@ def run_tray(bus: Bus, store: ConfigStore, notices: tuple[tuple[str, str], ...] 
     global _console_handler
     tray = Tray(app, bus, store)
     island = _start_island(bus, tray, store.settings.triggers.always_listening)
+    overlay = _start_overlay(bus)
     for title, text in notices:
         tray.notify(title, text)
     keepalive = None
@@ -242,5 +254,7 @@ def run_tray(bus: Bus, store: ConfigStore, notices: tuple[tuple[str, str], ...] 
             keepalive.stop()
         if island is not None:
             island.close()
+        if overlay is not None:
+            overlay.close()
         tray.close()
         closed.set()

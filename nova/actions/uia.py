@@ -68,6 +68,7 @@ class FocusReader:
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
         self._held: list[c_void_p] = []  # element pointers of the last snapshot (UIA thread only)
+        self.generation = 0  # bumps with every snapshot: an index from an older one must not reach ``act``
 
     def _ask(self, fn: Callable[[c_void_p], Any], timeout: float) -> Any:
         with self._lock:
@@ -101,6 +102,7 @@ class FocusReader:
             for pointer in self._held:
                 native.com_release(pointer)
             self._held = pointers
+            self.generation += 1
             return elements
 
         value = self._ask(read, timeout)

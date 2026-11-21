@@ -543,3 +543,15 @@ def test_no_preload_hint_on_speech_inside_a_session(rig):
     r.say("great")
     time.sleep(0.1)
     assert not [e for e in r.events.queue if isinstance(e, PreloadHint)]
+
+
+def test_esc_hides_the_numbers_before_anything_else(rig):
+    from nova.events import MarksHidden, MarksHide, MarksShown
+
+    r = rig()
+    r.bus.publish(MarksShown("DISPLAY1", (0, 0, 100, 100), ((1, (0, 0, 10, 10)),)))
+    assert eventually(lambda: r.keys.marks_up)
+    r.triggers.key_event(TriggerEvent("esc", True, time.perf_counter()))
+    assert r.next(MarksHide).why == "esc"
+    r.bus.publish(MarksHidden("esc"))
+    assert eventually(lambda: not r.keys.marks_up)

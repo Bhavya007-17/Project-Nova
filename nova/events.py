@@ -331,3 +331,26 @@ class SleepRequested:
     """ "stop listening" / "wake up": only the name or the key count while asleep (SPEC §5)."""
 
     on: bool
+
+
+@dataclass(frozen=True)
+class MarksShown:
+    """Numbers (or a grid) to draw over a monitor (SPEC §8.1). Physical pixels; the overlay maps them to its screen."""
+
+    device: str  # the monitor's device name, as Windows reports it
+    monitor: tuple[int, int, int, int]
+    tags: tuple[tuple[int, tuple[int, int, int, int]], ...]
+    cells: tuple[tuple[int, tuple[int, int, int, int]], ...] = ()
+    note: str = ""
+
+
+@dataclass(frozen=True)
+class MarksHidden:
+    why: str  # acted | hide numbers | esc | timed out | ...
+
+
+@dataclass(frozen=True)
+class MarksHide:
+    """Asked to hide the numbers (Esc while they show)."""
+
+    why: str

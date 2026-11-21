@@ -22,6 +22,7 @@ from .apps import Outcome
 from .catalog import App, Catalog, short_name
 from .chrome import ChromeHands
 from .native import ActionError, Win
+from .pointing import Found, Pointer, verb_for
 from .uia import FocusReader
 
 _log = logging.getLogger(__name__)
@@ -45,6 +46,8 @@ _NAV_TEXT = {"back": "Back", "forward": "Forward", "reload": "Reloaded"}
 _OP_LABEL = {"maximize": "Maximize", "minimize": "Minimize", "restore": "Restore", "close": "Close",
              "fullscreen": "Full screen", "snap_left": "← left", "snap_right": "→ right", "snap_top": "↑ top",
              "snap_bottom": "↓ bottom", "center": "Center", "move_monitor": "Other monitor"}
+_VERB_LABEL = {"click": "Click", "right": "Right-click", "double": "Double-click", "middle": "Middle-click",
+               "hover": "Point at"}
 _NOT_WINDOWS = frozenset({"Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd"})
 _CONTAINERS = frozenset({50033, 50032})  # UIA pane / window: not a field, so the app didn't say what has focus
 LAYOUT_WAIT_S = 20.0
@@ -60,13 +63,17 @@ class NovaControls:
 
 class WindowsHands:
     def __init__(self, catalog: Callable[[], Catalog], focus: FocusReader | None = None,
-                 nova: NovaControls | None = None, chrome: ChromeHands | None = None) -> None:
+                 nova: NovaControls | None = None, chrome: ChromeHands | None = None,
+                 publish: Callable[[object], None] | None = None, pointer: Pointer | None = None) -> None:
         self._catalog = catalog
         self._focus = focus or FocusReader()
         self._nova = nova or NovaControls()
         self._chrome = chrome
         self.stop = threading.Event()
         self.scroller = Scroller(self._focus, lambda: self._chrome.chrome if self._chrome is not None else None)
+        self.pointer = pointer or Pointer(self._focus, publish or (lambda event: None))
+        self._found: Found | None = None  # what the last ui_click resolved to (brain thread only)
+        self._located = 0
 
     @property
     def chrome(self) -> ChromeHands | None:
@@ -75,10 +82,44 @@ class WindowsHands:
     # --- for the executor -------------------------------------------------------------------------------------
 
     def resolve(self, s: Step, ctx: object) -> object:
-        """Page / Canvas / named-tab steps are resolved in Chrome first (``nova.actions.chrome``)."""
+        """Page / Canvas / named-tab steps are resolved in Chrome first (``nova.actions.chrome``); "click X" on the
+        window in front (the page map when Chrome is in front, UI Automation otherwise); a number to its label."""
+        if s.action == "ui_click":
+            return self._resolve_click(s, ctx)
+        if s.action == "pick":
+            return self._resolve_pick(s)
         if self._chrome is not None and self._chrome.handles(s):
             return self._chrome.resolve(s, ctx)
         return s
+
+    def _chrome_front(self) -> bool:
+        return self._chrome is not None and self._chrome.chrome.connected and self._chrome.chrome.chrome_in_front()
+
+    def _resolve_click(self, s: Step, ctx: object) -> object:
+        name = str(s.get("name") or "")
+        if verb_for(s.get("button"), s.get("count")) == "click" and self._chrome_front():
+            try:  # the page first; Chrome's own buttons (and anything the page map misses) through UIA below
+                return self._chrome.resolve(Step("page_click", {"description": name}), ctx)
+            except ActionError as error:
+                _log.info("page map: %s; trying UI Automation", error)
+        found = self.pointer.locate(self._front(), name, str(s.get("role") or ""), str(s.get("near") or ""))
+        if isinstance(found, Outcome):
+            return found  # numbers on the candidates: he answers with one
+        self._located += 1
+        self._found = found
+        return Step("ui_click", {**s.args, "label": found.target.name or name, "dialog": found.dialog,
+                                 "located": self._located})
+
+    def _resolve_pick(self, s: Step) -> Step:
+        number = s.get("n")
+        if number is None or self.pointer.grid_on:
+            return s
+        target = self.pointer.target(int(number))
+        if target is None:
+            if self.pointer.showing:
+                raise ActionError(f"There's no number {number}.")
+            raise ActionError("No numbers are showing — say “show numbers” first.")
+        return Step("pick", {**s.args, "label": target.name, "dialog": self.pointer.dialog_text()})
 
     def preview(self, s: Step, on: bool) -> None:
         if self._chrome is not None:
@@ -126,6 +167,17 @@ class WindowsHands:
                 return a["op"].replace("_", " / ").capitalize()
             case "dictation":
                 return {"paste": "Paste last dictation", "stop": "Stop dictation"}.get(a["op"], "Dictation")
+            case "ui_click":
+                verb = verb_for(a.get("button"), a.get("count"))
+                return f"{_VERB_LABEL[verb]} “{_cut(a.get('label') or a.get('name', ''), 24)}”"
+            case "numbers":
+                return {"hide": "Hide numbers", "more": "More numbers"}.get(a.get("op", "show"), "Numbers")
+            case "grid":
+                return "Grid"
+            case "pick":
+                verb = _VERB_LABEL[a.get("verb") or "click"]
+                what = f"“{_cut(a['label'], 24)}”" if a.get("label") else str(a.get("n") or "")
+                return f"Drag {what} to {a['to']}" if a.get("to") is not None else f"{verb} {what}".strip()
         return s.action.replace("_", " ").capitalize()
 
     def scene(self, s: Step, ctx: object) -> Scene:
@@ -206,7 +258,27 @@ class WindowsHands:
                 return Outcome(self._nova.dictation(a["op"], a.get("text")))
             case "listening":
                 return Outcome(self._nova.listening(a["op"]))
+            case "ui_click":
+                return self._click(s)
+            case "numbers":
+                op = a.get("op") or "show"
+                if op == "hide":
+                    return Outcome("Numbers hidden" if self.pointer.hide("hide numbers") else "No numbers are showing",
+                                   "numbers")
+                if op == "more":
+                    return self.pointer.more()
+                return self.pointer.show(self._front(), a.get("scope") or "here")
+            case "grid":
+                return self.pointer.grid(self._front(), a.get("scope") or "everywhere")
+            case "pick":
+                return self.pointer.pick(a.get("n"), a.get("verb"), a.get("to"))
         raise ActionError(f"I can't do {s.action.replace('_', ' ')} yet.")
+
+    def _click(self, s: Step) -> Outcome:
+        if self._found is None or s.get("located") != self._located:
+            raise ActionError("I lost track of that — say it again.")  # an older step: leave the newer one alone
+        found, self._found = self._found, None
+        return self.pointer.act(found.target, verb_for(s.get("button"), s.get("count")), hwnd=found.hwnd)
 
     # --- Chrome, through the extension when it's connected --------------------------------------------------------
 
