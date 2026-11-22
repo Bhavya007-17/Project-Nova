@@ -8,7 +8,7 @@ import pytest
 from nova.actions import screen, scrolling
 from nova.actions.native import ActionError, Win
 from nova.actions.scrolling import AT_END, MOVED, UNAVAILABLE, UNMOVED, Front, Scroller, cascade
-from nova.actions.uitree import ScrollReceipt, scroll_target
+from nova.actions.uitree import Element, ScrollReceipt, scroll_target
 
 
 def fixed(result: str, calls: list[str], name: str):
@@ -222,3 +222,31 @@ def test_steady_speed_levels_clamp():
     for _ in range(10):
         steady.change(-1)
     assert steady.level == 0
+
+
+# --- a cold Chrome PDF tree (Chromium builds it only once asked) ----------------------------------------------------
+
+def _button(index: int, name: str) -> Element:
+    return Element(index, name, 50000, (index * 40, 0, index * 40 + 30, 30), frozenset({"invoke"}))
+
+
+class ColdPdfFocus:
+    def __init__(self) -> None:
+        self.asked = 0
+        self.acted: list[int] = []
+
+    def snapshot(self, hwnd):
+        self.asked += 1
+        caption = [_button(1, "Minimize"), _button(2, "Maximize"), _button(3, "Close")]
+        return caption if self.asked == 1 else caption + [_button(4, "Fit to width")]
+
+    def act(self, index, patterns):
+        self.acted.append(index)
+        return "invoke"
+
+
+def test_fit_width_asks_a_cold_chrome_tree_again():
+    focus = ColdPdfFocus()
+    chrome_win = Win(hwnd=1, pid=2, tid=3, title="doc.pdf", cls="Chrome_WidgetWin_1", exe="chrome.exe", aumids=())
+    done = Scroller(focus, lambda: None)._fit_width(Front(chrome_win, (0, 0, 1000, 1000), (500, 575), True), object())
+    assert done.detail == "Fit to width" and focus.acted == [4] and focus.asked == 2

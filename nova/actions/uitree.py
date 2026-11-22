@@ -193,6 +193,26 @@ def snapshot(automation: c_void_p, hwnd: int, *, skip_documents: bool = False,
         return elements, pointers
 
 
+# Chromium (Chrome, and Electron apps: Claude, VS Code, Discord) builds its accessibility tree only once a UIA
+# client asks, so the first snapshot of a cold window holds just the caption buttons. Re-ask for a moment.
+CHROMIUM = "Chrome_WidgetWin_"
+COLD_TREE_MAX = 3  # Minimize / Maximize / Close
+COLD_WAIT_S = 1.0
+COLD_RETRY_S = 0.15
+
+
+def warm_snapshot(focus: object, win: native.Win, wait: float = COLD_WAIT_S) -> list[Element]:
+    """``focus.snapshot(win.hwnd)``, asked again for up to ``wait`` s while a Chromium window shows only its
+    caption buttons (``focus`` is a ``uia.FocusReader`` or a test fake with ``snapshot``)."""
+    elements = focus.snapshot(win.hwnd)
+    if win.cls.startswith(CHROMIUM):
+        deadline = time.perf_counter() + wait
+        while sum(e.clickable for e in elements) <= COLD_TREE_MAX and time.perf_counter() < deadline:
+            time.sleep(COLD_RETRY_S)
+            elements = focus.snapshot(win.hwnd)
+    return elements
+
+
 def _subtree(automation: c_void_p, hwnd: int, request: c_void_p, cap: int) -> list[c_void_p]:
     """The whole window in one batched read (the cache request scoped to the subtree), in tree order. ~3x faster
     than FindAll: Chrome 202 nodes 168 ms vs 533 (GOTCHAS)."""

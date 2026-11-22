@@ -68,6 +68,14 @@ def _parser() -> argparse.ArgumentParser:
     bench_llm.add_argument("--cases", type=int, default=36, metavar="N", help="--runtime: warm cases (default 36)")
     bench_llm.add_argument("--rounds", type=int, default=2, metavar="N", help="--runtime: back-to-back rounds")
     sub.add_parser("latency", help="p50/p95 per command type from the logs")
+    numbers = sub.add_parser("numbers", help="what \"show numbers\" tags on a window: --dump saves the boxes + a picture")
+    numbers.add_argument("--dump", action="store_true", required=True,
+                         help="save the tags (JSON) and the window's pixels (PNG) to data/")
+    numbers.add_argument("--scope", choices=("here", "everywhere"), default="here",
+                         help="OCR the window (here) or its whole monitor (everywhere)")
+    numbers.add_argument("--delay", type=float, default=3.0, metavar="S",
+                         help="seconds to switch to the window first (default 3)")
+    numbers.add_argument("--title", metavar="TEXT", help="the first app window with TEXT in its title, no waiting")
     chrome = sub.add_parser("chrome", help="Chrome extension: --install registers its native host (then load it once)")
     what = chrome.add_mutually_exclusive_group(required=True)
     what.add_argument("--install", action="store_true", help="write the host manifest + registry key, print the manual step")
@@ -134,6 +142,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         from . import latency
 
         return latency.main()
+    if command == "numbers":
+        from .actions import numbers_dump
+
+        return numbers_dump.main(scope=args.scope, delay=args.delay, title=args.title)
     if command == "eval" and args.sessions:
         from . import session_eval
 

@@ -19,7 +19,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from . import input as keyboard
-from . import native, screen
+from . import native, screen, uitree
 from .apps import Outcome
 from .native import ActionError, Win
 
@@ -341,7 +341,7 @@ class Scroller:
     def _find(self, win: Win, names: tuple[str, ...], role: str) -> object | None:
         if self._focus is None:
             return None
-        elements = self._focus.snapshot(win.hwnd)
+        elements = uitree.warm_snapshot(self._focus, win)  # a cold Chrome PDF tree has only its caption buttons
         for wanted in names:
             for element in elements:
                 if element.role == role and element.name.strip().lower() == wanted:

@@ -134,6 +134,30 @@ memories aren't shared, this file is.
   negative: p(act) 0.38 / p(ignore) 0.29 cached, 0.32 / 0.36 re-read). Don't chase single-case eval diffs
   between runtimes; compare totals.
 
+## Control anything (07c)
+- **Chromium builds its accessibility tree only when asked.** The first UIA snapshot of a Claude / Chrome / VS Code
+  window from a fresh process held only Minimize / Maximize / Close; the same window seconds later had 199 elements,
+  131 clickable. `uitree.warm_snapshot` (numbers, click by name, PDF fit width) re-asks every 150 ms for up to 1 s
+  while a `Chrome_WidgetWin_*` window shows ≤ 3 clickable elements.
+- **The subtree cache costs ~0.6 ms per node** (Chrome 202 nodes 142–168 ms, Claude 475 nodes 210–271 ms, Explorer
+  ~110 ms). Win32 controls reached through the MSAA proxy cost ~11 ms each: a window with 300 classic buttons takes
+  3–4 s by any method. OCR of a window: grab 50 + bitmap 20 + recognize 76 ms.
+- **This laptop has no S3 sleep, only Modern Standby** (`GetPwrCapabilities`: S3 false, AoAc true). There is no call
+  that enters Modern Standby, and `SetSuspendState` there hibernates — "go to sleep" turns the screen off
+  (`SC_MONITORPOWER`), which is how standby starts.
+- **`open_path` checks at the sink, not only in the planner:** the path must exist, sit under one of his known
+  folders (resolved through `SHGetKnownFolderPath`, so OneDrive moves follow) and not be something that runs
+  (`risky`: .exe/.bat/.ps1/.lnk… are refused, folders are fine).
+- **Tier 1's static prefix grew 3,313 → 3,743 tokens** with the 07c rules and examples (qwen3.5 tokenizer, before
+  his aliases), ~3,900 with them; `NUM_CTX` went 4096 → 6144 so a 40-row page map, a talk session's `before` and
+  the answer still fit. Every caller must send the same `num_ctx`, or Ollama reloads the model.
+- **Greedy number words in Tier 0 regexes:** "drag five over to nine" read "five over" as the first number. The
+  first number group is lazy (`??`) and "over" optional.
+- **Eval rows must not repeat a Tier 1 prompt example** (a test checks): the model has the answer in front of it,
+  so the row measures nothing.
+- `nova numbers --dump [--title T]` saves what "show numbers" would tag (JSON) and the window's pixels (PNG) to
+  `data/`, nothing clicked. A window that isn't in front shows whatever covers it in the picture.
+
 ## Chrome extension
 - **Branded Chrome 137+ ignores `--load-extension`**: loading `extension/` unpacked is a one-time manual step.
   Chrome for Testing (Playwright's copy) still honours it (+ `--disable-features=DisableLoadExtensionCommandLineSwitch`,

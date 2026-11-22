@@ -17,7 +17,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from ..events import MarksHidden, MarksShown
-from . import marks, native, screen
+from . import marks, native, screen, uitree
 from .apps import Outcome
 from .marks import Box, Mark, Target
 from .native import ActionError, Win
@@ -84,13 +84,14 @@ class Pointer:
                  ocr_lines: Callable[[native.Rect], list[Target]] = _ocr_lines,
                  monitor_for: Callable[[int], native.Monitor] = _monitor_for,
                  frame: Callable[[int], native.Rect] = native.frame_rect,
-                 hide_after: float = HIDE_AFTER_S) -> None:
+                 hide_after: float = HIDE_AFTER_S, cold_wait: float = uitree.COLD_WAIT_S) -> None:
         self._focus = focus  # uia.FocusReader: snapshot / act / generation
         self._publish = publish
         self._ocr = ocr_lines
         self._monitor_for = monitor_for
         self._frame = frame
         self._hide_after = hide_after
+        self._cold_wait = cold_wait
         self._lock = threading.RLock()
         self._targets: list[Target] = []  # everything in scope, reading order
         self._marks: list[Mark] = []  # the page on screen
@@ -121,10 +122,10 @@ class Pointer:
 
     # --- gathering -------------------------------------------------------------------------------------------
 
-    def _elements(self, hwnd: int) -> tuple[list[Target], list[str]]:
+    def _elements(self, win: Win) -> tuple[list[Target], list[str]]:
         if self._focus is None:
             return [], []
-        elements = self._focus.snapshot(hwnd)
+        elements = uitree.warm_snapshot(self._focus, win, self._cold_wait)
         generation = getattr(self._focus, "generation", 0)
         found = [Target(Box(*e.rect), e.name, e.role, "uia", (generation, e.index, e.patterns))
                  for e in elements if e.clickable]
@@ -138,7 +139,7 @@ class Pointer:
         """Everything taggable in scope: UIA elements of the window + OCR lines of the window (or its monitor)."""
         monitor = self._monitor_for(win.hwnd)
         if uia is None:
-            uia, self._texts = self._elements(win.hwnd)
+            uia, self._texts = self._elements(win)
         lines = self._ocr(self._area(win, monitor, scope))
         return marks.merge(uia, [], lines, screen=Box(*monitor.rect), scale=monitor.dpi / 96)
 
@@ -266,7 +267,7 @@ class Pointer:
     def locate(self, win: Win, name: str, role: str = "", near: str = "") -> Found | Outcome:
         """One match → Found. Several → numbers on those ("Which one?"). None → numbers on everything, or the grid
         when there is nothing at all."""
-        uia, self._texts = self._elements(win.hwnd)
+        uia, self._texts = self._elements(win)
         hits = marks.rank(name, uia, role=role, near=near)
         if len(hits) == 1:
             return Found(hits[0], win.hwnd, self.dialog_text())
@@ -323,10 +324,6 @@ class Pointer:
             if showing != self._showing:
                 return
         self.hide("timed out")
-
-    def snapshot_for_dump(self) -> list[Mark]:
-        with self._lock:
-            return list(self._marks)
 
 
 def _rect(box: Box) -> native.Rect:

@@ -114,6 +114,41 @@ def test_show_numbers_in_reading_order_and_publishes_them():
     pointer.hide()
 
 
+CAPTION = [button(1, "Minimize", (700, 0, 740, 30)), button(2, "Maximize", (740, 0, 780, 30)),
+           button(3, "Close", (780, 0, 820, 30))]
+PAGE = CAPTION + [button(4, "Send", (100, 100, 200, 140)), button(5, "New chat", (100, 200, 200, 240))]
+
+
+class ColdFocus(FakeFocus):
+    """Chromium's tree arrives only after the first ask."""
+
+    def snapshot(self, hwnd):
+        self.generation += 1
+        return list(CAPTION if self.generation == 1 else PAGE)
+
+
+def test_a_cold_chromium_window_is_asked_again():
+    focus = ColdFocus()
+    pointer = Pointer(focus, ocr_lines=lambda rect: [], monitor_for=lambda hwnd: MON, frame=lambda hwnd: FRAME)
+    chromium = Win(hwnd=1, pid=2, tid=3, title="Claude", cls="Chrome_WidgetWin_1", exe="claude.exe", aumids=())
+    names = {t.name for t in pointer.gather(chromium)}
+    assert {"Send", "New chat"} <= names and focus.generation == 2
+
+
+def test_other_windows_are_asked_once():
+    focus = ColdFocus()
+    pointer = Pointer(focus, ocr_lines=lambda rect: [], monitor_for=lambda hwnd: MON, frame=lambda hwnd: FRAME)
+    assert {t.name for t in pointer.gather(WIN)} == {"Minimize", "Maximize", "Close"} and focus.generation == 1
+
+
+def test_a_chromium_window_with_few_buttons_waits_at_most_cold_wait():
+    focus = FakeFocus(CAPTION)
+    pointer = Pointer(focus, ocr_lines=lambda rect: [], monitor_for=lambda hwnd: MON, frame=lambda hwnd: FRAME,
+                      cold_wait=0.2)
+    chromium = Win(hwnd=1, pid=2, tid=3, title="x", cls="Chrome_WidgetWin_1", exe="x.exe", aumids=())
+    assert len(pointer.gather(chromium)) == 3 and 2 <= focus.generation <= 4
+
+
 def test_ocr_lines_get_numbers_too():
     pointer, _, _ = make(ROW, lines=[Target(Box(600, 300, 700, 320), "Fit to width", "text", "ocr")])
     pointer.show(WIN)
