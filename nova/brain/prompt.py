@@ -346,21 +346,25 @@ def request(text: str, *, front: str | None, open_apps: Sequence[str], tab: str 
 # Same static prefix as planning (the cache keeps it); what a pick is comes in the request's own part (~45 tokens), and
 # the answer is forced into PICK_SCHEMA: exactly one of a step, done or a question. Every string the schema offers
 # gets written, so a required "ask" was filled on every pick, and a click with an optional "text" got the instructions
-# echoed into it — each verb has its own shape with only what it needs.
+# echoed into it — each verb has its own shape with only what it needs. The first pick has no "done": with nothing
+# done yet the 4B model still said done on most first steps.
 
 PICK_VERBS = ("click", "right-click", "double-click", "type", "press", "scroll")  # "right" alone read as "correct"
 _ROW = {"type": "integer"}
-_NO_STEP = {"type": "null"}  # every shape opens with "step": the model decides on one first, done / ask only if not
-PICK_SCHEMA: dict[str, Any] = {"anyOf": [
-    _obj({"step": {"anyOf": [
-        _obj({"row": _ROW, "verb": _enum(PICK_VERBS[:3])}),
-        _obj({"row": {"anyOf": [_ROW, _NO_STEP]}, "verb": {"const": "type"}, "text": _TEXT}),
-        _obj({"verb": {"const": "press"}, "keys": _TEXT}),
-        _obj({"verb": {"const": "scroll"}, "text": _enum(("up", "down"))}),
-    ]}}),
-    _obj({"step": _NO_STEP, "done": {"const": True}, "say": {"type": "string", "maxLength": 80}}),
-    _obj({"step": _NO_STEP, "ask": _TEXT}),
-]}
+_PICK_STEP = _obj({"step": {"anyOf": [
+    _obj({"row": _ROW, "verb": _enum(PICK_VERBS[:3])}),
+    _obj({"row": {"anyOf": [_ROW, {"type": "null"}]}, "verb": {"const": "type"}, "text": _TEXT}),
+    _obj({"verb": {"const": "press"}, "keys": _TEXT}),
+    _obj({"verb": {"const": "scroll"}, "text": _enum(("up", "down"))}),
+]}})
+_PICK_DONE = _obj({"done": {"const": True}, "say": {"type": "string", "maxLength": 80}})
+_PICK_ASK = _obj({"ask": _TEXT})
+PICK_SCHEMA: dict[str, Any] = {"anyOf": [_PICK_STEP, _PICK_DONE, _PICK_ASK]}
+PICK_FIRST_SCHEMA: dict[str, Any] = {"anyOf": [_PICK_STEP, _PICK_ASK]}
+
+
+def pick_schema(did: Sequence[str]) -> dict[str, Any]:
+    return PICK_SCHEMA if did else PICK_FIRST_SCHEMA
 PICK_NEXT = ('the next single step toward what he said. If "ui" has the thing, act on its row by number: click, '
              'right-click, double-click, or type (only words he said, into a box); or press keys, or scroll up / '
              'down. If not, open the menu, tab or button most likely to hold it. step null only when "did" and "ui" '

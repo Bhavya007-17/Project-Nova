@@ -234,14 +234,14 @@ class Tier1:
     def pick(self, goal: str, rows: Sequence[str], *, did: Sequence[str] = (), front: str | None = None,
              title: str | None = None, choice: Choice | None = None) -> Thought:
         """One step of a task (Stage 07d, ``nova.brain.task``): the goal, the steps done so far and the window's rows
-        -> ``prompt.PICK_SCHEMA``. Same model, same static prefix and options as planning: only the request's own
+        -> ``prompt.pick_schema(did)``. Same model, same static prefix and options as planning: only the request's own
         part differs, so the cached prefix stays and the next command doesn't re-read it."""
 
         def build(choice: Choice) -> dict[str, Any]:
             lines = list(rows)[:CPU_PAGE_ROWS] if choice.device == "cpu" else list(rows)
             return prompt.pick_request(goal, lines, did=did, front=front, title=title)
 
-        return self._ask(build, prompt.PICK_SCHEMA, self._catalog(), choice)
+        return self._ask(build, prompt.pick_schema(did), self._catalog(), choice)
 
     def _ask(self, build: Callable[[Choice], dict[str, Any]], schema: dict[str, Any], catalog: Catalog,
              choice: Choice | None) -> Thought:

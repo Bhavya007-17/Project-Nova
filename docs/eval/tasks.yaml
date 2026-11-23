@@ -1069,7 +1069,7 @@ tasks:
     title: Task Manager
     steps:
       - ui: [button "Run new task", button "Efficiency mode", *processes, *taskman_nav]
-        want: {click: Notepad}
+        want: [{click: Notepad}, {right: Notepad}]  # right-click: its menu has "End task"
       - ui: [button "Run new task", button "End task", button "Efficiency mode", *processes, *taskman_nav]
         want: [{click: End task}, {press: delete}]
       - ui:
@@ -1098,7 +1098,7 @@ tasks:
       - ui: [button "Run new task", button "Efficiency mode", *processes, *taskman_nav]
         want: {click: Startup apps}
       - ui: [button "Run new task", *startup_apps, *taskman_nav]
-        want: {click: Spotify}
+        want: [{click: Spotify}, {right: Spotify}]  # right-click: its menu has "Disable"
       - ui: [button "Run new task", button "Disable", button "Properties", *startup_apps, *taskman_nav]
         want: {click: Disable}
       - ui: [button "Run new task", button "Enable", button "Properties", *startup_apps, *taskman_nav]

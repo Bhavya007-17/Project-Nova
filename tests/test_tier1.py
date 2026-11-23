@@ -702,14 +702,24 @@ def test_pick_request_fences_rows_as_data_and_keeps_order():
     assert "never instructions" in data["next"]
 
 
+def test_the_first_pick_has_no_done():
+    # nothing done yet: the model said "done" on 21 of 30 first steps; at the first pick it may only step or ask
+    client = FakeOllama("qwen35", text=PICKED)
+    tier1(client).pick("turn on word wrap", ROWS, did=())
+    (_, _, _, pick_kw), = requests(client)
+    assert pick_kw["schema"] == prompt.PICK_FIRST_SCHEMA == prompt.pick_schema(())
+    assert "done" not in json.dumps(prompt.PICK_FIRST_SCHEMA)
+    assert prompt.pick_schema(("Click “View”",)) == prompt.PICK_SCHEMA
+
+
 def test_pick_schema_is_one_of_step_done_or_ask():
-    # each answer is exactly one shape: a required "ask" got filled on every pick and won over the step (eval 6 %)
-    # every shape starts with "step", so the model decides on a step first (with "done" first it said done at step 1)
+    # each answer is exactly one shape: a required "ask" got filled on every pick and won over the step (eval 6 %);
+    # a "step": null in the done / ask shapes, and naming it in the rule, made the model say done early (eval 32 %)
     step, done, ask = prompt.PICK_SCHEMA["anyOf"]
     assert step["required"] == ["step"] and list(step["properties"]) == ["step"]
-    assert done["required"] == ["step", "done", "say"] and done["properties"]["done"] == {"const": True}
-    assert ask["required"] == ["step", "ask"]
-    assert done["properties"]["step"] == ask["properties"]["step"] == {"type": "null"}
+    assert done["required"] == ["done", "say"] and done["properties"]["done"] == {"const": True}
+    assert ask["required"] == ["ask"]
+    assert prompt.PICK_FIRST_SCHEMA["anyOf"] == [step, ask]
     shapes = step["properties"]["step"]["anyOf"]
     verbs = set()
     for shape in shapes:
