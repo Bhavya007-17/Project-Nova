@@ -76,6 +76,7 @@ class Scene:
     locked: bool = False
     windows: int = 0  # close_app: how many windows the app has open
     focus_known: bool = True  # type_text / keys that enter text: UI Automation said what the focused control is
+    focus_name: str = ""  # Enter / Space: the focused control's name (they press it like a click)
 
 
 @dataclass(frozen=True)
@@ -174,9 +175,16 @@ def enters_text(keys: str) -> bool:
     return pastes(keys) or ((len(key) == 1 or key == "space") and mods in _CHARACTER_MODIFIERS)
 
 
+ACTIVATES = frozenset({"enter", "space"})  # on a focused button these press it, like a click
+
+
 def needs_focus(s: Step) -> bool:
-    """Must the hands look at the focused control (UI Automation) before this step: is it about to get text?"""
-    return s.action == "type_text" or (s.action == "press" and enters_text(str(s.get("keys", ""))))
+    """Must the hands look at the focused control (UI Automation) before this step: is it about to get text, or
+    about to press a focused button?"""
+    if s.action == "type_text":
+        return True
+    keys = str(s.get("keys", "")).lower()
+    return s.action == "press" and (enters_text(keys) or keys in ACTIVATES)
 
 
 def _quote(text: str, limit: int = 40) -> str:
@@ -233,6 +241,8 @@ def assess(s: Step, scene: Scene) -> Risk | None:
             if not scene.focus_known:
                 what = "Paste" if pastes(keys) else f"Press {keys.replace('+', ' + ')}"
                 return _confirm(f"{what} here? (I couldn't check this field)")
+        if keys in ACTIVATES and risky_label(scene.focus_name):  # same check as clicking it
+            return _confirm(f"Press {keys.capitalize()} on {_quote(scene.focus_name)}?")
         return None
     if action == "close_app":
         if scene.windows > 1:

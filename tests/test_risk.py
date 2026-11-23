@@ -97,10 +97,20 @@ def test_ordinary_chords_are_judged_as_before():
         assert assess(step("press", keys=keys), UNCHECKED) is None, keys
 
 
+def test_enter_or_space_on_a_focused_risky_button_is_confirmed_like_a_click():
+    # pressing Enter / Space on a focused "Send" does what clicking it does (07d security review)
+    for keys in ("enter", "space"):
+        risk = assess(step("press", keys=keys), Scene(app="Outlook", exe="olk.exe", focus_name="Send"))
+        assert risk is not None and risk.confirm and "Send" in risk.question, keys
+    assert assess(step("press", keys="enter"), Scene(app="Notepad", exe="notepad.exe", focus_name="Search")) is None
+    assert assess(step("press", keys="tab"), Scene(app="Outlook", exe="olk.exe", focus_name="Send")) is None
+
+
 def test_which_steps_need_the_focused_control_checked():
     assert needs_focus(step("type_text", text="hi"))
     assert needs_focus(step("press", keys="ctrl+v"))
     assert needs_focus(step("press", keys="b"))
+    assert needs_focus(step("press", keys="enter"))  # what it presses: a focused "Send" / "Delete" button
     assert not needs_focus(step("press", keys="ctrl+t"))  # no UI Automation question for keys that enter nothing
     assert not needs_focus(step("open_app", app="Notepad"))
 

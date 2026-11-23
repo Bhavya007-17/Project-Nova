@@ -241,7 +241,7 @@ class WindowsHands:
         win = native.describe(native.foreground())
         catalog = self._catalog()
         app = catalog.app_for(win.exe, win.aumids) if win else None
-        password, known = False, True
+        password, known, focus_name = False, True, ""
         if needs_focus(s):  # typing, a paste or a character key: never into a password field (SPEC §14)
             focus = self._focus.focused(0.4)
             if focus is not None and focus.control_type in _CONTAINERS:
@@ -251,6 +251,7 @@ class WindowsHands:
                 focus = self._focus.focused(0.4)
             known = focus is not None and focus.control_type not in _CONTAINERS
             password = bool(focus and focus.password)
+            focus_name = focus.name if focus is not None else ""  # Enter / Space press a focused "Send" too
         count = 0
         if s.action == "close_app":
             target = catalog.app(s.get("app", ""))
@@ -264,7 +265,7 @@ class WindowsHands:
         return Scene(
             app=app.name if app else "", exe=win.exe_name if win else "", window_class=win.cls if win else "",
             title=win.title if win else "", url=url, password=password, locked=native.workstation_locked(),
-            windows=count, focus_known=known,
+            windows=count, focus_known=known, focus_name=focus_name,
         )
 
     def run(self, s: Step, ctx: object) -> Outcome:
