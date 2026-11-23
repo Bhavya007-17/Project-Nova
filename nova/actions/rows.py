@@ -24,7 +24,7 @@ OCR_BELOW = 10  # named UIA rows below this: Windows OCR fills in (it costs ~150
 NAME_MAX = 48  # characters of a label in a row
 AREA_MAX = 24
 
-_MENU, _MENU_BAR = 50009, 50010
+_MENU, _WINDOW = 50009, 50032
 _CONTAINERS = {50008: "list", 50009: "menu", 50010: "menu bar", 50018: "tab", 50021: "toolbar", 50023: "tree",
                50026: "group", 50028: "grid", 50033: "pane"}
 _FIELDS = {50003, 50004}  # combo box, edit: a row even without invoke / toggle (he types into them)
@@ -90,6 +90,14 @@ def _size(rect: tuple[int, int, int, int]) -> int:
 def _inside(rect: tuple[int, int, int, int], box: Box) -> bool:
     x, y = (rect[0] + rect[2]) // 2, (rect[1] + rect[3]) // 2
     return box.contains(x, y)
+
+
+def focus_area(elements: Sequence[Element]) -> Box | None:
+    """An open dialog inside the window (a nested UIA window, the smallest one): its controls come first."""
+    nested = [e for e in elements[1:] if e.control_type == _WINDOW and _size(e.rect) > 0]
+    if not nested:
+        return None
+    return Box(*min(nested, key=lambda e: _size(e.rect)).rect)
 
 
 def build(elements: Sequence[Element], *, generation: int = 0, first: Box | None = None,

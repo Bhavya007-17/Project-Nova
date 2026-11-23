@@ -18,6 +18,7 @@ from dataclasses import dataclass
 
 from ..events import MarksHidden, MarksShown
 from . import marks, native, screen, uitree
+from . import rows as rows_
 from .apps import Outcome
 from .marks import Box, Mark, Target
 from .native import ActionError, Win
@@ -131,6 +132,17 @@ class Pointer:
                  for e in elements if e.clickable]
         texts = [e.name for e in elements if e.role == "text" and e.name]
         return found, texts
+
+    def rows(self, win: Win) -> tuple[rows_.Row, ...]:
+        """The window as numbered rows for the model (Stage 07d): one UIA snapshot; OCR only when it names few."""
+        elements = uitree.warm_snapshot(self._focus, win, self._cold_wait) if self._focus is not None else []
+        generation = getattr(self._focus, "generation", 0)
+        first = rows_.focus_area(elements)
+        found = rows_.build(elements, generation=generation, first=first)
+        if len(found) < rows_.OCR_BELOW:
+            area = clip(self._frame(win.hwnd), self._monitor_for(win.hwnd).rect)
+            found = rows_.build(elements, generation=generation, first=first, ocr=self._ocr(area))
+        return found
 
     def _area(self, win: Win, monitor: native.Monitor, scope: str) -> native.Rect:
         return monitor.rect if scope == "everywhere" else clip(self._frame(win.hwnd), monitor.rect)

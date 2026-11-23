@@ -149,6 +149,19 @@ def test_a_chromium_window_with_few_buttons_waits_at_most_cold_wait():
     assert len(pointer.gather(chromium)) == 3 and 2 <= focus.generation <= 4
 
 
+def test_rows_read_uia_and_ocr_only_when_it_names_few():
+    ocr_asked: list = []
+    focus = FakeFocus([button(i, f"B{i}", (110, 110 + i * 30, 200, 130 + i * 30)) for i in range(12)])
+    pointer = Pointer(focus, ocr_lines=lambda rect: ocr_asked.append(rect) or [], monitor_for=lambda hwnd: MON,
+                      frame=lambda hwnd: FRAME)
+    out = pointer.rows(WIN)
+    assert len(out) == 12 and not ocr_asked and out[0].target.ref[0] == focus.generation
+    few = Pointer(FakeFocus([button(0, "OK", (110, 110, 150, 130))]),
+                  ocr_lines=lambda rect: [Target(Box(300, 300, 400, 320), "Export", "text", "ocr")],
+                  monitor_for=lambda hwnd: MON, frame=lambda hwnd: FRAME)
+    assert [r.text for r in few.rows(WIN)] == ['1 button "OK"', '2 text "Export"']
+
+
 def test_ocr_lines_get_numbers_too():
     pointer, _, _ = make(ROW, lines=[Target(Box(600, 300, 700, 320), "Fit to width", "text", "ocr")])
     pointer.show(WIN)

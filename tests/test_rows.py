@@ -86,6 +86,14 @@ def test_long_names_are_cut_and_quotes_kept_safe():
     assert len(out[0].text) < 70
 
 
+def test_focus_area_is_an_open_dialog_inside_the_window():
+    WINDOW = 50032
+    root = el(0, "Paint", WINDOW, (0, 0, 1000, 800), ())
+    assert rows.focus_area([root, el(1, "Save", BUTTON, (10, 10, 50, 30))]) is None  # the window itself is not one
+    dialog = el(2, "Resize and skew", WINDOW, (300, 200, 700, 600), ())
+    assert rows.focus_area([root, dialog, el(3, "OK", BUTTON, (400, 500, 460, 530))]) == Box(300, 200, 700, 600)
+
+
 def test_rows_can_be_found_by_number_and_text_lines_for_the_model():
     out = rows.build([el(0, "Save", BUTTON, (0, 0, 40, 20)), el(1, "Open", BUTTON, (50, 0, 90, 20))])
     assert rows.by_number(out, 2).target.name == "Open"
