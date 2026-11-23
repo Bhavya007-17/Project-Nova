@@ -147,6 +147,10 @@ class Pointer:
         """The window's frame, clipped to its screen (what a task's pixel signature watches)."""
         return clip(self._frame(hwnd), self._monitor_for(hwnd).rect)
 
+    def monitor(self, hwnd: int) -> native.Monitor:
+        """The screen the window is on (a guide ring is drawn there)."""
+        return self._monitor_for(hwnd)
+
     def rows(self, win: Win) -> tuple[rows_.Row, ...]:
         """The window as numbered rows for the model (Stage 07d): one UIA snapshot; OCR only when it names few."""
         elements = uitree.warm_snapshot(self._focus, win, self._cold_wait) if self._focus is not None else []

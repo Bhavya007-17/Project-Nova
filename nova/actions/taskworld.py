@@ -14,7 +14,9 @@ from typing import Any
 from ..brain.plan import Step
 from ..brain.risk import Scene
 from ..brain.task import Choice, View
-from . import screen
+from ..events import GuideHidden, GuideRing
+from . import native, screen
+from .marks import Box
 from .native import ActionError, Rect, Win
 from .rows import Row
 
@@ -23,16 +25,63 @@ _ON_ROW = {"click": "click", "right": "right", "double": "double"}
 
 class WindowWorld:
     def __init__(self, pointer: Any, front: Callable[[], Win], scene: Callable[[Step | None], Scene],
-                 run: Callable[[Step], Any], *, signature: Callable[[Rect], tuple[int, ...]] = screen.signature) -> None:
-        self._pointer = pointer  # pointing.Pointer: rows / act / window_area
+                 run: Callable[[Step], Any], *, signature: Callable[[Rect], tuple[int, ...]] = screen.signature,
+                 publish: Callable[[object], None] = lambda event: None,
+                 frame: Callable[[int], Rect] = native.frame_rect,
+                 cursor: Callable[[], tuple[int, int]] = native.cursor) -> None:
+        self._pointer = pointer  # pointing.Pointer: rows / act / window_area / monitor
         self._front = front
         self._scene = scene
         self._run = run
         self._signature = signature
+        self._publish = publish
+        self._frame = frame
+        self._cursor = cursor
+        self._looked: tuple[int, Rect | None] | None = None  # the window the rows came from, and its frame then
+        self._ring: GuideRing | None = None
 
     def look(self) -> View:
         win = self._front()
+        self._looked = (win.hwnd, self._frame_of(win.hwnd))
         return View(tuple(self._pointer.rows(win)), self._pixels(win))
+
+    def _frame_of(self, hwnd: int) -> Rect | None:
+        try:
+            return self._frame(hwnd)
+        except (ActionError, OSError):
+            return None
+
+    def show(self, row: Row | None, caption: str) -> Box | None:
+        """Ring the row where it is now: its box from the last look, moved as far as its window moved since."""
+        if row is None or self._looked is None:
+            self.hide()
+            return None
+        hwnd, then = self._looked
+        now = self._frame_of(hwnd)
+        box = row.target.box
+        if then is not None and now is not None and (now[0], now[1]) != (then[0], then[1]):
+            dx, dy = now[0] - then[0], now[1] - then[1]
+            box = Box(box.left + dx, box.top + dy, box.right + dx, box.bottom + dy)
+        try:
+            monitor = self._pointer.monitor(hwnd)
+        except ActionError:
+            return box
+        ring = GuideRing(monitor.device, monitor.rect, (box.left, box.top, box.right, box.bottom), caption)
+        if ring != self._ring:
+            self._ring = ring
+            self._publish(ring)
+        return box
+
+    def hide(self) -> None:
+        if self._ring is not None:
+            self._ring = None
+            self._publish(GuideHidden("guide"))
+
+    def cursor(self) -> tuple[int, int] | None:
+        try:
+            return self._cursor()
+        except (ActionError, OSError):
+            return None
 
     def signature(self) -> tuple[int, ...]:
         try:

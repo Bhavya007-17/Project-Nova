@@ -357,6 +357,21 @@ class MarksHide:
 
 
 @dataclass(frozen=True)
+class GuideRing:
+    """Ring one control for his own click (guide mode, Stage 07d). Physical pixels, like ``MarksShown``."""
+
+    device: str
+    monitor: tuple[int, int, int, int]
+    box: tuple[int, int, int, int]
+    caption: str = ""
+
+
+@dataclass(frozen=True)
+class GuideHidden:
+    why: str  # guide | timed out | ...
+
+
+@dataclass(frozen=True)
 class SteadyScroll:
     """Steady scrolling started / stopped (the gate lets a bare "stop" through while it runs)."""
 
