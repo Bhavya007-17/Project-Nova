@@ -211,6 +211,11 @@ memories aren't shared, this file is.
   it say done early (32 %). Measure every wording change with `nova eval --tasks`; don't reason about it.
 - **qwen3.5:4b repeats the last step in "did" and misses "done"** at the last step of a task (clicks Bluetooth
   again, which flips it back). The loop asks “X” again? before repeating its last click; "no" ends the task as done.
+- **Prefetch saves the first look's snapshot, not more** (2026-11-23, warm trees): `rows()` took 27 ms (Terminal),
+  98 ms (Claude), 208 ms (Chrome); after a prefetch 0–2 ms. A cold Chromium tree saves up to `COLD_WAIT_S` more.
+  It fires only on "show me / how do I / click / where's / turn on…" partials, idle only (no command, no dictation),
+  and is reused once, within 3 s, same window, same frame, no snapshot in between: a prefetch that replaced a running
+  command's snapshot would make its Invoke refs stale.
 
 ## Chrome extension
 - **Branded Chrome 137+ ignores `--load-extension`**: loading `extension/` unpacked is a one-time manual step.
