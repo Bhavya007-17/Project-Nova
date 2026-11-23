@@ -1033,6 +1033,13 @@ _LET_ME = frozenset({("let", "me", "do", "it"), ("ill", "do", "it"), ("ill", "do
                      ("let", "me", "do", "it", "myself"), ("let", "me", "try"), ("show", "me"), ("show", "me", "how"),
                      ("show", "me", "again"), ("show", "me", "how", "again"), ("walk", "me", "through", "it")})
 _POINTS_BACK = frozenset({("it",), ("that",), ("this",), ("it", "again"), ("that", "again")})
+# "… here" / "… in this app": the job is in the window in front, so "how do I …" is a guide, not a question for Claude
+_HERE_ENDS = sorted(
+    [("here",), ("in", "here"), ("right", "here"), *((p, "this", w) for p in ("in", "on")
+                                                     for w in ("app", "window", "program", "page", "one", "site"))],
+    key=len, reverse=True,
+)
+_PLACE_WORDS = frozenset({"from", "near", "around", "of", "to", "over", "out", "get", "go", "come", "there"})
 
 
 def _task_request(text: str, toks: Sequence[Tok], catalog: Catalog, strict: bool,
@@ -1072,7 +1079,12 @@ def _task_steps(text: str, said: Sequence[Tok], words: tuple[str, ...], begin: i
             name = found.target.name
             app = step("switch_app" if name in running else "open_app", app=name)
             end = last_in
-    if kind == "how" and app is None:
+    here = next((e for e in _HERE_ENDS if end - begin > len(e) and words[end - len(e) : end] == e), None)
+    if here == ("here",) and words[end - 2] in _PLACE_WORDS:  # "from here", "near here": a place, not the screen
+        here = None
+    if here is not None and app is None:
+        end -= len(here)
+    if kind == "how" and app is None and here is None:
         return None
     if words[begin:end] in _POINTS_BACK:
         return [*([app] if app else []), step("task", mode="guide")]

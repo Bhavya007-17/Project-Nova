@@ -592,9 +592,22 @@ def test_a_task_is_one_job_even_with_and_in_it():
 
 
 @pytest.mark.parametrize("text", ["how do I make pancakes", "how do I get to the airport",
-                                  "how to tie a tie"])
+                                  "how to tie a tie", "how do I get to the airport from here",
+                                  "how do I get out of here", "how do I find a good cafe near here"])
 def test_how_questions_without_an_app_are_left_to_tier_1(text):
     assert parse(text, CATALOG) is None
+
+
+@pytest.mark.parametrize(
+    ("text", "goal"),
+    [("how do I change the font size here", "change the font size"),
+     ("how can I turn on word wrap in this app?", "turn on word wrap"),
+     ("how do I add a page number in here", "add a page number"),
+     ("how do I zoom out on this page", "zoom out"),
+     ("show me how to turn on dark mode here", "turn on dark mode")],
+)
+def test_how_questions_about_the_window_in_front_are_guides(text, goal):
+    assert steps(text) == [step("task", goal=goal, mode="guide")]
 
 
 def test_task_words_dont_take_other_commands():
