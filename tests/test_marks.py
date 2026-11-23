@@ -1,8 +1,11 @@
+import pytest
+
 from nova.actions.marks import (
     MAX_TAGS,
     Box,
     Mark,
     Target,
+    button_named,
     grid_cells,
     grid_zoom,
     merge,
@@ -20,6 +23,27 @@ SCREEN = Box(0, 0, 2880, 1800)
 
 def t(name, x, y, w=80, h=30, role="button", source="uia"):
     return Target(Box(x, y, x + w, y + h), name, role, source)
+
+
+SAVE_DIALOG = [t("Save", 0, 0), t("Don't save", 100, 0), t("Cancel", 200, 0), t("Don't save", 102, 2, role="text")]
+
+
+@pytest.mark.parametrize("said,named", [
+    ("don't save", "Don't save"),
+    ("Dont save.", "Don't save"),
+    ("cancel", "Cancel"),
+    ("don't", None),  # only the whole name: "starts with" is a guess, not a bare answer
+    ("please don't save that one", None),  # too long to be a button's name
+    ("", None),
+])
+def test_a_button_named_exactly_what_he_said(said, named):
+    assert button_named(said, SAVE_DIALOG) == named
+
+
+def test_no_button_named_unless_one_plain_button_has_that_name():
+    assert button_named("cancel", [t("Cancel", 0, 0), t("Cancel", 300, 300)]) is None  # two: which?
+    assert button_named("save", [t("Save", 0, 0, role="hyperlink")]) is None  # buttons only
+    assert button_named("ok", [t("OK", 0, 0, role="split button")]) == "OK"
 
 
 def test_normalize_drops_apostrophes_and_punctuation():

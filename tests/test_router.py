@@ -201,6 +201,24 @@ def test_a_plain_click_on_the_page_needs_no_llm():
     assert tier1.calls == [] and pages == ["hit that sign in thing"]
 
 
+def test_a_bare_button_name_on_the_window_in_front_needs_no_llm():
+    asked = []
+
+    def buttons(text, ctx):
+        asked.append(text)
+        return "Don't save" if text == "don't save" else None
+
+    tier1 = FakeTier1({"kind": "act", "steps": [{"action": "open_app", "app": "Canvas"}], "confidence": 0.95})
+    router = Router(tier1, buttons=buttons)
+    routed = router.route("don't save", EMPTY, CATALOG)
+    assert routed.tier == "screen" and routed.plan.steps == (step("ui_click", name="Don't save"),)
+    assert tier1.calls == []
+    assert router.route("can you get canvas up for me", EMPTY, CATALOG).tier == "1"  # no such button: the model
+    assert router.route("open chrome", EMPTY, CATALOG).tier == "0"  # Tier 0 first, no screen read
+    assert router.route("don't save", EMPTY, CATALOG, strict=True).plan is None  # overheard: never clicks
+    assert asked == ["don't save", "can you get canvas up for me"]
+
+
 def test_otherwise_tier_1_sees_the_same_page_once():
     rows = PageRows((Scored(SIGN_IN, 60.0, 0), Scored(Element("0:4", "link", "Help"), 0.0, 1)), 9.0)
     fetched = []

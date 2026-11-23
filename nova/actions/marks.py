@@ -142,6 +142,19 @@ def rank(query: str, targets: Sequence[Target], *, role: str = "", near: str = "
     return found
 
 
+BUTTON_WORDS = 4  # a bare button name ("don't save", "OK", "replace the file") is short
+
+
+def button_named(said: str, targets: Sequence[Target]) -> str | None:
+    """The one button named exactly what he said ("don't save" -> "Don't save"), else None: a bare dialog answer,
+    told from everything else without the LLM. Only the whole name counts, and only one button."""
+    want = normalize(said)
+    if not want or len(want.split()) > BUTTON_WORDS:
+        return None
+    hits = _drop_nested([t for t in targets if role_matches("button", t.role) and normalize(t.name) == want])
+    return hits[0].name if len(hits) == 1 else None
+
+
 def _drop_nested(found: list[Target]) -> list[Target]:
     """A button and the text inside it with the same name are one thing: keep the outer one."""
     kept: list[Target] = []

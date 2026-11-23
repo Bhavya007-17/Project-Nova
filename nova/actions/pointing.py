@@ -283,6 +283,19 @@ class Pointer:
             return self.show(win, targets=everything, note=f"I don't see “{_cut(name)}” — say a number")
         return self.grid(win, "here", note=f"I don't see “{_cut(name)}” — say a square")
 
+    def has_tabs(self, win: Win) -> bool:
+        """``win`` shows tabs of its own (Notepad, Explorer, Terminal): tab keys belong to it, not the browser."""
+        if self._focus is None:
+            return False
+        return any(e.role == "tab item" for e in uitree.warm_snapshot(self._focus, win, self._cold_wait))
+
+    def button_named(self, win: Win, said: str) -> str | None:
+        """A button of ``win`` named exactly what he said (``marks.button_named``), from a UIA snapshot."""
+        if not 0 < len(marks.normalize(said).split()) <= marks.BUTTON_WORDS:
+            return None  # can't be a button's name: no snapshot
+        uia, _ = self._elements(win)
+        return marks.button_named(said, uia)
+
     def dialog_text(self) -> str:
         return " ".join(" ".join(self._texts).split())[:DIALOG_TEXT]
 

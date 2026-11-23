@@ -8,6 +8,7 @@ import pytest
 from nova.actions import screen, scrolling
 from nova.actions.native import ActionError, Win
 from nova.actions.scrolling import AT_END, MOVED, UNAVAILABLE, UNMOVED, Front, Scroller, cascade
+from nova.actions.uia import Focus
 from nova.actions.uitree import Element, ScrollReceipt, scroll_target
 
 
@@ -245,8 +246,130 @@ class ColdPdfFocus:
         return "invoke"
 
 
+CHROME_WIN = Win(hwnd=1, pid=2, tid=3, title="doc.pdf", cls="Chrome_WidgetWin_1", exe="chrome.exe", aumids=())
+PDF_FRONT = Front(CHROME_WIN, (0, 0, 1000, 1000), (500, 575), True)
+
+
 def test_fit_width_asks_a_cold_chrome_tree_again():
     focus = ColdPdfFocus()
-    chrome_win = Win(hwnd=1, pid=2, tid=3, title="doc.pdf", cls="Chrome_WidgetWin_1", exe="chrome.exe", aumids=())
-    done = Scroller(focus, lambda: None)._fit_width(Front(chrome_win, (0, 0, 1000, 1000), (500, 575), True), object())
+    done = Scroller(focus, lambda: None)._fit_width(PDF_FRONT, object())
     assert done.detail == "Fit to width" and focus.acted == [4] and focus.asked == 2
+
+
+class FitToggleFocus:
+    """Chrome's one fit button: "Fit to width" only while fit to page, else "Fit to page"; a press flips page <-> width
+    (from a zoom, it goes to page)."""
+
+    def __init__(self, fitting: str) -> None:
+        self.fitting = fitting
+        self.acted: list[int] = []
+
+    def snapshot(self, hwnd):
+        return [_button(1, "Close"), _button(4, "Fit to width" if self.fitting == "page" else "Fit to page")]
+
+    def act(self, index, patterns):
+        self.acted.append(index)
+        self.fitting = "width" if self.fitting == "page" else "page"
+        return "invoke"
+
+
+@pytest.mark.parametrize(("fitting", "presses"), [("page", 1), ("zoomed", 2), ("width", 2)])
+def test_fit_width_ends_fit_to_width_whatever_the_button_said(fitting, presses):
+    focus = FitToggleFocus(fitting)
+    done = Scroller(focus, lambda: None)._fit_width(PDF_FRONT, object())
+    assert done.detail == "Fit to width" and focus.fitting == "width" and focus.acted == [4] * presses
+
+
+DOCUMENT = Focus("PDF document", 50030, False, 0, 2)
+OMNIBOX = Focus("Address and search bar", 50004, False, 0, 2)
+PAGE_BOX = Focus("Page number", 50004, False, 0, 2)
+
+
+class PageBoxPdf:
+    """Chrome's PDF viewer: its toolbar joins the tree only from snapshot ``late`` on. Focus starts at ``start``; the
+    omnibox's dropdown covers the toolbar until Esc; a real click on an uncovered box puts the focus there."""
+
+    def __init__(self, start: Focus, late: int = 1, covered: bool = False, clickable: bool = True,
+                 value: str = "") -> None:
+        self.now, self.late, self.covered, self.clickable, self.asked = start, late, covered, clickable, 0
+        self.value = value
+        self.did: list[object] = []
+
+    def snapshot(self, hwnd):
+        self.asked += 1
+        box = [Element(2, "Page number", 50004, (100, 10, 140, 30), frozenset({"focusable"}), self.value)]
+        return [_button(1, "Close")] + (box if self.asked >= self.late else [])
+
+    def focused(self):
+        return self.now
+
+    def press(self, keys, target):
+        self.did.append(keys)
+        if keys == "esc":
+            self.covered = False
+
+    def click(self, x, y):
+        self.did.append(("click", x, y))
+        if self.clickable and not self.covered:
+            self.now = PAGE_BOX
+
+    def wire(self, monkeypatch) -> PageBoxPdf:
+        monkeypatch.setattr(scrolling.native, "click_at", self.click)
+        monkeypatch.setattr(scrolling.keyboard, "press", self.press)
+        monkeypatch.setattr(scrolling.keyboard, "type_text", lambda text, submit, target: self.did.append((text, submit)))
+        monkeypatch.setattr(scrolling, "watch", lambda rect, act, timeout=0.4: (act(), True)[1])
+        return self
+
+
+@pytest.mark.parametrize(("pdf", "esc"), [
+    (PageBoxPdf(DOCUMENT), False),
+    (PageBoxPdf(DOCUMENT, late=3), False),  # the viewer's toolbar shows up a moment after the browser's
+    (PageBoxPdf(OMNIBOX, covered=True), True),  # the omnibox's dropdown over the toolbar: Esc, then click
+    (PageBoxPdf(PAGE_BOX), False),
+])
+def test_go_to_page_clicks_the_page_box_then_types(monkeypatch, pdf, esc):
+    done = Scroller(pdf.wire(monkeypatch), lambda: None)._goto(PDF_FRONT, object(), 5)
+    assert (done.detail, done.method) == ("Page 5", "page-box")
+    assert pdf.did == (["esc"] if esc else []) + [("click", 120, 20), "ctrl+a", ("5", True)]
+
+
+@pytest.mark.parametrize(("forward", "typed", "said"), [(True, "7", "Next page"), (False, "5", "Previous page")])
+def test_turning_a_page_types_the_page_box_number_plus_or_minus_one(monkeypatch, forward, typed, said):
+    pdf = PageBoxPdf(DOCUMENT, value=" 6 ").wire(monkeypatch)  # zoomed in, Left / Right would scroll sideways
+    done = Scroller(pdf, lambda: None)._turn(PDF_FRONT, forward)
+    assert (done.detail, done.method) == (said, "page-box")
+    assert pdf.did == [("click", 120, 20), "ctrl+a", (typed, True)]
+
+
+def test_no_page_before_the_first(monkeypatch):
+    pdf = PageBoxPdf(DOCUMENT, value="1").wire(monkeypatch)
+    with pytest.raises(ActionError, match="first page"):
+        Scroller(pdf, lambda: None)._turn(PDF_FRONT, False)
+    assert pdf.did == []
+
+
+def test_past_the_last_page_says_so(monkeypatch):
+    pdf = PageBoxPdf(DOCUMENT, value="10").wire(monkeypatch)
+    monkeypatch.setattr(scrolling, "watch", lambda rect, act, timeout=0.4: (act(), False)[1])  # the viewer stays put
+    with pytest.raises(ActionError, match="last one"):
+        Scroller(pdf, lambda: None)._turn(PDF_FRONT, True)
+
+
+@pytest.mark.parametrize("value", ["", "abc"])
+def test_a_page_box_without_a_number_leaves_the_turn_to_the_keys(monkeypatch, value):
+    pdf = PageBoxPdf(DOCUMENT, value=value).wire(monkeypatch)
+    assert Scroller(pdf, lambda: None)._turn(PDF_FRONT, True) is None
+    assert pdf.did == []
+
+
+def test_go_to_page_types_nothing_unless_the_page_box_has_focus(monkeypatch):
+    pdf = PageBoxPdf(DOCUMENT, clickable=False).wire(monkeypatch)  # something else covers the box
+    with pytest.raises(ActionError, match="page 5"):
+        Scroller(pdf, lambda: None)._goto(PDF_FRONT, object(), 5)
+    assert pdf.did == [("click", 120, 20)]
+
+
+def test_go_to_page_without_the_viewers_page_box_says_so(monkeypatch):
+    monkeypatch.setattr(scrolling, "VIEWER_WAIT_S", 0.1)
+    with pytest.raises(ActionError, match="page 5"):
+        Scroller(PageBoxPdf(DOCUMENT, late=10**6), lambda: None)._goto(PDF_FRONT, object(), 5)

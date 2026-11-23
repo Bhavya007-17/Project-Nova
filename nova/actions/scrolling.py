@@ -30,6 +30,9 @@ WATCH_S = 0.4  # how long a key / wheel scroll gets to show on screen (smooth sc
 SPEEDS = (0.8, 0.5, 0.3, 0.18, 0.1)  # seconds per wheel notch, slow -> fast
 KEEP_SPEED, SLOW_SPEED = 2, 1
 STILL_CHECKS = 3  # steady scrolling stops after this many looks at the screen without a change
+FIT_FLIP_S = 0.8  # how long Chrome's PDF fit button gets to relabel itself after a press
+VIEWER_WAIT_S = 1.0  # Chrome's PDF viewer joins the UIA tree ~1 s after the browser's toolbar does
+FOCUS_CHECKS = 4  # looks at the focus after clicking a box, before typing into it
 WHEEL_NOTCHES = {"bit": 2, "small": 2, "page": 5, "large": 15}
 
 Method = Callable[[str, str], str]  # (direction, amount) -> MOVED / AT_END / UNMOVED / UNAVAILABLE
@@ -279,7 +282,11 @@ class Scroller:
     def doc(self, win: Win, op: str, page: int | None = None) -> Outcome:
         front = Front.of(win, False)
         chrome = self._pdf()
-        if chrome is not None and self._focus is not None and op != "goto_page":
+        if chrome is not None and op in ("next_page", "prev_page"):
+            turned = self._turn(front, op == "next_page")
+            if turned is not None:
+                return turned
+        if chrome is not None and self._focus is not None and op != "goto_page":  # _page_box reads the real focus
             self._focus.focus_at(*front.centre)
         match op:
             case "goto_page":
@@ -306,37 +313,81 @@ class Scroller:
             raise ActionError("Which page?")
         if chrome is None:
             raise ActionError("Going to a page works in PDFs open in Chrome for now.")
-        tab = chrome.active_tab()
-        if tab is None:
-            raise ActionError("I couldn't see Chrome's tab.")
-        url = tab.url.split("#", 1)[0] + f"#page={page}"
-        if watch(front.watched, lambda: chrome.navigate(tab, url), timeout=1.0):
-            return Outcome(f"Page {page}", "url")
-        return self._page_box(front, page)
+        return self._page_box(front, page)  # not "#page=N": the viewer ignores it and the omnibox takes focus
 
-    def _page_box(self, front: Front, page: int) -> Outcome:
-        """The viewer's page-number box: click it, type the number, Enter."""
-        box = self._find(front.win, ("page number", "page"), role="edit")
+    def _page_box(self, front: Front, page: int, box: object | None = None, missing: str | None = None) -> Outcome:
+        """The viewer's page-number box: click it, type the number, Enter (``front.watched`` is below the toolbar).
+        Types only once the box itself has focus, or the number and Enter would go to the address bar."""
         if box is None:
+            box = self._wait_for(front.win, ("page number", "page"), "edit", VIEWER_WAIT_S)
+        if box is None or not self._focus_box(front.win, box):
             raise ActionError(f"I couldn't get to page {page}.")
-        left, top, right, bottom = box.rect
-        native.click_at((left + right) // 2, (top + bottom) // 2)
         keyboard.press("ctrl+a", front.win)
         if not watch(front.watched, lambda: keyboard.type_text(str(page), True, front.win), timeout=1.0):
-            raise ActionError(f"Page {page} didn't show — does the document have that many?")
+            raise ActionError(missing or f"Page {page} didn't show — does the document have that many?")
         return Outcome(f"Page {page}", "page-box")
+
+    def _turn(self, front: Front, forward: bool) -> Outcome | None:
+        """Next / previous page in Chrome's viewer through its page box: the number it shows, plus or minus one.
+        Not Left / Right: they turn pages only while nothing scrolls sideways; zoomed in they scroll sideways, and
+        the view moving would pass for a turned page. None = the box doesn't say which page (use the keys)."""
+        box = self._wait_for(front.win, ("page number", "page"), "edit", VIEWER_WAIT_S)
+        now = box.value.strip() if box is not None else ""
+        if not now.isdigit():
+            return None
+        last = "The page didn't change — is it the last one?"
+        if not forward and int(now) <= 1:
+            raise ActionError("This is the first page.")
+        self._page_box(front, int(now) + (1 if forward else -1), box, missing=last if forward else None)
+        return Outcome("Next page" if forward else "Previous page", "page-box")
 
     def _fit_width(self, front: Front, chrome: object | None) -> Outcome:
         if chrome is None:
             raise ActionError("Fit to width works in PDFs open in Chrome for now.")
-        button = self._find(front.win, ("fit to width",), role="button")
+        # One button that flips: it reads "Fit to width" only while the page is fit to page, and "Fit to page" after a
+        # zoom or once fit to width. So from "Fit to page", press it, wait for "Fit to width", press that.
+        button = self._wait_for(front.win, ("fit to width", "fit to page"), "button", VIEWER_WAIT_S)
         if button is None:
-            if self._find(front.win, ("fit to page",), role="button") is not None:
-                return Outcome("Already fit to width", "uia")
             raise ActionError("I couldn't find the viewer's fit button.")
+        if "width" not in button.name.lower():
+            self._press(button)
+            button = self._wait_for(front.win, ("fit to width",), "button", FIT_FLIP_S)
+            if button is None:
+                raise ActionError("The fit button didn't change.")
+        self._press(button)
+        return Outcome("Fit to width", "uia")
+
+    def _wait_for(self, win: Win, names: tuple[str, ...], role: str, wait: float) -> object | None:
+        """``_find``, asked again for up to ``wait`` s until an element carries one of ``names``."""
+        deadline = time.monotonic() + wait
+        while True:
+            element = self._find(win, names, role=role)
+            if element is not None and any(name in element.name.lower() for name in names):
+                return element
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(0.05)
+
+    def _focus_box(self, win: Win, box: object) -> bool:
+        """Keyboard focus into ``box`` with a real click; True only once the focus is seen there. Not UIA SetFocus: in
+        Chrome it changes what UIA reports, not where keys go (the omnibox keeps them), and the check would pass on a
+        lie. Another edit with focus (the omnibox) may have its dropdown over the viewer's toolbar: Esc closes it."""
+        self._focus.focused()  # Chrome's first answer can be a stale pane
+        now = self._focus.focused()
+        if now is not None and now.role == "edit" and not _same(now, box):
+            keyboard.press("esc", win)
+        left, top, right, bottom = box.rect
+        native.click_at((left + right) // 2, (top + bottom) // 2)
+        for _ in range(FOCUS_CHECKS):
+            now = self._focus.focused()
+            if now is not None and _same(now, box):
+                return True
+            time.sleep(0.05)
+        return False
+
+    def _press(self, button: object) -> None:
         if self._focus.act(button.index, button.patterns) is None:
             raise ActionError("The fit button didn't answer.")
-        return Outcome("Fit to width", "uia")
 
     def _find(self, win: Win, names: tuple[str, ...], role: str) -> object | None:
         if self._focus is None:
@@ -347,6 +398,11 @@ class Scroller:
                 if element.role == role and element.name.strip().lower() == wanted:
                     return element
         return next((e for e in elements if e.role == role and names[-1] in e.name.lower()), None)
+
+
+def _same(focus: object, element: object) -> bool:
+    """The focused control (``uia.Focus``) is ``element`` (``uitree.Element``): same role and name."""
+    return focus.role == element.role and focus.name.strip().lower() == element.name.strip().lower()
 
 
 class Steady:

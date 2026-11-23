@@ -402,3 +402,48 @@ def test_hands_label_a_number_and_refuse_a_missing_one(mouse, monkeypatch):
         hands.resolve(Step("pick", {"n": 7}), None)
     assert hands.run(step, None).method == "invoke"
     assert hands.run(Step("numbers", {"op": "hide"}), None).detail == "No numbers are showing"
+
+
+TAB_ITEM = 50019
+
+
+def tab(index: int, name: str) -> Element:
+    return Element(index, name, TAB_ITEM, (120 + 100 * index, 105, 210 + 100 * index, 125), frozenset({"select"}))
+
+
+@pytest.fixture
+def keys(monkeypatch):
+    """Records key presses and which window got them; the browser is a separate window."""
+    pressed: list[tuple[str, int]] = []
+    browser = Win(hwnd=77, pid=8, tid=9, title="Chrome", cls="Chrome_WidgetWin_1", exe="chrome.exe", aumids=())
+    monkeypatch.setattr("nova.actions.hands.keyboard.press", lambda combo, win: pressed.append((combo, win.hwnd)))
+    monkeypatch.setattr("nova.actions.hands.apps.is_browser", lambda catalog, win: win.hwnd == browser.hwnd)
+    monkeypatch.setattr("nova.actions.hands.apps.browser_window", lambda catalog: (browser, "activate"))
+    return pressed
+
+
+def test_tab_keys_go_to_a_tabbed_app_in_front_not_the_browser(keys, monkeypatch):
+    pointer, focus, _ = make([tab(0, "notes.txt"), tab(1, "todo.txt"), text(2, "hello")])
+    hands = hands_with(pointer, focus, monkeypatch)
+    out = hands.run(Step("tab", {"op": "close"}), None)
+    assert keys == [("ctrl+w", WIN.hwnd)] and out.detail == "Closed the tab" and out.win == WIN
+    hands.run(Step("tab", {"op": "next"}), None)
+    assert keys[-1] == ("ctrl+tab", WIN.hwnd)
+
+
+def test_tab_keys_go_to_the_browser_when_the_front_app_has_no_tabs(keys, monkeypatch):
+    pointer, focus, _ = make(ROW)
+    hands = hands_with(pointer, focus, monkeypatch)
+    hands.run(Step("tab", {"op": "close"}), None)
+    assert keys == [("ctrl+w", 77)]
+
+
+def test_windows_terminal_gets_its_own_tab_keys(keys, monkeypatch):
+    term = Win(hwnd=5, pid=2, tid=3, title="PowerShell", cls="CASCADIA_HOSTING_WINDOW_CLASS",
+               exe=r"C:\Program Files\WindowsApps\WindowsTerminal.exe", aumids=())
+    pointer, focus, _ = make([tab(0, "PowerShell"), tab(1, "cmd")])
+    monkeypatch.setattr(WindowsHands, "_front", staticmethod(lambda: term))
+    hands = WindowsHands(lambda: None, focus=focus, nova=object(), pointer=pointer)
+    hands.run(Step("tab", {"op": "close"}), None)
+    hands.run(Step("tab", {"op": "new"}), None)
+    assert keys == [("ctrl+shift+w", 5), ("ctrl+shift+t", 5)]  # ctrl+w would delete a word in the shell

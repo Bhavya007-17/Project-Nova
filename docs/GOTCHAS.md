@@ -157,6 +157,18 @@ memories aren't shared, this file is.
   so the row measures nothing.
 - `nova numbers --dump [--title T]` saves what "show numbers" would tag (JSON) and the window's pixels (PNG) to
   `data/`, nothing clicked. A window that isn't in front shows whatever covers it in the picture.
+- **Chrome's PDF viewer (measured live, CfT 149):** `#page=N` on the URL is ignored once the PDF is open; the
+  viewer's UIA subtree arrives ~1 s after the page; the fit button is a toggle (a second "fit to width" undoes the
+  first, so read its state); with the omnibox focused its dropdown covers the toolbar (Esc first); UIA `SetFocus`
+  on the page box reports success while keyboard focus stays put — click it for real and check; Left / Right
+  scroll sideways when zoomed, so page turns go through the page box (its UIA value is the current page, ±1).
+- **Win11 Notepad restores unsaved tabs:** closing the window (WM_CLOSE) keeps them, no dialog, and they come back
+  next start (`LocalState\TabState`). Ctrl+W on a dirty tab is what asks to save — an in-app XAML dialog inside the
+  main window, which Tier 1 never sees. A bare button name ("don't save") is matched against the front window's
+  buttons before Tier 1 (`marks.button_named`, tier "screen").
+- **Tab keys follow the window in front:** "close the tab" with Notepad / Explorer / Terminal in front went to
+  Chrome (or failed "Chrome isn't open"). A front window with UIA tab items gets the keys; Windows Terminal needs
+  Ctrl+Shift+W / T (Ctrl+W deletes a word in the shell).
 
 ## Chrome extension
 - **Branded Chrome 137+ ignores `--load-extension`**: loading `extension/` unpacked is a one-time manual step.
@@ -164,11 +176,13 @@ memories aren't shared, this file is.
   temp `--user-data-dir`).
 - CfT reads native hosts from `HKCU\Software\Google\Chrome for Testing\NativeMessagingHosts`:
   `nova chrome --install --browser testing`. `extension/test/selftest.py` does all of this; quit the tray app first
-  (it owns the pipe). Extend the self-test instead of asking a human to load things.
+  (it owns the pipe). Extend the self-test instead of asking a human to load things. CfT 149 also started the host
+  registered under `Google\Chrome`, so a test harness sets `NOVA_BRIDGE_FILE` to make whichever host starts read
+  its bridge.
 
 - **Chrome's built-in PDF viewer can't be scripted.** The content script finds nothing scrollable and reports
-  `ok: true, moved: false`, which Nova reads as "Already at the bottom" (from the code, 2026-11-11 — not yet reproduced
-  live). Send real keys or the wheel to the focused PDF instead.
+  `ok: true, moved: false`, which Nova reads as "Already at the bottom". Send real keys or the wheel to the focused
+  PDF instead (07c does; see "Chrome's PDF viewer" above).
 
 ## Dictation
 - A RichEdit (what Notepad is built on) silently ignores Ctrl+V when the clipboard holds only `"\r\n\r\n"`: hold

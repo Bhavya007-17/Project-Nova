@@ -13,7 +13,7 @@ import logging
 import threading
 import time
 from ctypes import POINTER, byref, c_double, c_int, c_void_p, wintypes
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from . import native
 
@@ -22,6 +22,7 @@ _log = logging.getLogger(__name__)
 _oleaut32 = ctypes.WinDLL("oleaut32")
 _oleaut32.SysFreeString.argtypes = [c_void_p]
 _oleaut32.SysFreeString.restype = None
+_oleaut32.VariantClear.argtypes = [c_void_p]
 
 # IUIAutomation
 _ELEMENT_FROM_HANDLE, _ELEMENT_FROM_POINT, _GET_FOCUSED, _ELEMENT_FROM_HANDLE_BUILD_CACHE = 6, 7, 8, 10
@@ -48,6 +49,9 @@ _LARGE_DECREMENT, _NO_AMOUNT, _LARGE_INCREMENT = 0, 2, 3
 # property ids
 _P_RECT, _P_CONTROL_TYPE, _P_NAME, _P_FOCUSABLE, _P_ENABLED, _P_OFFSCREEN = 30001, 30003, 30005, 30009, 30010, 30022
 _P_EXPAND, _P_INVOKE, _P_SCROLL, _P_SELECT, _P_TOGGLE = 30028, 30031, 30034, 30036, 30041
+_P_PASSWORD, _P_VALUE = 30019, 30045
+_EDIT = 50004
+VALUE_MAX = 40  # characters of an edit's value kept
 _PATTERN_PROPS = {"invoke": _P_INVOKE, "toggle": _P_TOGGLE, "select": _P_SELECT, "expand": _P_EXPAND,
                   "scroll": _P_SCROLL, "focusable": _P_FOCUSABLE}
 _SUBTREE = 7  # TreeScope: element + children + descendants
@@ -79,6 +83,7 @@ class Element:
     control_type: int
     rect: tuple[int, int, int, int]  # left, top, right, bottom (physical px)
     patterns: frozenset[str]  # invoke | toggle | select | expand | scroll | focusable
+    value: str = field(default="", repr=False)  # an edit's text, cut short (never a password field's; not logged)
 
     @property
     def role(self) -> str:
@@ -128,6 +133,16 @@ def _cached_bool(element: c_void_p, prop: int) -> bool:
     return v.vt == 11 and (v.value & 0xFFFF) != 0  # VT_BOOL, VARIANT_TRUE = -1
 
 
+def _cached_text(element: c_void_p, prop: int) -> str:
+    v = _VARIANT()
+    if native.com_call(element, _GET_CACHED_PROPERTY_VALUE, prop, byref(v), types=(c_int, POINTER(_VARIANT))) < 0:
+        return ""
+    try:
+        return ctypes.wstring_at(v.value) if v.vt == 8 and v.value else ""  # VT_BSTR
+    finally:
+        _oleaut32.VariantClear(byref(v))
+
+
 def add_ref(pointer: c_void_p) -> None:
     vtable = ctypes.cast(pointer, POINTER(POINTER(c_void_p)))[0]
     ctypes.WINFUNCTYPE(ctypes.c_ulong, c_void_p)(vtable[1])(pointer)
@@ -137,13 +152,15 @@ def _cache_request(automation: c_void_p) -> c_void_p | None:
     request = _out_pointer(automation, _CREATE_CACHE_REQUEST)
     if request is None:
         return None
-    for prop in (_P_RECT, _P_CONTROL_TYPE, _P_NAME, _P_ENABLED, _P_OFFSCREEN, *_PATTERN_PROPS.values()):
+    for prop in (_P_RECT, _P_CONTROL_TYPE, _P_NAME, _P_ENABLED, _P_OFFSCREEN, _P_PASSWORD, _P_VALUE,
+                 *_PATTERN_PROPS.values()):
         native.com_call(request, _CACHE_ADD_PROPERTY, prop, types=(c_int,))
     return request
 
 
-def _read(element: c_void_p) -> tuple[str, int, tuple[int, int, int, int], bool, frozenset[str]] | None:
-    """(name, control type, rect, usable, patterns) from the cache."""
+def _read(element: c_void_p) -> tuple[str, int, tuple[int, int, int, int], bool, frozenset[str], str] | None:
+    """(name, control type, rect, usable, patterns, value) from the cache. The value only of edits, never of a
+    password field."""
     rect = _rect(element, _CACHED_BOUNDING_RECTANGLE)
     if rect[2] <= rect[0] or rect[3] <= rect[1]:
         return None
@@ -152,8 +169,12 @@ def _read(element: c_void_p) -> tuple[str, int, tuple[int, int, int, int], bool,
     native.com_call(element, _CACHED_IS_ENABLED, byref(enabled), types=(POINTER(wintypes.BOOL),))
     native.com_call(element, _CACHED_IS_OFFSCREEN, byref(offscreen), types=(POINTER(wintypes.BOOL),))
     patterns = frozenset(name for name, prop in _PATTERN_PROPS.items() if _cached_bool(element, prop))
-    return (_bstr(element, _CACHED_NAME)[:120], _int(element, _CACHED_CONTROL_TYPE), rect,
-            bool(enabled.value) and not offscreen.value, patterns)
+    control_type = _int(element, _CACHED_CONTROL_TYPE)
+    value = ""
+    if control_type == _EDIT and not _cached_bool(element, _P_PASSWORD):
+        value = _cached_text(element, _P_VALUE)[:VALUE_MAX]
+    return (_bstr(element, _CACHED_NAME)[:120], control_type, rect, bool(enabled.value) and not offscreen.value,
+            patterns, value)
 
 
 def _visible(rect: tuple[int, int, int, int], window: tuple[int, int, int, int]) -> bool:
@@ -187,8 +208,8 @@ def snapshot(automation: c_void_p, hwnd: int, *, skip_documents: bool = False,
             if info is None or not info[3] or not _visible(info[2], window) or info[1] in _NEVER:
                 native.com_release(pointer)
                 continue
-            name, control_type, rect, _, patterns = info
-            elements.append(Element(len(pointers), name, control_type, rect, patterns))
+            name, control_type, rect, _, patterns, value = info
+            elements.append(Element(len(pointers), name, control_type, rect, patterns, value))
             pointers.append(pointer)
         return elements, pointers
 

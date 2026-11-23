@@ -58,7 +58,7 @@ class PageSource(Protocol):
 @dataclass(frozen=True)
 class Routed:
     plan: Plan | None
-    tier: str  # "0" | "skill" | "1" | "none"
+    tier: str  # "0" | "skill" | "page" | "screen" | "1" | "none"
     note: str = ""  # island text when there's no plan
     kind: str = ""  # Tier 1: what the model said (act / clarify / handoff / dictate / teach / ignore)
     thought: Thought | None = None
@@ -91,12 +91,14 @@ _KIND_NOTES = {
 
 class Router:
     def __init__(self, tier1: Tier1 | None = None, skills: Skills | None = None, page: PageSource | None = None,
-                 numbers: Callable[[], bool] | None = None, scrolling: Callable[[], bool] | None = None) -> None:
+                 numbers: Callable[[], bool] | None = None, scrolling: Callable[[], bool] | None = None,
+                 buttons: Callable[[str, Any], str | None] | None = None) -> None:
         self._tier1 = tier1
         self._skills = skills or NoSkills()
         self._page = page
         self._numbers = numbers or (lambda: False)  # numbers / a grid on screen: a bare number picks one
         self._scrolling = scrolling or (lambda: False)  # steady scrolling: a bare "stop" stops it
+        self._buttons = buttons  # a button of the window in front named exactly what he said ("don't save")
         self._shown: Any = None  # the page rows the model saw last (its answer's element numbers point into them)
         # The talk session's context (07b): "<what he said>: <Nova's result>", oldest first. Only his own words and
         # Nova's own short result, never page text (SPEC §14). Read and changed on the brain thread only.
@@ -181,6 +183,10 @@ class Router:
         direct = getattr(self._shown, "direct", None)
         if direct is not None:  # his words name one element on the page plainly: no LLM needed
             return Routed(Plan("act", (direct,), confidence=0.9), "page", parse_ms=parse_ms, page_ms=page_ms)
+        named = self._buttons(text, ctx) if self._buttons is not None and not tier1_only else None
+        if named is not None:  # a bare dialog answer ("don't save"): the button by that name, no LLM needed
+            return Routed(Plan("act", (Step("ui_click", {"name": named}),), confidence=0.9), "screen",
+                          parse_ms=parse_ms, page_ms=page_ms)
         if self._tier1 is None:
             return Routed(None, "none", didnt_get(text), parse_ms=parse_ms, page_ms=page_ms)
         routed = self._ask_model(text, ctx, catalog, running, via, page_ready=True)

@@ -42,6 +42,8 @@ ENGINES = {
     "images": "https://www.google.com/search?tbm=isch&q={q}",
 }
 _TAB_KEYS = {"new": "ctrl+t", "close": "ctrl+w", "next": "ctrl+tab", "prev": "ctrl+shift+tab", "reopen": "ctrl+shift+t"}
+# Windows Terminal: Ctrl+W / Ctrl+T would reach the shell (delete a word / nothing)
+_TERMINAL_TAB_KEYS = {**_TAB_KEYS, "new": "ctrl+shift+t", "close": "ctrl+shift+w"}
 _TAB_TEXT = {"new": "New tab", "close": "Closed the tab", "next": "Next tab", "prev": "Previous tab",
              "reopen": "Reopened the tab"}
 _NAV_KEYS = {"back": "alt+left", "forward": "alt+right", "reload": "f5", "up": "alt+up"}
@@ -106,6 +108,18 @@ class WindowsHands:
 
     def _chrome_front(self) -> bool:
         return self._chrome is not None and self._chrome.chrome.connected and self._chrome.chrome.chrome_in_front()
+
+    def button_named(self, text: str, ctx: object) -> str | None:
+        """For the router: a bare button name of the window in front ("don't save" on a save dialog) is a click on
+        it, no LLM. Not with Chrome in front (the page map has its own direct clicks), nor while numbers / the grid
+        show (a new snapshot would stale their UIA refs)."""
+        if self._chrome_front() or self.pointer.showing or self.pointer.grid_on:
+            return None
+        try:
+            win = self._front()
+        except ActionError:
+            return None
+        return self.pointer.button_named(win, text)
 
     def _resolve_click(self, s: Step, ctx: object) -> object:
         name = str(s.get("name") or "")
@@ -282,7 +296,7 @@ class WindowsHands:
             case "tab" if a["op"] == "goto":
                 return self._chrome_run(s)
             case "tab":
-                return self._browser_keys(catalog, _TAB_KEYS[a["op"]], _TAB_TEXT[a["op"]], a["op"] != "close")
+                return self._tab_keys(catalog, a["op"])
             case "nav":
                 return self._nav(catalog, a["op"])
             case "scroll":
@@ -460,6 +474,19 @@ class WindowsHands:
         if monitor is None:
             raise ActionError("Couldn't find the monitor to arrange on.")
         return Outcome(windows.arrange(placed, monitor))
+
+    def _tab_keys(self, catalog: Catalog, op: str) -> Outcome:
+        """Tab keys go to the app in front when it shows tabs of its own ("close the tab" in Notepad is Notepad's
+        tab), else to the browser."""
+        try:
+            front = self._front()
+        except ActionError:
+            front = None
+        if front is not None and not apps.is_browser(catalog, front) and self.pointer.has_tabs(front):
+            keys = _TERMINAL_TAB_KEYS if front.exe_name.lower() == "windowsterminal.exe" else _TAB_KEYS
+            keyboard.press(keys[op], front)
+            return Outcome(_TAB_TEXT[op], "front", front)
+        return self._browser_keys(catalog, _TAB_KEYS[op], _TAB_TEXT[op], op != "close")
 
     def _browser_keys(self, catalog: Catalog, keys: str, text: str, check_title: bool) -> Outcome:
         win, method = apps.browser_window(catalog)

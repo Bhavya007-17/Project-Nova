@@ -142,8 +142,6 @@ def main(text: str, *, dry: bool = False, chrome_wait: float = 0.0) -> int:
         return 0
     bridge = _bridge(chrome_wait)
     chrome = ChromeHands(Chrome(bridge, store.current)) if bridge is not None else None
-    if chrome is not None:
-        router = Router(_tier1, page=chrome.page_rows)
     trace = TraceLog(paths.LOGS)
     config = ConfigStore(paths.SETTINGS)
     config.load()
@@ -179,6 +177,7 @@ def main(text: str, *, dry: bool = False, chrome_wait: float = 0.0) -> int:
 
     hands = WindowsHands(store.current, nova=NovaControls(
         dictation=dictate, listening=lambda op: "Sleep runs in the tray app"), chrome=chrome)
+    router = Router(_tier1, page=chrome.page_rows if chrome is not None else None, buttons=hands.button_named)
     executor = Executor(hands, asker, progress=lambda labels, i: print(f"  … {' → '.join(labels)}  [{labels[i]}]"))
     shown: list[str] = []
 
