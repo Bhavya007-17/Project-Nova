@@ -58,7 +58,9 @@ def _parser() -> argparse.ArgumentParser:
     ev.add_argument("--replay", type=int, default=0, metavar="N",
                     help="with --sessions: speak session N with Windows' voice into a WAV and time it through the "
                          "live speech path (no mic, no keys, no windows)")
-    bench_llm = sub.add_parser("bench-llm", help="candidate local models x devices: accuracy, latency, load time, VRAM")
+    ev.add_argument("--tasks", action="store_true",
+                    help="score the task loop's pick (docs/eval/tasks.yaml) step by step instead; --limit N = N tasks")
+    bench_llm =sub.add_parser("bench-llm", help="candidate local models x devices: accuracy, latency, load time, VRAM")
     bench_llm.add_argument("models", nargs="*", help="Ollama models to compare (default: the Stage 05 candidates)")
     bench_llm.add_argument("--devices", default="gpu,cpu", help="comma list of gpu, cpu, arc (default gpu,cpu)")
     bench_llm.add_argument("--cpu-cases", type=int, default=40, metavar="N", help="cases timed on CPU / Arc (default 40)")
@@ -105,6 +107,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     command = args.command or "run"
     if command == "eval" and not args.sessions and args.replay:
         parser.error("--replay N replays a talk session: use it with --sessions")
+    if command == "eval" and args.tasks and (args.sessions or args.tier1 or args.replay):
+        parser.error("--tasks scores the task picks only (no --sessions / --tier1 / --replay)")
     if command == "eval" and args.sessions and (args.tier1 or args.limit):
         parser.error("--sessions runs every clause Tier 0 -> Tier 1, as live (no --tier1 / --limit)")
     if command == "run":
@@ -155,6 +159,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         from .actions import numbers_dump
 
         return numbers_dump.main(scope=args.scope, delay=args.delay, title=args.title)
+    if command == "eval" and args.tasks:
+        from . import task_eval
+
+        return task_eval.main(model=args.model, device=args.device, limit=args.limit, misses=not args.quiet)
     if command == "eval" and args.sessions:
         from . import session_eval
 
