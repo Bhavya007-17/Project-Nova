@@ -47,6 +47,7 @@ from ..events import (
     StepsChanged,
     TalkChanged,
     TalkEndRequested,
+    TaskSteered,
 )
 from ..governor import Governor
 from ..log import TraceLog
@@ -327,6 +328,8 @@ class Brain:
             bus.subscribe(Gated, self._on_gated),
             bus.subscribe(SpeechEnded, self._on_speech_end),
             bus.subscribe(IslandAction, self._answers.put),
+            bus.subscribe(IslandAction, self._on_steered),
+            bus.subscribe(TaskSteered, self._on_steered),
             bus.subscribe(AnswerHeard, self._answers.put),
             bus.subscribe(SessionCancelled, self._on_cancelled),
             bus.subscribe(PreloadHint, lambda event: self._tier1.preload(event.reason)),
@@ -387,6 +390,14 @@ class Brain:
     def _on_config(self, event: ConfigChanged) -> None:
         self._governor.forget()
         self._cleaner.forget()
+
+    def _on_steered(self, event: TaskSteered | IslandAction) -> None:
+        """"just do it" / "show me" / "next" / "where?", or the guide's Do it button: the running task (bus thread;
+        the task reads it at its next poll), never the command queue."""
+        if isinstance(event, TaskSteered):
+            self._hands.steer_to(event.what)
+        elif event.what == "do-it":
+            self._hands.steer_to("do")
 
     def _on_cancelled(self, event: SessionCancelled) -> None:
         self._answers.put(event)

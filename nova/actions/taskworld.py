@@ -4,6 +4,9 @@ Look: the front window's rows (``Pointer.rows``: one UIA snapshot, OCR only when
 of its frame. Act: a click on a row through the pointer (Invoke while the snapshot is current, else a real click);
 typing clicks the row first and checks the focused control again, so a password field is never typed into even when
 the click moved the focus there; keys and scrolling go through the hands like any plan step.
+
+Narrator: the task's step line and notes as guide mode's island line (``Guiding``), and its mode for the triggers
+(``TaskRunning``: "just do it" / "next" / "where?" steer it).
 """
 
 from __future__ import annotations
@@ -13,8 +16,8 @@ from typing import Any
 
 from ..brain.plan import Step
 from ..brain.risk import Scene
-from ..brain.task import Choice, View
-from ..events import GuideHidden, GuideRing
+from ..brain.task import NUDGE, Choice, Steer, View
+from ..events import GuideHidden, GuideRing, Guiding, TaskRunning
 from . import native, screen
 from .marks import Box
 from .native import ActionError, Rect, Win
@@ -115,3 +118,51 @@ class WindowWorld:
             return self._run(Step("press", {"keys": choice.keys}))
         direction = choice.text if choice.text in ("up", "down", "left", "right") else "down"
         return self._run(Step("scroll", {"dir": direction}))
+
+
+class Narrator:
+    """A task's progress and notes, also as guide mode's island line: each ringed step is the caption
+    ("2 · Click “Word wrap”"), a note shows under it (a wrong click, the nudge) and the next caption carries it once
+    (the nudge excepted: he did something since). Doing a step takes the line down; so does the end.
+
+    The mode is published as each step starts (the loop itself may turn "just do it" back to guiding in settings),
+    so a "next" or "where?" only steers while a step is ringed for him."""
+
+    def __init__(self, steer: Steer, publish: Callable[[object], None],
+                 progress: Callable[[str, int], None] = lambda label, n: None) -> None:
+        self._steer = steer
+        self._publish = publish
+        self._progress = progress
+        self._on = False
+        self._carried = ""
+        self._running = ""
+
+    def begin(self) -> None:
+        self._running = self._steer.mode
+        self._publish(TaskRunning(self._running))
+
+    def step(self, label: str, n: int) -> None:
+        if self._steer.mode != self._running:
+            self._running = self._steer.mode
+            self._publish(TaskRunning(self._running))
+        if self._steer.mode == "guide":
+            self._publish(Guiding(True, f"{n} · {label}", self._carried))
+            self._on = True
+        elif self._on:
+            self._publish(Guiding(False))
+            self._on = False
+        self._carried = ""
+        self._progress(label, n)
+
+    def note(self, text: str) -> None:
+        if self._on:
+            self._publish(Guiding(True, note=text))
+        self._carried = "" if text == NUDGE else text
+
+    def end(self) -> None:
+        if self._on:
+            self._on = False
+            self._publish(Guiding(False))
+        if self._running:
+            self._running = ""
+            self._publish(TaskRunning(""))

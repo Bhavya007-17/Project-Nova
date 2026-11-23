@@ -27,10 +27,12 @@ from .catalog import App, Catalog, short_name
 from .chrome import ChromeHands
 from .native import ActionError, Win
 from .pointing import Found, Pointer, verb_for
-from .taskworld import WindowWorld
+from .taskworld import Narrator, WindowWorld
 from .uia import FocusReader
 
 _log = logging.getLogger(__name__)
+
+POINT_S = 5.0  # "where is X": the ring stays up this long (or until the next task)
 
 ENGINES = {
     "google": "https://www.google.com/search?q={q}",
@@ -79,14 +81,17 @@ class WindowsHands:
         self._focus = focus or FocusReader()
         self._nova = nova or NovaControls()
         self._chrome = chrome
+        self._publish = publish or (lambda event: None)
         self.stop = threading.Event()
         self.scroller = Scroller(self._focus, lambda: self._chrome.chrome if self._chrome is not None else None,
-                                 on_change=lambda on: (publish or (lambda event: None))(SteadyScroll(on)))
-        self.pointer = pointer or Pointer(self._focus, publish or (lambda event: None))
+                                 on_change=lambda on: self._publish(SteadyScroll(on)))
+        self.pointer = pointer or Pointer(self._focus, self._publish)
         self._found: Found | None = None  # what the last ui_click resolved to (brain thread only)
         self._located = 0
         self._edited = 0  # the window the last undoable step ran in (brain thread only)
         self.picker: task_.Picker | None = None  # the planner model choosing a task's next step (Stage 07d)
+        self._steer: task_.Steer | None = None  # the running task's, flipped from the bus thread (``steer_to``)
+        self._pointed: threading.Timer | None = None  # takes a "where is X" ring down
 
     @property
     def chrome(self) -> ChromeHands | None:
@@ -174,17 +179,50 @@ class WindowsHands:
     def task(self, goal: str, mode: str, *, kept: tuple[Step, ...] = (), point: bool = False,
              confirm: Callable[[str], bool | None], stopped: Callable[[], bool],
              progress: Callable[[str, int], None], ctx: object = None) -> task_.Result:
-        """A job of several clicks in the window in front (``nova.brain.task``): look, pick, act, settle, check."""
-        if mode == "guide":
-            raise ActionError("I can't show you yet — say it without “show me” and I'll do it.")
+        """A job of several clicks in the window in front (``nova.brain.task``): look, pick, act, settle, check.
+
+        ``mode`` "guide" rings each step for his own click; ``point`` ("where is X") rings the first one and leaves
+        the ring up for ``POINT_S``. While it runs, ``steer_to`` flips the mode or pokes the guide."""
         if self.picker is None:
             raise ActionError("Tasks need the local model.")
         native.com_init()
+        self._unpoint()
+        steer = task_.Steer("guide" if point else mode)
         world = WindowWorld(self.pointer, self._front, lambda s: self.scene(s or Step("task", {}), ctx),
-                            lambda s: self.run(s, ctx))
+                            lambda s: self.run(s, ctx), publish=self._publish)
+        narrator = Narrator(steer, self._publish, progress)
         loop = task_.Loop(world, self.picker, confirm, stopped=lambda: stopped() or self.stop.is_set(),
-                          progress=progress)
-        return loop.run(goal)
+                          progress=narrator.step, note=narrator.note, steer=steer)
+        narrator.begin()
+        self._steer = steer
+        try:
+            return loop.run(goal, mode, point)
+        finally:
+            self._steer = None
+            narrator.end()
+            if point:
+                timer = threading.Timer(POINT_S, world.hide)
+                timer.daemon = True
+                self._pointed = timer
+                timer.start()
+            else:
+                world.hide()
+
+    def steer_to(self, what: str) -> None:
+        """He steered the running task (bus thread): do | guide switch the mode, next | where poke the guide."""
+        steer = self._steer
+        if steer is None:
+            return
+        if what in ("do", "guide"):
+            steer.mode = what
+        elif what in ("next", "where"):
+            steer.poke = what
+
+    def _unpoint(self) -> None:
+        timer, self._pointed = self._pointed, None
+        if timer is not None:
+            timer.cancel()
+            timer.function()
 
     def preview(self, s: Step, on: bool) -> None:
         if self._chrome is not None:

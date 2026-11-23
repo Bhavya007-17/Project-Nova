@@ -5,10 +5,10 @@ import pytest
 from nova.actions.marks import Box, Target
 from nova.actions.native import ActionError, Monitor, Win
 from nova.actions.rows import Row
-from nova.actions.taskworld import WindowWorld
+from nova.actions.taskworld import Narrator, WindowWorld
 from nova.brain.risk import Scene
-from nova.brain.task import Choice
-from nova.events import GuideHidden, GuideRing
+from nova.brain.task import NUDGE, ONLY_POINT, Choice, Steer
+from nova.events import GuideHidden, GuideRing, Guiding, TaskRunning
 
 WIN = Win(42, 1, 1, "notes.txt - Notepad", "Notepad", "C:/Windows/notepad.exe", ())
 SCREEN = Monitor(7, (0, 0, 2880, 1800), (0, 0, 2880, 1740), True, r"\\.\DISPLAY1", 192)
@@ -156,3 +156,87 @@ def test_the_mouse_or_none():
         raise OSError("no desktop")
 
     assert world(cursor=broken)[0].cursor() is None
+
+
+def narrator(mode="guide"):
+    published, progressed = [], []
+    steer = Steer(mode)
+    n = Narrator(steer, published.append, lambda label, n: progressed.append((label, n)))
+    return n, steer, published, progressed
+
+
+def lines(published):
+    return [e for e in published if isinstance(e, Guiding)]
+
+
+def test_a_guided_step_is_the_islands_caption_and_still_the_step_line():
+    n, _, published, progressed = narrator()
+    n.step("Click “View”", 1)
+    assert lines(published) == [Guiding(True, "1 · Click “View”")]
+    assert progressed == [("Click “View”", 1)]
+
+
+def test_doing_says_nothing_to_the_guide_line():
+    n, _, published, progressed = narrator("do")
+    n.step("Click “View”", 1)
+    n.note("anything")
+    n.end()
+    assert lines(published) == [] and progressed == [("Click “View”", 1)]
+
+
+def test_a_note_shows_under_the_caption_and_carries_into_the_next_step_once():
+    n, _, published, _ = narrator()
+    n.step("Click “View”", 1)
+    n.note("That opened “Edit” — the step was “View”")
+    n.step("Click “View”", 1)
+    n.step("Click “Word wrap”", 2)
+    assert lines(published)[1:] == [Guiding(True, note="That opened “Edit” — the step was “View”"),
+                             Guiding(True, "1 · Click “View”", "That opened “Edit” — the step was “View”"),
+                             Guiding(True, "2 · Click “Word wrap”")]
+
+
+def test_the_nudge_shows_but_does_not_carry():
+    n, _, published, _ = narrator()
+    n.step("Click “View”", 1)
+    n.note(NUDGE)
+    n.step("Click “Word wrap”", 2)
+    assert lines(published)[1:] == [Guiding(True, note=NUDGE), Guiding(True, "2 · Click “Word wrap”")]
+
+
+def test_a_note_before_the_guide_shows_with_its_first_step():
+    n, steer, published, _ = narrator("do")
+    n.note(ONLY_POINT)  # "just do it" in settings: the loop turns to guiding, then rings the step
+    steer.mode = "guide"
+    n.step("Click “Bluetooth”", 1)
+    assert lines(published) == [Guiding(True, "1 · Click “Bluetooth”", ONLY_POINT)]
+
+
+def test_just_do_it_ends_the_guide_line_once():
+    n, steer, published, _ = narrator()
+    n.step("Click “View”", 1)
+    steer.mode = "do"
+    n.step("Click “View”", 1)
+    n.step("Click “Word wrap”", 2)
+    n.end()
+    assert lines(published) == [Guiding(True, "1 · Click “View”"), Guiding(False)]
+
+
+def test_the_end_takes_the_guide_line_down():
+    n, _, published, _ = narrator()
+    n.step("Click “View”", 1)
+    n.end()
+    n.end()
+    assert lines(published)[1:] == [Guiding(False)]
+
+
+def test_the_running_mode_follows_the_steps_so_next_and_where_steer_only_a_guide():
+    n, steer, published, _ = narrator("do")
+    n.begin()
+    n.step("Click “View”", 1)
+    steer.mode = "guide"  # "show me" between steps
+    n.step("Click “Word wrap”", 2)
+    n.step("Click “Word wrap”", 2)
+    n.end()
+    assert [e for e in published if isinstance(e, TaskRunning)] == [
+        TaskRunning("do"), TaskRunning("guide"), TaskRunning("")]
+    assert published[-2:] == [Guiding(False), TaskRunning("")]  # the line goes before the task does
