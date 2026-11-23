@@ -598,3 +598,69 @@ def test_windows_terminal_tabs_count_when_a_program_retitles_the_window(keys, mo
     hands = hands_with(pointer, focus, monkeypatch, term)
     hands.run(close_this(tab=True), None)
     assert keys == [("ctrl+shift+w", 5)]
+
+
+# --- prefetch (Stage 07d): the early snapshot serves the command's first look once ----------------------------------
+
+
+class Clock:
+    def __init__(self):
+        self.now = 100.0
+
+    def __call__(self):
+        return self.now
+
+
+def early(frames=None):
+    focus = FakeFocus([button(0, "Save", (110, 110, 150, 130)), button(1, "Open", (160, 110, 200, 130))])
+    clock = Clock()
+    frame = frames if frames is not None else (lambda hwnd: FRAME)
+    pointer = Pointer(focus, ocr_lines=lambda rect: [], monitor_for=lambda hwnd: MON, frame=frame, clock=clock)
+    return pointer, focus, clock
+
+
+def test_the_first_look_reuses_the_prefetched_snapshot_once():
+    pointer, focus, clock = early()
+    assert pointer.prefetch(WIN) is True
+    assert focus.generation == 1
+    clock.now += 2.0
+    rows = pointer.rows(WIN)
+    assert focus.generation == 1  # no new snapshot
+    assert [r.target.name for r in rows][:2] == ["Save", "Open"]
+    assert all(r.target.ref[0] == 1 for r in rows if r.target.ref is not None)
+    pointer.rows(WIN)
+    assert focus.generation == 2  # once only: the next look is a new snapshot
+
+
+def test_a_stale_prefetch_is_not_reused():
+    pointer, focus, clock = early()
+    pointer.prefetch(WIN)
+    clock.now += 3.5  # older than EARLY_KEEP_S
+    pointer.rows(WIN)
+    assert focus.generation == 2
+
+
+def test_another_window_or_a_newer_snapshot_takes_a_new_one():
+    pointer, focus, _ = early()
+    pointer.prefetch(WIN)
+    other = Win(hwnd=7, pid=2, tid=3, title="o", cls="c", exe="o.exe", aumids=())
+    pointer.rows(other)
+    assert focus.generation == 2
+    pointer.prefetch(WIN)
+    focus.snapshot(WIN.hwnd)  # someone else read the window since: the early refs are not the current ones
+    pointer.rows(WIN)
+    assert focus.generation == 5
+
+
+def test_a_moved_window_takes_a_new_one():
+    frames = iter([FRAME, (0, 0, 800, 600), (0, 0, 800, 600)])
+    pointer, focus, _ = early(frames=lambda hwnd: next(frames))
+    pointer.prefetch(WIN)
+    pointer.rows(WIN)
+    assert focus.generation == 2
+
+
+def test_no_prefetch_once_a_command_runs():
+    pointer, focus, _ = early()
+    assert pointer.prefetch(WIN, idle=lambda: False) is False
+    assert focus.generation == 0

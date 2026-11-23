@@ -37,7 +37,9 @@ from ..events import (
     BrainProgress,
     CommandFinished,
     ConfigChanged,
+    DictationChanged,
     MarksHide,
+    PartialTranscript,
     Gated,
     IslandAction,
     PreloadHint,
@@ -57,6 +59,7 @@ from .answers import pick, yes_no
 from .executor import Executor, RunResult, StepResult
 from .llama_server import connect
 from .plan import Plan
+from .prefetch import Prefetcher
 from .router import Router, Settled, describe_handoff, running_apps
 from .tier1 import Tier1
 
@@ -330,7 +333,12 @@ class Brain:
         self._prepared = False  # a plan opened dictation before running (its "start" step releases it)
         self._opened = False  # ...and the plan opened an app first
         self._busy = False
+        self._dictating = False
+        # Prefetch (07d): the front window's snapshot while he says "show me / click / where's ...", never otherwise
+        self._prefetcher = Prefetcher(self._prefetch, self._idle)
         self._unsubscribe = [
+            bus.subscribe(PartialTranscript, lambda event: self._prefetcher.heard(event.utterance, event.text)),
+            bus.subscribe(DictationChanged, self._on_dictation),
             bus.subscribe(Gated, self._on_gated),
             bus.subscribe(SpeechEnded, self._on_speech_end),
             bus.subscribe(IslandAction, self._answers.put),
@@ -392,6 +400,24 @@ class Brain:
             self._ends[event.utterance] = event.speech_end_at
             while len(self._ends) > _KEEP:
                 self._ends.pop(next(iter(self._ends)))
+
+    def _on_dictation(self, event: DictationChanged) -> None:
+        self._dictating = event.on
+
+    def _idle(self) -> bool:
+        return not self._busy and not self._dictating
+
+    def _prefetch(self) -> None:
+        """Prefetch thread: the front window's UIA snapshot while he is still talking (the command reuses it)."""
+        try:
+            win = native.describe(native.foreground())
+            if win is None:
+                return
+            started = time.perf_counter()
+            if self._hands.pointer.prefetch(win, idle=self._idle):
+                _log.info("prefetch: %s snapshot in %.0f ms", win.exe, (time.perf_counter() - started) * 1000)
+        except Exception:  # noqa: BLE001 - an early look is only a head start
+            _log.exception("prefetch failed")
 
     def _on_config(self, event: ConfigChanged) -> None:
         self._governor.forget()

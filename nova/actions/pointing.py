@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
@@ -34,9 +35,21 @@ _DONE = {"click": "Clicked", "right": "Right-clicked", "double": "Double-clicked
 VERBS = frozenset(_BUTTONS) | {"hover"}
 SURE = 0.7  # the model's confidence in one row before Nova clicks it without asking (SPEC §7.4)
 MEANING_ASK = 3  # unsure: numbers on at most this many rows
+EARLY_KEEP_S = 3.0  # a prefetched snapshot serves the command's first look this long (partial -> routed command)
 
 # (what he called it, the rows one per line) -> (row number, confidence), or None: no idea / no model
 Meaning = Callable[[str, Sequence[str]], "tuple[int, float] | None"]
+
+
+@dataclass(frozen=True)
+class _Early:
+    """A snapshot taken while he was still talking (``Pointer.prefetch``)."""
+
+    hwnd: int
+    frame: native.Rect
+    generation: int
+    at: float
+    elements: tuple[uitree.Element, ...]
 
 
 @dataclass(frozen=True)
@@ -90,8 +103,12 @@ class Pointer:
                  ocr_lines: Callable[[native.Rect], list[Target]] = _ocr_lines,
                  monitor_for: Callable[[int], native.Monitor] = _monitor_for,
                  frame: Callable[[int], native.Rect] = native.frame_rect,
-                 hide_after: float = HIDE_AFTER_S, cold_wait: float = uitree.COLD_WAIT_S) -> None:
+                 hide_after: float = HIDE_AFTER_S, cold_wait: float = uitree.COLD_WAIT_S,
+                 clock: Callable[[], float] = time.perf_counter) -> None:
         self._focus = focus  # uia.FocusReader: snapshot / act / generation
+        self._clock = clock
+        self._look_lock = threading.Lock()  # one snapshot at a time: a prefetch never lands after a command's own
+        self._early: _Early | None = None  # the prefetched snapshot (while he was still talking)
         self._publish = publish
         self._ocr = ocr_lines
         self._monitor_for = monitor_for
@@ -133,10 +150,33 @@ class Pointer:
         found, texts, _ = self._snapshot(win)
         return found, texts
 
+    def prefetch(self, win: Win, idle: Callable[[], bool] = lambda: True) -> bool:
+        """Take ``win``'s snapshot now, while he is still talking (Stage 07d). The next look at the same window,
+        unmoved and with no snapshot in between, reuses it once within ``EARLY_KEEP_S``."""
+        if self._focus is None:
+            return False
+        with self._look_lock:
+            if not idle():  # a command started: its own snapshot must stay the current one
+                return False
+            elements = uitree.warm_snapshot(self._focus, win, self._cold_wait)
+            self._early = _Early(win.hwnd, self._frame(win.hwnd), getattr(self._focus, "generation", 0),
+                                 self._clock(), tuple(elements))
+        return True
+
+    def _look(self, win: Win) -> list[uitree.Element]:
+        """One UIA snapshot of ``win``: the prefetched one if it is still current, else a new one."""
+        with self._look_lock:
+            early, self._early = self._early, None
+            if (early is not None and early.hwnd == win.hwnd
+                    and early.generation == getattr(self._focus, "generation", 0)
+                    and self._clock() - early.at <= EARLY_KEEP_S and early.frame == self._frame(win.hwnd)):
+                return list(early.elements)
+            return uitree.warm_snapshot(self._focus, win, self._cold_wait)
+
     def _snapshot(self, win: Win) -> tuple[list[Target], list[str], list[uitree.Element]]:
         if self._focus is None:
             return [], [], []
-        elements = uitree.warm_snapshot(self._focus, win, self._cold_wait)
+        elements = self._look(win)
         generation = getattr(self._focus, "generation", 0)
         found = [Target(Box(*e.rect), e.name, e.role, "uia", (generation, e.index, e.patterns))
                  for e in elements if e.clickable]
@@ -153,7 +193,7 @@ class Pointer:
 
     def rows(self, win: Win) -> tuple[rows_.Row, ...]:
         """The window as numbered rows for the model (Stage 07d): one UIA snapshot; OCR only when it names few."""
-        elements = uitree.warm_snapshot(self._focus, win, self._cold_wait) if self._focus is not None else []
+        elements = self._look(win) if self._focus is not None else []
         generation = getattr(self._focus, "generation", 0)
         first = rows_.focus_area(elements)
         found = rows_.build(elements, generation=generation, first=first)
