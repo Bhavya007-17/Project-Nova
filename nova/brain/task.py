@@ -121,6 +121,7 @@ class Steer:
 
     def __init__(self, mode: str = "do") -> None:
         self.mode = mode
+        self.poke = ""  # "next" (he says he did the step) | "where" (ring it again): read once by the guide
 
 
 Picker = Callable[[str, Sequence[str], Sequence[str], str, str], Choice | None]  # goal, lines, did, app, title
@@ -402,6 +403,8 @@ class Loop:
     def _guide(self, run: _Run, view: View, scene: Scene, row: Row | None, name: str) -> _Seen:
         """Ring the row and wait for his own click; the ring follows the window and goes when this returns."""
         world = self._world
+        steer = self._steer
+        steer.poke = ""  # a "next" said before this ring went up was for an earlier step
         try:
             box = world.show(row, name)
             base = world.signature()
@@ -412,11 +415,19 @@ class Loop:
                 now = self._clock()
                 if self._stopped():
                     return _Seen("stopped", view, scene, now)
-                if self._steer.mode == "do":
+                if steer.mode == "do":
                     if not guide_only(scene):
                         return _Seen("do", view, scene, now)
                     self._note(ONLY_POINT)
-                    self._steer.mode = "guide"
+                    steer.mode = "guide"
+                poke, steer.poke = steer.poke, ""
+                if poke == "next":  # he says it's done: a click the pixels missed, a step he did his own way
+                    self._settle()
+                    return _Seen("his", world.look(), world.where(), now)
+                if poke == "where":  # ring it again where it is now; the nudge waits another 30 s
+                    world.hide()
+                    box = world.show(row, name) or box
+                    shown_at, nudged = now, False
                 if now - run.began > GUIDE_MAX_S:
                     return _Seen("limit", view, scene, now)
                 if not nudged and now - shown_at >= NUDGE_S:

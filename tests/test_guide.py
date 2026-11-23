@@ -41,7 +41,8 @@ class Clock:
 class GuideWorld:
     """The user's hand is scripted: at each time, "ring" clicks the ringed row (the screen moves on), "hover" only
     lights it up (pixels change, rows don't), ("other", n, screen) clicks row n and the screen becomes ``screen``,
-    ("do",) / ("guide",) switch modes the way "just do it" / "let me do it" would."""
+    ("do",) / ("guide",) switch modes the way "just do it" / "let me do it" would, ("poke", "next" | "where") is "next" /
+    "where?"."""
 
     def __init__(self, screens, clock: Clock, user=(), *, exe: str = "notepad.exe", steer: Steer | None = None):
         self.screens = screens
@@ -76,6 +77,8 @@ class GuideWorld:
             elif what[0] == "other":
                 self.pointer = _middle(self.screens[self.at][what[1] - 1].target.box)
                 self.at = what[2]
+            elif what[0] == "poke":  # "next" / "where?" said while the ring is up
+                self.steer.poke = what[1]
             else:
                 self.steer.mode = what[0]
 
@@ -186,6 +189,36 @@ def test_a_nudge_after_30_s_and_out_after_3_min():
     assert result.exit == "limit"
     assert GUIDE_MAX_S <= clock.t < GUIDE_MAX_S + 1
     assert world.ring is None
+
+
+def test_next_counts_a_step_nova_could_not_see():
+    clock = Clock()
+    steer = Steer()
+    world = GuideWorld([MENU_BAR, VIEW_MENU], clock, [(1.0, ("poke", "next"))], steer=steer)
+    pick = picker(Choice(row=3), Choice(done=True))
+    result, notes, _ = run(world, pick, steer=steer)
+    assert result.did == ("Click “View”",) and notes == []
+    assert pick.calls[1] == (tuple(r.text for r in MENU_BAR), ("Click “View”",))  # looked again, from his word
+    assert steer.poke == ""
+
+
+def test_where_rings_it_again_and_restarts_the_nudge_clock():
+    clock = Clock()
+    steer = Steer()
+    world = GuideWorld([MENU_BAR, VIEW_MENU], clock, [(20.0, ("poke", "where")), (45.0, "ring")], steer=steer)
+    result, notes, _ = run(world, picker(Choice(row=3), Choice(done=True)), steer=steer)
+    assert result.did == ("Click “View”",)
+    assert notes == []  # 45 s after the ring went up, but only 25 s after "where?"
+    assert world.hidden >= 2  # taken away and put back, then gone at the end
+
+
+def test_a_next_said_before_the_ring_went_up_does_not_count():
+    clock = Clock()
+    steer = Steer()
+    steer.poke = "next"
+    world = GuideWorld([MENU_BAR, VIEW_MENU], clock, [(1.0, "ring")], steer=steer)
+    result, _, _ = run(world, picker(Choice(row=3), Choice(done=True)), steer=steer)
+    assert result.did == ("Click “View”",) and clock.t >= 1.0
 
 
 def test_stop_while_guiding_takes_the_ring_away():
