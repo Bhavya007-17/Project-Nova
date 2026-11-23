@@ -52,6 +52,7 @@ ACTIONS: dict[str, Ability] = {
     "type_text": Ability("screen", "type", "type hello world"),
     "press": Ability("screen", "keys", "press enter"),
     "dictation": Ability("screen", "dictate", "dictate"),
+    "task": Ability("screen", "show me how", "show me how to turn on word wrap"),
     "volume": Ability("system", "volume", "volume 30"),
     "media": Ability("system", "music", "pause the music"),
     "screenshot": Ability("system", "screenshot", "take a screenshot"),

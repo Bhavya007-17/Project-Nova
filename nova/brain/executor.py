@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from ..actions.native import ActionError
-from .plan import Plan, Step
+from .plan import Plan, Step, act
 from .risk import Scene, assess
 
 _log = logging.getLogger(__name__)
@@ -84,6 +84,22 @@ def _about_nova(plan: Plan) -> bool:
     return all(s.action == "nova" and s.get("op") in ("help", "again") for s in plan.steps)
 
 
+def _replay(plan: Plan, kept: dict[int, tuple[Step, ...]]) -> Plan:
+    """What "do that again" runs: a task's clicks instead of the task (it repeats what was done, not the search
+    for it). A task that did nothing is asked again."""
+    if not any(s.action == "task" for s in plan.steps):
+        return plan
+    steps: list[Step] = []
+    for i, s in enumerate(plan.steps):
+        if s.action != "task":
+            steps.append(s)
+        elif kept.get(i):
+            steps.extend(kept[i])
+        else:
+            return plan
+    return act(*steps)
+
+
 class _Stop(Exception):
     """The step can't go on: cancelled (no / Esc / no answer), refused or failed. Carries the run's outcome."""
 
@@ -109,6 +125,8 @@ class Executor:
         self._clock = clock
         self._cancel = threading.Event()
         self._last: Plan | None = None  # what "do that again" runs
+        self._task_last: tuple[str, tuple[Step, ...]] | None = None  # the last task's goal + what it did
+        self._kept: dict[int, tuple[Step, ...]] = {}  # this plan's tasks: step index -> the steps they did
 
     @property
     def asker(self) -> Asker:
@@ -126,7 +144,7 @@ class Executor:
             plan = self._last  # asks again whatever it asked the first time (risk is checked afresh)
         result = self._run_plan(plan, ctx)
         if result.ok and result.plan is not None and result.plan.kind == "act" and not _about_nova(result.plan):
-            self._last = result.plan
+            self._last = _replay(result.plan, self._kept)
         return result
 
     def _run_plan(self, plan: Plan, ctx: Any) -> RunResult:
@@ -153,6 +171,7 @@ class Executor:
         details: list[str] = []
         self._asked = ""
         self._started: float | None = None
+        self._kept = {}
         hold = 0.0
         for index, s in enumerate(plan.steps):
             if self._cancel.is_set():
@@ -171,6 +190,8 @@ class Executor:
 
     def _step(self, s: Step, ctx: Any, labels: list[str], index: int) -> tuple[StepResult, float]:
         """Resolve, ask what needs asking, check the risk, run. Returns the result and how long to show it."""
+        if s.action == "task":
+            return self._task(s, ctx, labels, index), 0.0
         current: Any = s
         for _ in range(MAX_RESOLVES):
             began = self._clock()
@@ -203,6 +224,51 @@ class Executor:
             raise _Stop("I couldn't settle what to do.", failed=StepResult(s.action, False, "too many questions", 0.0))
         labels[index] = self._hands.label(current)
         return self._run(current, ctx, labels, index)
+
+    def _task(self, s: Step, ctx: Any, labels: list[str], index: int) -> StepResult:
+        """A job of several clicks (``nova.brain.task``): the hands look, pick, check the risk and act until it's
+        done; each click that needs a yes asks through the same asker. No goal: the last task ("just do it",
+        "let me do it", "show me again")."""
+        task = getattr(self._hands, "task", None)
+        if task is None:
+            raise _Stop("I can't do tasks here.", failed=StepResult("task", False, "no task hands", 0.0))
+        goal = s.get("goal")
+        kept: tuple[Step, ...] = ()
+        if not goal:
+            if self._task_last is None:
+                detail = "No task yet — say what you want done."
+                raise _Stop(detail, failed=StepResult("task", False, detail, 0.0))
+            goal, kept = self._task_last
+
+        def confirm(question: str) -> bool | None:
+            self._asked = "confirm"
+            return self._asker.confirm(question)
+
+        def progress(label: str, n: int) -> None:
+            labels[index] = label
+            self._progress(tuple(labels), index)
+
+        began = self._clock()
+        if self._started is None:
+            self._started = began
+        self._progress(tuple(labels), index)
+        try:
+            result = task(goal, s.get("mode") or "do", kept=kept, point=bool(s.get("point")), confirm=confirm,
+                          stopped=self._cancel.is_set, progress=progress, ctx=ctx)
+        except ActionError as error:
+            raise _Stop(str(error), failed=StepResult("task", False, str(error), (self._clock() - began) * 1000)) from None
+        except Exception as error:  # noqa: BLE001 - a bug in the loop must not take the brain down
+            _log.exception("task failed")
+            raise _Stop("Something went wrong — details in the log.",
+                        failed=StepResult("task", False, f"task failed: {error}", (self._clock() - began) * 1000)) from None
+        ms = (self._clock() - began) * 1000
+        self._task_last = (goal, tuple(result.kept) or kept)
+        self._kept[index] = tuple(result.kept)
+        if result.exit == "done":
+            return StepResult("task", True, result.detail, ms, "task")
+        if result.exit in ("stopped", "declined"):
+            raise _Stop("Cancelled" if result.exit == "declined" else result.detail, cancelled=True)
+        raise _Stop(result.detail, failed=StepResult("task", False, result.detail, ms, result.exit))
 
     def _resolve(self, s: Step, ctx: Any) -> Any:
         resolve = getattr(self._hands, "resolve", None)

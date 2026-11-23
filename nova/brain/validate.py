@@ -298,6 +298,12 @@ def _fix(action: str, args: Mapping[str, Any], said: str, catalog: Catalog,
             return step("docs_new")
         case "ui_click":  # an element number means something only to the click-by-meaning call that showed rows
             return Step(action, {k: v for k, v in args.items() if k not in _RESOLVED and k != "element"})
+        case "task":  # the job is his words; the model's paraphrase never becomes the goal
+            goal = args.get("goal")
+            cut = span(said, goal) if isinstance(goal, str) and goal.strip() else None
+            mode = "guide" if args.get("mode") == "guide" else "do"
+            point = {"point": True} if mode == "guide" and args.get("point") is True else {}
+            return step("task", goal=cut or said.strip(), mode=mode, **point)
         case "pick" | "open_path":  # what's on screen / on disk is found by the hands, never the model
             return Step(action, {k: v for k, v in args.items() if k not in _RESOLVED})
     return Step(action, dict(args))

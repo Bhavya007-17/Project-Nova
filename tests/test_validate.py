@@ -270,3 +270,24 @@ def test_what_the_hands_resolve_never_comes_from_the_model():
                  "open budget").plan
     assert plan.steps[0].args == {"name": "budget"}
     assert check(act({"action": "open_path", "path": r"C:\Windows\System32\cmd.exe"}), "open it").plan is None
+
+
+# --- tasks (Stage 07d) --------------------------------------------------------------------------------------------
+
+
+def test_a_task_goal_is_his_words():
+    checked = check(act({"action": "task", "goal": "turn on word wrap", "mode": "do"}), "Turn on word wrap please")
+    assert checked.plan.steps == (step("task", goal="Turn on word wrap", mode="do"),)
+
+
+def test_a_reworded_task_goal_falls_back_to_what_he_said():
+    checked = check(act({"action": "task", "goal": "enable line wrapping"}), "make the lines wrap")
+    assert checked.plan.steps == (step("task", goal="make the lines wrap", mode="do"),)
+
+
+def test_task_mode_and_point():
+    checked = check(act({"action": "task", "goal": "the export button", "mode": "guide", "point": True}),
+                    "where would the export button be")
+    assert checked.plan.steps == (step("task", goal="the export button", mode="guide", point=True),)
+    checked = check(act({"action": "task", "goal": "export it", "mode": "sideways", "point": True}), "export it")
+    assert checked.plan.steps == (step("task", goal="export it", mode="do"),)
