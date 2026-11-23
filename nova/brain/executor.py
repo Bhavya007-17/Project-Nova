@@ -59,6 +59,10 @@ class StepResult:
     detail: str
     ms: float
     method: str = ""
+    # a task's hops (``nova.brain.task.Result``), for `nova latency`
+    pick_ms: tuple[float, ...] = ()
+    step_ms: tuple[float, ...] = ()
+    ring_ms: tuple[float, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -264,11 +268,12 @@ class Executor:
         ms = (self._clock() - began) * 1000
         self._task_last = (goal, tuple(result.kept) or kept)
         self._kept[index] = tuple(result.kept)
+        hops = (tuple(result.pick_ms), tuple(result.step_ms), tuple(result.ring_ms))
         if result.exit == "done":
-            return StepResult("task", True, result.detail, ms, "task")
+            return StepResult("task", True, result.detail, ms, "task", *hops)
         if result.exit in ("stopped", "declined"):
             raise _Stop("Cancelled" if result.exit == "declined" else result.detail, cancelled=True)
-        raise _Stop(result.detail, failed=StepResult("task", False, result.detail, ms, result.exit))
+        raise _Stop(result.detail, failed=StepResult("task", False, result.detail, ms, result.exit, *hops))
 
     def _resolve(self, s: Step, ctx: Any) -> Any:
         resolve = getattr(self._hands, "resolve", None)

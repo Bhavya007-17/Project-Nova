@@ -40,6 +40,7 @@ SETTLE_POLL_S = 0.1
 SETTLE_MAX_S = 2.0
 VERBS = ("click", "right", "double", "type", "press", "scroll")
 _ON_ROW = frozenset({"click", "right", "double"})
+_SPELLED = {"right-click": "right", "double-click": "double"}  # how the pick schema spells them
 # system settings, UAC and credential prompts: Nova only points there (SPEC §14)
 GUIDE_ONLY = frozenset({"systemsettings.exe", "control.exe", "consent.exe", "credentialuibroker.exe"})
 # keys the loop may press without his saying so: they move around, they don't enter or delete anything
@@ -69,19 +70,27 @@ class Choice:
 
 
 def parse(data: Any) -> Choice | None:
-    """``{step: {row, verb, text?, keys?}, done, ask, say}`` → Choice; None when it says nothing usable."""
+    """``{step: {row?, verb, text?, keys?}}`` | ``{done, say}`` | ``{ask}`` → Choice; None when it says nothing usable.
+    A usable step wins over a question written beside it."""
     if not isinstance(data, dict):
         return None
     say = data.get("say") if isinstance(data.get("say"), str) else ""
     if data.get("done") is True:
         return Choice(done=True, say=say.strip())
+    step = _step(data.get("step"))
+    if step is not None:
+        return step
     ask = data.get("ask")
     if isinstance(ask, str) and ask.strip():
         return Choice(ask=ask.strip(), say=say.strip())
-    step = data.get("step")
+    return None
+
+
+def _step(step: Any) -> Choice | None:
     if not isinstance(step, dict):
         return None
     verb = step.get("verb") or "click"
+    verb = _SPELLED.get(verb, verb) if isinstance(verb, str) else verb
     row = step.get("row")
     if verb not in VERBS or (row is not None and (isinstance(row, bool) or not isinstance(row, int))):
         return None
@@ -91,7 +100,7 @@ def parse(data: Any) -> Choice | None:
     keys = step.get("keys") if isinstance(step.get("keys"), str) else ""
     if verb == "type" and not text.strip() or verb == "press" and not keys.strip():
         return None
-    return Choice(row=row, verb=verb, text=text.strip(), keys=keys.strip().lower(), say=say.strip())
+    return Choice(row=row, verb=verb, text=text.strip(), keys=keys.strip().lower())
 
 
 @dataclass(frozen=True)
@@ -146,7 +155,8 @@ class Result:
     did: tuple[str, ...] = ()  # step labels, in order
     kept: tuple[Step, ...] = ()  # what "do that again" replays
     pick_ms: tuple[float, ...] = ()
-    step_ms: tuple[float, ...] = ()  # acted → settled → next pick answered
+    step_ms: tuple[float, ...] = ()  # acted (or his click seen) → settled → next pick answered
+    ring_ms: tuple[float, ...] = ()  # guide: his click seen → the next ring up (not a "next" he said)
 
     @property
     def ok(self) -> bool:
@@ -247,10 +257,13 @@ class _Run:
     kept: list[Step] = field(default_factory=list)
     pick_ms: list[float] = field(default_factory=list)
     step_ms: list[float] = field(default_factory=list)
+    ring_ms: list[float] = field(default_factory=list)
+    clicked_at: float | None = None  # his last click the pixels saw, until the next ring goes up
 
     def end(self, exit_: str, detail: str) -> Result:
         _log.info("task %r: %s after %d steps (%s)", self.goal, exit_, len(self.did), detail)
-        return Result(exit_, detail, tuple(self.did), tuple(self.kept), tuple(self.pick_ms), tuple(self.step_ms))
+        return Result(exit_, detail, tuple(self.did), tuple(self.kept), tuple(self.pick_ms), tuple(self.step_ms),
+                      tuple(self.ring_ms))
 
     def stopped(self) -> Result:
         return self.end("stopped", f"Stopped after {_count(self.did)}" if self.did else "Stopped")
@@ -263,12 +276,14 @@ class _Run:
 
 @dataclass(frozen=True)
 class _Seen:
-    """What came of one guided step: his (he hit it) | wrong | do (he said "just do it") | stopped | limit."""
+    """What came of one guided step: his (he hit it) | wrong | do (he said "just do it") | stopped | limit.
+    ``clicked``: the pixels saw it (not a "next" he said)."""
 
     what: str
     view: View
     scene: Scene
     at: float
+    clicked: bool = False
 
 
 def _inside(box: Box, at: tuple[int, int] | None, slack: int = 0) -> bool:
@@ -360,7 +375,9 @@ class Loop:
                         run.did.append(name)
                         run.kept.extend(steps)
                     view, scene, since = seen.view, seen.scene, seen.at
+                    run.clicked_at = seen.at if seen.clicked else None
                     continue
+            run.clicked_at = None
             # do it: Nova acts (from the start, or he said "just do it" while a step was ringed)
             if choice.verb == "type" and not said(choice.text, goal):
                 return run.end("asked", "What should I type there?")
@@ -407,6 +424,9 @@ class Loop:
         steer.poke = ""  # a "next" said before this ring went up was for an earlier step
         try:
             box = world.show(row, name)
+            if run.clicked_at is not None:
+                run.ring_ms.append((self._clock() - run.clicked_at) * 1000)
+                run.clicked_at = None
             base = world.signature()
             last = world.cursor()
             shown_at = self._clock()
@@ -448,12 +468,12 @@ class Loop:
                     base, last = after.signature, at  # a hover, a tooltip, a caret: nothing he did
                     continue
                 if box is None or _inside(box, at, _SLACK) or _inside(box, last, _SLACK):
-                    return _Seen("his", after, moved, seen_at)
+                    return _Seen("his", after, moved, seen_at, clicked=True)
                 hit = _under(view.rows, at) or _under(view.rows, last)
                 step = _cut(row.target.name) if row is not None else name
                 self._note(f"That opened “{_cut(hit.target.name)}” — the step was “{step}”" if hit is not None
                            else f"That wasn't it — the step was “{step}”")
-                return _Seen("wrong", after, moved, seen_at)
+                return _Seen("wrong", after, moved, seen_at, clicked=True)
         finally:
             world.hide()
 

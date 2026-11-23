@@ -54,7 +54,7 @@ from ..log import TraceLog
 from ..state import CLARIFY_S, CONFIRM_S
 from . import meaning, task
 from .answers import pick, yes_no
-from .executor import Executor, RunResult
+from .executor import Executor, RunResult, StepResult
 from .llama_server import connect
 from .plan import Plan
 from .router import Router, Settled, describe_handoff, running_apps
@@ -206,6 +206,12 @@ def command_type(plan: Plan | None) -> str:
     return f"{first.action}:{op}" if op and first.action in ("window", "tab", "nav", "media") else first.action
 
 
+def _hops(step: StepResult) -> dict[str, list[float]]:
+    """A task's per-step times (pick, acted → next pick, his click → next ring) for `nova latency`; none otherwise."""
+    hops = {"pick_ms": step.pick_ms, "step_ms": step.step_ms, "ring_ms": step.ring_ms}
+    return {key: [round(ms, 1) for ms in values] for key, values in hops.items() if values}
+
+
 def handle(
     command: Command,
     catalog: Catalog,
@@ -279,8 +285,8 @@ def handle(
         "start_ms": round((result.started_at - origin) * 1000, 1) if result and result.started_at else None,
         "exec_ms": round(sum(s.ms for s in result.steps), 1) if result else None,
         "total_ms": round((done - origin) * 1000, 1),
-        "steps": [{"action": s.action, "ok": s.ok, "ms": round(s.ms, 1), "method": s.method, "detail": s.detail}
-                  for s in (result.steps if result else ())],
+        "steps": [{"action": s.action, "ok": s.ok, "ms": round(s.ms, 1), "method": s.method, "detail": s.detail,
+                   **_hops(s)} for s in (result.steps if result else ())],
     }
     if trace is not None:
         trace.write(**record)

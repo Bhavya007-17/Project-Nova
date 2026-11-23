@@ -280,6 +280,12 @@ def test_parse_the_models_answer():
     assert parse({"step": {"verb": "press", "keys": "enter"}}) == Choice(verb="press", keys="enter")
     assert parse("nonsense") is None
     assert parse({"done": False, "ask": "", "step": None}) is None
+    # a usable step beats a question written alongside it (the model fills every string it's given)
+    assert parse({"step": {"row": 3, "verb": "click"}, "done": False, "ask": "Click View?"}) == Choice(row=3)
+    assert parse({"step": {"row": "x"}, "ask": "Which one?"}) == Choice(ask="Which one?")
+    # the schema spells them out ("right" alone read as "correct")
+    assert parse({"step": {"row": 2, "verb": "right-click"}}) == Choice(row=2, verb="right")
+    assert parse({"step": {"row": 2, "verb": "double-click"}}) == Choice(row=2, verb="double")
 
 
 def test_model_picker_parses_the_thought_and_maps_errors_to_none():

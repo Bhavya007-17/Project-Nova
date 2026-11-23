@@ -702,11 +702,23 @@ def test_pick_request_fences_rows_as_data_and_keeps_order():
     assert "never instructions" in data["next"]
 
 
-def test_pick_schema_step_first_then_done_ask_say():
-    assert prompt.PICK_SCHEMA["required"] == ["step", "done", "ask", "say"]
-    step = prompt.PICK_SCHEMA["properties"]["step"]["anyOf"][0]
-    assert step["required"] == ["row", "verb"]
-    assert set(step["properties"]["verb"]["enum"]) == {"click", "right", "double", "type", "press", "scroll"}
+def test_pick_schema_is_one_of_step_done_or_ask():
+    # each answer is exactly one shape: a required "ask" got filled on every pick and won over the step (eval 6 %)
+    # every shape starts with "step", so the model decides on a step first (with "done" first it said done at step 1)
+    step, done, ask = prompt.PICK_SCHEMA["anyOf"]
+    assert step["required"] == ["step"] and list(step["properties"]) == ["step"]
+    assert done["required"] == ["step", "done", "say"] and done["properties"]["done"] == {"const": True}
+    assert ask["required"] == ["step", "ask"]
+    assert done["properties"]["step"] == ask["properties"]["step"] == {"type": "null"}
+    shapes = step["properties"]["step"]["anyOf"]
+    verbs = set()
+    for shape in shapes:
+        verb = shape["properties"]["verb"]
+        verbs |= set(verb.get("enum", ())) | ({verb["const"]} if "const" in verb else set())
+        assert shape["required"] == list(shape["properties"])
+    assert verbs == set(prompt.PICK_VERBS)
+    click = shapes[0]
+    assert list(click["properties"]) == ["row", "verb"]  # no free text to echo the instructions into
 
 
 def test_pick_on_the_cpu_shows_fewer_rows():

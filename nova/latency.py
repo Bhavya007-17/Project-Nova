@@ -22,6 +22,12 @@ from . import paths
 from .log import TRACE_FILE
 
 
+TASK_PICK = "task pick (by meaning)"  # rows → the model's next step (SPEC §16: <= 1.5 s GPU, 3 s CPU)
+TASK_STEP = "task step → next pick"  # acted (or his click seen) → settled → next pick answered (<= 2 s GPU)
+GUIDE_RING = "guide click → next ring"  # his click seen → the next ring up (<= 0.8 s)
+_HOPS = {"pick_ms": TASK_PICK, "step_ms": TASK_STEP, "ring_ms": GUIDE_RING}
+
+
 @dataclass(frozen=True)
 class Row:
     name: str
@@ -67,7 +73,15 @@ def summarize(records: Iterable[dict]) -> list[Row]:
     oks: dict[str, int] = {}
     finals: list[float] = []
     dictated: dict[str, tuple[list[float], list[float], list[int]]] = {}
+    hops: dict[str, list[float]] = {}
     for record in records:
+        steps = record.get("steps") if record.get("kind") == "command" else None
+        for step in steps if isinstance(steps, list) else ():
+            for key, name in _HOPS.items():
+                values = step.get(key) if isinstance(step, dict) else None
+                if isinstance(values, list):
+                    hops.setdefault(name, []).extend(
+                        float(v) for v in values if isinstance(v, (int, float)) and not isinstance(v, bool))
         if record.get("kind") == "utterance" and isinstance(record.get("final_ms"), (int, float)):
             finals.append(float(record["final_ms"]))
         kind = record.get("kind")
@@ -116,6 +130,8 @@ def summarize(records: Iterable[dict]) -> list[Row]:
         total = totals.get(name)
         rows.append(Row(name, len(values), percentile(values, 50), percentile(values, 95),
                         percentile(total, 50) if total else None, oks.get(name, 0)))
+    rows.extend(Row(name, len(hops[name]), percentile(hops[name], 50), percentile(hops[name], 95))
+                for name in _HOPS.values() if hops.get(name))
     return rows
 
 
@@ -125,9 +141,11 @@ def render(rows: Sequence[Row]) -> str:
     lines = [f"{'path':<26} {'n':>4} {'start p50':>10} {'start p95':>10} {'done p50':>9} {'ok':>5}"]
     for row in rows:
         done = f"{row.total_p50:.0f}" if row.total_p50 is not None else ""
-        ok = f"{row.ok}/{row.count}" if row.name != "speech → text" else ""
+        ok = f"{row.ok}/{row.count}" if row.name != "speech → text" and row.name not in _HOPS.values() else ""
         lines.append(f"{row.name:<26} {row.count:>4} {row.p50:>10.0f} {row.p95:>10.0f} {done:>9} {ok:>5}")
     lines.append("ms from the end of speech (key release counts): start = first action began, done = finished.")
+    if any(row.name in _HOPS.values() for row in rows):
+        lines.append("task / guide rows: ms per step, not from speech — p50 / p95 in the start columns.")
     return "\n".join(lines)
 
 

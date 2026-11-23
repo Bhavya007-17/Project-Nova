@@ -277,6 +277,16 @@ def test_a_task_runs_through_the_hands():
     assert seen[-1] == (("Click “View”",), 0)
 
 
+def test_a_task_keeps_its_hop_times_for_the_trace():
+    timed = TaskResult("done", "Done", pick_ms=(600.0, 700.0), step_ms=(1500.0,), ring_ms=(400.0,))
+    result, _, _ = run(act(step("task", goal="turn on word wrap")), hands=TaskHands(timed))
+    last = result.steps[-1]
+    assert (last.pick_ms, last.step_ms, last.ring_ms) == ((600.0, 700.0), (1500.0,), (400.0,))
+    stuck = TaskResult("stuck", "Stuck", pick_ms=(900.0,))
+    result, _, _ = run(act(step("task", goal="turn on word wrap")), hands=TaskHands(stuck))
+    assert result.steps[-1].pick_ms == (900.0,)  # a failed task's picks count too
+
+
 def test_a_task_that_gets_stuck_fails_and_says_why():
     stuck = TaskResult("stuck", "I couldn't find how to do that — say 'show me' and I'll learn.")
     result, _, _ = run(act(step("task", goal="turn on word wrap")), hands=TaskHands(stuck))

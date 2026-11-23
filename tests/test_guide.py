@@ -144,7 +144,8 @@ def test_guide_rings_each_step_and_waits_for_his_click():
                            Step("ui_click", {"name": "Word wrap", "role": "menu item"}))
     assert world.hidden >= 1 and world.ring is None  # the ring goes when the task ends
     assert notes == [] and asked == []
-    assert all(ms <= 800 for ms in result.step_ms)  # his click -> next ring (SPEC §16: <= 0.8 s)
+    assert len(result.ring_ms) == 1 and all(ms <= 800 for ms in result.ring_ms)  # his click -> next ring (SPEC §16)
+    assert len(result.step_ms) == 2  # his click -> next pick answered, for each click
 
 
 def test_a_hover_is_not_a_click():
@@ -200,6 +201,14 @@ def test_next_counts_a_step_nova_could_not_see():
     assert result.did == ("Click “View”",) and notes == []
     assert pick.calls[1] == (tuple(r.text for r in MENU_BAR), ("Click “View”",))  # looked again, from his word
     assert steer.poke == ""
+
+
+def test_a_next_is_not_timed_as_his_click():
+    clock = Clock()
+    steer = Steer()
+    world = GuideWorld([MENU_BAR, VIEW_MENU], clock, [(1.0, ("poke", "next")), (2.0, "ring")], steer=steer)
+    result, _, _ = run(world, picker(Choice(row=3), Choice(row=3), Choice(done=True)), steer=steer)
+    assert len(result.did) == 2 and result.ring_ms == ()  # his word, not a click the pixels saw: no click -> ring
 
 
 def test_where_rings_it_again_and_restarts_the_nudge_clock():

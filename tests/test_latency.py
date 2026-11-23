@@ -2,7 +2,7 @@
 
 import json
 
-from nova.latency import read_records, render, summarize
+from nova.latency import GUIDE_RING, TASK_PICK, TASK_STEP, read_records, render, summarize
 
 
 def rec(kind="command", type_="open_app", start=100.0, total=300.0, ok=True, via="key"):
@@ -34,6 +34,22 @@ def test_commands_that_asked_first_are_listed_apart():
     asked = {**rec(start=3000), "asked": "clarify"}
     rows = {row.name: row for row in summarize([asked, rec(start=100)])}
     assert rows["open_app (asked first)"].p50 == 3000 and rows["all commands"].count == 1
+
+
+def test_task_hops_get_rows_of_their_own():
+    def task(**times):
+        return {**rec(type_="task"), "steps": [{"action": "task", "ok": True, "ms": 5000.0, "method": "task",
+                                                "detail": "", **times}]}
+
+    records = [task(pick_ms=[600, 700, 800], step_ms=[1500, 1700]), task(pick_ms=[650], ring_ms=[500, 700]),
+               task(pick_ms=["x"]), rec()]
+    rows = {row.name: row for row in summarize(records)}
+    assert rows[TASK_PICK].count == 4 and rows[TASK_PICK].p50 == 675
+    assert rows[TASK_STEP].count == 2 and rows[TASK_STEP].p50 == 1600
+    assert rows[GUIDE_RING].count == 2 and rows[GUIDE_RING].p95 == 690
+    assert rows["task"].count == 3  # the whole task is still a command row
+    shown = render(list(rows.values()))
+    assert TASK_PICK in shown and "0/4" not in shown  # a hop has no ok / not ok
 
 
 def test_read_and_render(tmp_path):
