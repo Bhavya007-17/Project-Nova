@@ -282,7 +282,8 @@ class WindowsHands:
             case "close_app":
                 return apps.close_app(catalog, self._app(catalog, a["app"]))
             case "window":
-                return self._window(catalog, a["op"], a.get("target", "active"), a.get("monitor"))
+                return self._window(catalog, a["op"], a.get("target", "active"), a.get("monitor"),
+                                    tab=a.get("tab") is True)
             case "layout":
                 return self._layout(catalog, a["slots"])
             case "open_url":
@@ -441,9 +442,12 @@ class WindowsHands:
             raise ActionError(f"{short_name(app.name)} didn't open in time.")
         return win, short_name(app.name)
 
-    def _window(self, catalog: Catalog, op: str, target: str, monitor: str | None) -> Outcome:
+    def _window(self, catalog: Catalog, op: str, target: str, monitor: str | None, *, tab: bool = False) -> Outcome:
         if target == "active":
             win = self._front()
+            if op == "close" and tab and (apps.is_browser(catalog, win) or self.pointer.has_tabs(win)):
+                return self._own_tab(win, "close")  # "close this" in a tabbed app is its tab
+
             app = catalog.app_for(win.exe, win.aumids)
             name = short_name(app.name) if app else "the window"
         else:
@@ -483,10 +487,14 @@ class WindowsHands:
         except ActionError:
             front = None
         if front is not None and not apps.is_browser(catalog, front) and self.pointer.has_tabs(front):
-            keys = _TERMINAL_TAB_KEYS if front.exe_name.lower() == "windowsterminal.exe" else _TAB_KEYS
-            keyboard.press(keys[op], front)
-            return Outcome(_TAB_TEXT[op], "front", front)
+            return self._own_tab(front, op)
         return self._browser_keys(catalog, _TAB_KEYS[op], _TAB_TEXT[op], op != "close")
+
+    @staticmethod
+    def _own_tab(win: Win, op: str) -> Outcome:
+        keys = _TERMINAL_TAB_KEYS if win.exe_name.lower() == "windowsterminal.exe" else _TAB_KEYS
+        keyboard.press(keys[op], win)
+        return Outcome(_TAB_TEXT[op], "front", win)
 
     def _browser_keys(self, catalog: Catalog, keys: str, text: str, check_title: bool) -> Outcome:
         win, method = apps.browser_window(catalog)

@@ -184,6 +184,8 @@ def _check_step(s: Step) -> None:
             _one_of(a, "op", WINDOW_OPS)
             _text(a, "target", required=False)
             _one_of(a, "monitor", MONITORS, required=False)
+            if not isinstance(a.get("tab", False), bool):  # "close this": its tab, in a tabbed app
+                raise PlanError("tab must be true or false")
         case "layout":
             slots = a.get("slots")
             if not isinstance(slots, (list, tuple)) or not 1 <= len(slots) <= 4:

@@ -94,6 +94,8 @@ def test_window_targets():
     assert checked.plan.steps == (step("window", op="maximize", target="active"),)
     checked = check(act({"action": "window", "op": "snap_left", "target": "Chrome"}), "shove chrome onto the left half")
     assert checked.plan.steps == (step("window", op="snap_left", target="Google Chrome"),)
+    checked = check(act({"action": "window", "op": "close", "target": "this", "tab": True}), "close this")
+    assert checked.plan.steps == (step("window", op="close", target="active", tab=True),)
 
 
 def test_layout_slots_resolve():

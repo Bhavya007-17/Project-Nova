@@ -6,6 +6,7 @@ from nova.actions.marks import (
     Mark,
     Target,
     button_named,
+    doc_tabs,
     grid_cells,
     grid_zoom,
     merge,
@@ -172,3 +173,31 @@ def test_mark_is_frozen():
     except AttributeError:
         return
     raise AssertionError("Mark must be frozen")
+
+
+@pytest.mark.parametrize(
+    "title, tabs",
+    [
+        ("notes.txt - Notepad", ["notes.txt", "todo.txt"]),
+        ("*Untitled - Notepad", ["Untitled. Modified.", "notes.txt"]),
+        ("Downloads and 2 more tabs - File Explorer", ["Downloads", "Documents", "Pictures"]),
+        ("Administrator: Windows PowerShell", ["Administrator: Windows PowerShell", "Command Prompt"]),
+        ("● plan.py - nova - Visual Studio Code", ["plan.py", "router.py"]),
+    ],
+)
+def test_document_tabs_carry_the_window_title(title, tabs):
+    assert doc_tabs(title, tabs)
+
+
+@pytest.mark.parametrize(
+    "title, tabs",
+    [
+        ("Budget - Word", ["File", "Home", "Insert", "Layout"]),
+        ("Home budget - Excel", ["File", "Home", "Insert"]),  # a ribbon tab named like part of the book
+        ("System Properties", ["Computer Name", "Hardware", "Advanced"]),
+        ("notes.txt - Notepad", []),
+        ("", ["notes.txt"]),
+    ],
+)
+def test_ribbon_and_property_sheet_tabs_are_not_documents(title, tabs):
+    assert not doc_tabs(title, tabs)

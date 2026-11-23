@@ -169,6 +169,11 @@ memories aren't shared, this file is.
 - **Tab keys follow the window in front:** "close the tab" with Notepad / Explorer / Terminal in front went to
   Chrome (or failed "Chrome isn't open"). A front window with UIA tab items gets the keys; Windows Terminal needs
   Ctrl+Shift+W / T (Ctrl+W deletes a word in the shell).
+- **Not every tab item is a document tab:** Word / Excel ribbons and property sheets are UIA tab items too, and
+  Ctrl+W in Word closes the document. Tabs count when one names what the title names (`marks.doc_tabs`: the title
+  before " - ", Explorer's "and 2 more tabs" dropped). Windows Terminal always counts: a program in the shell
+  (Claude Code) retitles the window but not the tab, so title and tab name can share no word. "close this" /
+  "close it" closes the tab in such an app (and in a browser); "close this window" / "quit this" close the window.
 
 ## Chrome extension
 - **Branded Chrome 137+ ignores `--load-extension`**: loading `extension/` unpacked is a one-time manual step.

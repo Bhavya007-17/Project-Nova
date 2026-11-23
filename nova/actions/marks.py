@@ -155,6 +155,16 @@ def button_named(said: str, targets: Sequence[Target]) -> str | None:
     return hits[0].name if len(hits) == 1 else None
 
 
+_MORE_TABS = re.compile(r" and \d+ more tabs?$")  # File Explorer: "Downloads and 2 more tabs - File Explorer"
+
+
+def doc_tabs(title: str, tab_names: Iterable[str]) -> bool:
+    """The window's tabs hold documents (Notepad files, Explorer folders, Terminal shells, VS Code files): the title
+    names the open one. Ribbon tabs (Word's Home / Insert) and property-sheet tabs never carry it."""
+    head = _MORE_TABS.sub("", normalize(title.split(" - ")[0]))
+    return bool(head) and any(f" {head} " in f" {normalize(name)} " for name in tab_names)
+
+
 def _drop_nested(found: list[Target]) -> list[Target]:
     """A button and the text inside it with the same name are one thing: keep the outer one."""
     kept: list[Target] = []

@@ -374,9 +374,9 @@ def test_no_match_numbers_everything_or_shows_the_grid():
 
 # --- through the hands --------------------------------------------------------------------------------------------
 
-def hands_with(pointer, focus, monkeypatch):
-    monkeypatch.setattr(WindowsHands, "_front", staticmethod(lambda: WIN))
-    return WindowsHands(lambda: None, focus=focus, nova=object(), pointer=pointer)
+def hands_with(pointer, focus, monkeypatch, win=WIN, catalog=None):
+    monkeypatch.setattr(WindowsHands, "_front", staticmethod(lambda: win))
+    return WindowsHands(lambda: catalog, focus=focus, nova=object(), pointer=pointer)
 
 
 def test_hands_click_by_name_runs_only_the_step_it_resolved(mouse, monkeypatch):
@@ -422,13 +422,79 @@ def keys(monkeypatch):
     return pressed
 
 
+NOTEPAD = Win(hwnd=6, pid=2, tid=3, title="notes.txt - Notepad", cls="Notepad", exe="notepad.exe", aumids=())
+WORD = Win(hwnd=7, pid=2, tid=3, title="Budget - Word", cls="OpusApp", exe="winword.exe", aumids=())
+NOTEPAD_TABS = [tab(0, "notes.txt"), tab(1, "todo.txt"), text(2, "hello")]
+RIBBON = [tab(0, "File"), tab(1, "Home"), tab(2, "Insert")]
+
+
 def test_tab_keys_go_to_a_tabbed_app_in_front_not_the_browser(keys, monkeypatch):
-    pointer, focus, _ = make([tab(0, "notes.txt"), tab(1, "todo.txt"), text(2, "hello")])
-    hands = hands_with(pointer, focus, monkeypatch)
+    pointer, focus, _ = make(NOTEPAD_TABS)
+    hands = hands_with(pointer, focus, monkeypatch, NOTEPAD)
     out = hands.run(Step("tab", {"op": "close"}), None)
-    assert keys == [("ctrl+w", WIN.hwnd)] and out.detail == "Closed the tab" and out.win == WIN
+    assert keys == [("ctrl+w", NOTEPAD.hwnd)] and out.detail == "Closed the tab" and out.win == NOTEPAD
     hands.run(Step("tab", {"op": "next"}), None)
-    assert keys[-1] == ("ctrl+tab", WIN.hwnd)
+    assert keys[-1] == ("ctrl+tab", NOTEPAD.hwnd)
+
+
+def test_ribbon_tabs_are_not_the_apps_own_tabs(keys, monkeypatch):
+    pointer, focus, _ = make(RIBBON)
+    hands = hands_with(pointer, focus, monkeypatch, WORD)
+    hands.run(Step("tab", {"op": "close"}), None)
+    assert keys == [("ctrl+w", 77)]  # Ctrl+W in Word would close the document
+
+
+@pytest.fixture
+def closed(monkeypatch):
+    shut: list[int] = []
+
+    def close_windows(wins, name):
+        shut.extend(w.hwnd for w in wins)
+        return f"Closed {name}"
+
+    monkeypatch.setattr("nova.actions.hands.apps.close_windows", close_windows)
+    return shut
+
+
+def close_this(**args):
+    return Step("window", {"op": "close", "target": "active", **args})
+
+
+class NoApps:
+    """A catalog that knows no app (the window's name is "the window")."""
+
+    @staticmethod
+    def app_for(exe, aumids):
+        return None
+
+
+def test_close_this_closes_the_tab_in_a_tabbed_app(keys, closed, monkeypatch):
+    pointer, focus, _ = make(NOTEPAD_TABS)
+    hands = hands_with(pointer, focus, monkeypatch, NOTEPAD)
+    out = hands.run(close_this(tab=True), None)
+    assert keys == [("ctrl+w", NOTEPAD.hwnd)] and not closed and out.detail == "Closed the tab"
+
+
+def test_close_this_closes_the_browser_tab_not_the_browser(keys, closed, monkeypatch):
+    browser = Win(hwnd=77, pid=8, tid=9, title="Chrome", cls="Chrome_WidgetWin_1", exe="chrome.exe", aumids=())
+    pointer, focus, _ = make(ROW)
+    hands = hands_with(pointer, focus, monkeypatch, browser)
+    hands.run(close_this(tab=True), None)
+    assert keys == [("ctrl+w", 77)] and not closed
+
+
+def test_close_this_closes_the_window_without_document_tabs(keys, closed, monkeypatch):
+    pointer, focus, _ = make(RIBBON)
+    hands = hands_with(pointer, focus, monkeypatch, WORD, NoApps())
+    hands.run(close_this(tab=True), None)
+    assert closed == [WORD.hwnd] and not keys
+
+
+def test_close_this_window_closes_the_window_even_with_tabs(keys, closed, monkeypatch):
+    pointer, focus, _ = make(NOTEPAD_TABS)
+    hands = hands_with(pointer, focus, monkeypatch, NOTEPAD, NoApps())
+    hands.run(close_this(), None)
+    assert closed == [NOTEPAD.hwnd] and not keys
 
 
 def test_tab_keys_go_to_the_browser_when_the_front_app_has_no_tabs(keys, monkeypatch):
@@ -447,3 +513,12 @@ def test_windows_terminal_gets_its_own_tab_keys(keys, monkeypatch):
     hands.run(Step("tab", {"op": "close"}), None)
     hands.run(Step("tab", {"op": "new"}), None)
     assert keys == [("ctrl+shift+w", 5), ("ctrl+shift+t", 5)]  # ctrl+w would delete a word in the shell
+
+
+def test_windows_terminal_tabs_count_when_a_program_retitles_the_window(keys, monkeypatch):
+    term = Win(hwnd=5, pid=2, tid=3, title="\u2733 fixing the build", cls="CASCADIA_HOSTING_WINDOW_CLASS",
+               exe=r"C:\Program Files\WindowsApps\WindowsTerminal.exe", aumids=())
+    pointer, focus, _ = make([tab(0, "\u2810 Claude Code")])
+    hands = hands_with(pointer, focus, monkeypatch, term)
+    hands.run(close_this(tab=True), None)
+    assert keys == [("ctrl+shift+w", 5)]

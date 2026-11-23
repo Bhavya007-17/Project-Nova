@@ -284,10 +284,14 @@ class Pointer:
         return self.grid(win, "here", note=f"I don't see “{_cut(name)}” — say a square")
 
     def has_tabs(self, win: Win) -> bool:
-        """``win`` shows tabs of its own (Notepad, Explorer, Terminal): tab keys belong to it, not the browser."""
+        """``win`` shows document tabs of its own (Notepad, Explorer, Terminal): tab keys belong to it, not the
+        browser. Ribbon tabs don't count (``marks.doc_tabs``)."""
         if self._focus is None:
             return False
-        return any(e.role == "tab item" for e in uitree.warm_snapshot(self._focus, win, self._cold_wait))
+        names = [e.name for e in uitree.warm_snapshot(self._focus, win, self._cold_wait) if e.role == "tab item"]
+        if names and win.exe_name.lower() == "windowsterminal.exe":
+            return True  # every tab is a shell; a program in it (Claude Code) retitles the window, not the tab
+        return marks.doc_tabs(win.title, names)
 
     def button_named(self, win: Win, said: str) -> str | None:
         """A button of ``win`` named exactly what he said (``marks.button_named``), from a UIA snapshot."""

@@ -34,6 +34,7 @@ def test_act_plan_round_trips_through_dict():
         {"kind": "clarify", "question": "", "choices": []},
         {"kind": "dance"},
         {"kind": "act", "steps": [{"action": "press", "keys": "ctrl+"}]},
+        {"kind": "act", "steps": [{"action": "window", "op": "close", "tab": "yes"}]},
     ],
 )
 def test_bad_plans_are_refused(data):

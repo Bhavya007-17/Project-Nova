@@ -184,6 +184,8 @@ def _window_step(args: Mapping[str, Any], catalog: Catalog, running: frozenset[s
     extra = {"monitor": args["monitor"]} if op == "move_monitor" and args.get("monitor") else {}
     name = args.get("target")
     if not isinstance(name, str) or _is_pointer(name):
+        if op == "close" and args.get("tab") is True:  # "close this": its tab, in a tabbed app
+            extra = {"tab": True}
         return step("window", op=op, target=ACTIVE, **extra)
     found = _target(name, catalog, running, apps_only=True)
     if found is None:

@@ -53,7 +53,11 @@ FUSION = "Autodesk Fusion"
         ("close notepad", step("close_app", app="Notepad")),
         ("quit spotify", step("close_app", app="Spotify")),
         ("close this window", step("window", op="close", target="active")),
-        ("close it", step("window", op="close", target="active")),
+        ("close it", step("window", op="close", target="active", tab=True)),
+        ("close this", step("window", op="close", target="active", tab=True)),
+        ("close that one", step("window", op="close", target="active", tab=True)),
+        ("close this app", step("window", op="close", target="active")),
+        ("quit this", step("window", op="close", target="active")),
         # window ops
         ("maximize this", step("window", op="maximize", target="active")),
         ("maximize", step("window", op="maximize", target="active")),

@@ -766,7 +766,8 @@ class _State:
     running: frozenset[str] = frozenset()  # apps with a window open (from the context snapshot)
 
 
-def _target_items(family: str, rest: tuple[str, ...], st: _State) -> list[object] | Ask | None:
+def _target_items(family: str, rest: tuple[str, ...], st: _State,
+                  verb: tuple[str, ...] = ()) -> list[object] | Ask | None:
     catalog, strict, running = st.catalog, st.strict, st.running
     if family in ("open", "switch", "place"):
         for suffix in _FRONT:
@@ -787,6 +788,8 @@ def _target_items(family: str, rest: tuple[str, ...], st: _State) -> list[object
         if not rest:
             return None
         if _is_pointer(rest):
+            if verb[:1] == ("close",) and not {"window", "app"} & set(rest):  # "close this": its tab, if tabbed
+                return [step("window", op="close", target=ACTIVE, tab=True)]
             return [step("window", op="close", target=ACTIVE)]
         found = _find(rest, catalog, strict, apps_only=True, familiar=running)
         if isinstance(found, tuple) and running:  # only what's open can be closed
@@ -859,7 +862,7 @@ def _clause(words: tuple[str, ...], st: _State) -> list[object] | Ask | None:
             if fixed is not None:  # "I need a new tab", "give me full screen"
                 st.family = None
                 return [fixed]
-        made = _target_items(family, rest, st)
+        made = _target_items(family, rest, st, words[:n])
         if made is not None:
             st.family = family
             return made
