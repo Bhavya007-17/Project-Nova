@@ -24,6 +24,7 @@ from ..events import (
     DictatedText,
     FinalTranscript,
     Gated,
+    Guiding,
     JobChip,
     MicChanged,
     MicLevel,
@@ -145,6 +146,15 @@ def _scenes() -> tuple[Scene, ...]:
             Beat(0.7, (StepsChanged(("Chrome", "Canvas", "Thermo", "HW 5"), 2),)),
             Beat(0.7, (StepsChanged(("Chrome", "Canvas", "Thermo", "HW 5"), 3),)),
             Beat(0.7),
+        )),
+        Scene("guide", "“show me how”: the island says the step and a ring marks it; Stop, or Do it", (
+            *_say(8, "show me", "show me how to turn", "show me how to turn on word wrap",
+                  final="Show me how to turn on word wrap."),
+            Beat(0.3, (Go("acting", "plan"), StepsChanged(("Click “View”",), 0), Guiding(True, "1 · Click “View”"))),
+            Beat(2.0, (StepsChanged(("Click “View”", "Click “Word wrap”"), 1), Guiding(True, "2 · Click “Word wrap”"))),
+            Beat(2.0, (Guiding(True, note="Still here — say “do it” or “stop”"),)),
+            Beat(2.0, (Guiding(False), CommandFinished(True, "Word wrap is on"), Go("done", "Word wrap is on"))),
+            Beat(1.5, (Go("idle", "done"),)),
         )),
         Scene("done", "✓ + the result, then it collapses after 1.5 s", (
             Beat(0.0, (CommandFinished(True, "Opened HW 5 – Thermo"), Go("done", "Opened HW 5 – Thermo"))),

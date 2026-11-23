@@ -50,6 +50,7 @@ from ..events import (
     DictatedText,
     FinalTranscript,
     Gated,
+    Guiding,
     IslandAction,
     JobChip,
     MicChanged,
@@ -75,6 +76,7 @@ _EVENTS = (
     Asking, JobChip, MicChanged, SpeechReady, PinToggled, AlwaysListeningChanged, ConfigChanged,
     BrainProgress,  # "warming": the model is cold (Stage 07a)
     TalkChanged, ClausesSkipped,  # the session pill (Stage 07b)
+    Guiding,  # guide mode's step line (Stage 07d)
 )
 _WDA_EXCLUDEFROMCAPTURE = 0x11
 _DWMWA_TRANSITIONS_FORCEDISABLED = 3

@@ -12,6 +12,7 @@ from nova.events import (
     DictatedText,
     FinalTranscript,
     Gated,
+    Guiding,
     JobChip,
     MicChanged,
     PartialTranscript,
@@ -497,3 +498,48 @@ def test_a_command_that_opens_the_session_keeps_its_words():
     assert (view.state, view.beneath, view.words) == ("session", "thinking", "open chrome")
     late = feed(READY, go("idle", "thinking", "wake"), gated(1, "open chrome"), talk("opened", "named"))
     assert (late.state, late.beneath, late.words) == ("session", "thinking", "open chrome")  # either order
+
+
+# --- guide mode (Stage 07d): Nova rings each step and he clicks it ---------------------------------------------
+
+
+def guided(view=READY):
+    return feed(view, go("idle", "thinking"), gated(1, "show me how to turn on word wrap"), StepsChanged(("Task",)),
+                go("thinking", "acting"))
+
+
+def test_guiding_shows_the_step_with_stop_and_do_it():
+    view = guided()
+    assert view.state == "acting" and not view.interactive
+    view = reduce(view, Guiding(True, "1 · Click “View”"))
+    assert view.state == "guide" and view.guide == "1 · Click “View”" and view.hint == ""
+    assert view.accent == ACCENTS["guide"] and view.buttons == ("Stop", "Do it") and view.interactive
+    assert not view.expanded and view.open
+    view = reduce(view, Guiding(True, note="Still here — say “do it” or “stop”"))
+    assert view.guide == "1 · Click “View”" and view.hint == "Still here — say “do it” or “stop”"
+    view = reduce(view, Guiding(True, "2 · Click “Word wrap”"))
+    assert view.guide == "2 · Click “Word wrap”" and view.hint == ""  # the next step: the nudge is old news
+    view = reduce(view, Guiding(False))
+    assert view.state == "acting" and view.guide == "" and not view.interactive  # "just do it": Nova acts
+
+
+def test_the_guide_ends_with_the_command():
+    view = reduce(guided(), Guiding(True, "1 · Click “View”"))
+    done = feed(view, CommandFinished(True, "Done"), go("acting", "done"))
+    assert done.state == "done" and done.guide == "" and done.hint == "" and done.result == "Done"
+    assert reduce(done, Guiding(True, "1 · Click “View”")) == done  # a late ring after the end shows nothing
+    stopped = reduce(view, go("acting", "idle", "cancelled"))
+    assert stopped.state == "hidden" and stopped.guide == ""
+    assert guided(stopped).state == "acting"  # the next command starts clean
+
+
+def test_guiding_inside_a_session_keeps_the_pill():
+    view = running(feed(opened(), final(1, "Show me how to turn on word wrap.")), 1, "show me how", ("Task",))
+    view = reduce(view, Guiding(True, "1 · Click “View”"))
+    assert (view.state, view.beneath, view.guide) == ("session", "acting", "1 · Click “View”")
+    assert view.buttons == ()  # the pill's own stop button; "do it" / "stop" by voice
+    view = reduce(view, Guiding(False))
+    assert view.state == "session" and view.guide == ""
+    tapped = reduce(reduce(running(feed(opened(), final(2, "Show me.")), 2, "show me", ("Task",)),
+                           Guiding(True, "1 · Click “View”")), talk("closed", "tap"))
+    assert tapped.state == "guide"  # the talk closed, the guide goes on: its own face

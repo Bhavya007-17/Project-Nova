@@ -46,6 +46,12 @@ def test_top_center_on_any_monitor():
 def test_demo_shows_every_state_and_ends_hidden():
     events = list(demo_events())
     shown = {event.new for event in events if isinstance(event, StateChanged)}
+    faces = set()
+    view = View()
+    for event in events:
+        view = reduce(view, event)
+        faces.add(view.state)
+    assert "guide" in faces  # the guide face is a view state, not a machine state
     assert {"listening", "thinking", "acting", "done", "error", "confirm", "clarify", "teaching", "dictating",
             "passthrough", "idle"} <= shown
     assert any(isinstance(event, JobChip) for event in events)

@@ -296,6 +296,8 @@ class Triggers:
                 self._feed(Cancel(now, "No"), now)  # the island's No = Esc; Yes / a choice is the brain's
             elif item.what == "stop-session":
                 self._feed(Cancel(now, "stop button"), now)  # the session pill's stop button = Esc
+            elif item.what == "stop":
+                self._feed(Cancel(now, "Stop"), now)  # guide mode's Stop: ends the guide like Esc
         elif isinstance(item, TalkEndRequested):
             self._feed(EndTalk(now, item.why), now)  # the brain ran "that's all"
         elif isinstance(item, _Resolver):

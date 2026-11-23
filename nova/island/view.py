@@ -23,6 +23,7 @@ from ..events import (
     DictationTyped,
     FinalTranscript,
     Gated,
+    Guiding,
     JobChip,
     MicChanged,
     PartialTranscript,
@@ -51,9 +52,10 @@ ACCENTS = {  # one accent per state (iOS dark-mode system colours)
     "done": "#30D158",  # green
     "passthrough": "#BF5AF2",  # another app has the mic
     "session": "#0A84FF",  # a talk session is open: the mic stays open between commands
+    "guide": "#64D2FF",  # guide mode: a ring on screen waits for his click (the overlay's ring colour)
 }
 EXPANDED = frozenset({"confirm", "clarify", "error"})
-BUTTONS = {"confirm": ("No", "Yes"), "error": ("Try again", "Show me")}
+BUTTONS = {"confirm": ("No", "Yes"), "error": ("Try again", "Show me"), "guide": ("Stop", "Do it")}
 TEACHING_NOTE = "Recording — do it, narrate if you like, say “done”"
 PASSTHROUGH_END = "tap Copilot to end"
 MAX_CHOICES = 4
@@ -63,6 +65,8 @@ MAX_CHOICES = 4
 IN_SESSION = frozenset({"idle", "listening", "thinking", "acting", "done", "error"})
 BENEATH = frozenset({"thinking", "acting", "done", "error"})  # what the pill's second row shows
 MAX_SKIPPED = 44  # chars of "Skipped: …" (the pill is ~420 px wide and the failed step's result sits beside it)
+# Guide mode (Stage 07d) runs inside the machine's acting: the step he should click replaces the step line.
+GUIDED = frozenset({"acting", "confirm", "clarify"})  # machine states a guide lives through (a Nova step may ask)
 
 
 @dataclass(frozen=True)
@@ -102,6 +106,8 @@ class View:
     closing: bool = False  # its idle close is under 5 s away: the pill shrinks
     beneath: str = ""  # the session pill's second row: thinking | acting | done | error | "" (none)
     skipped: str = ""  # "Skipped: a, b…": what a stopped session queue won't run (until the next command)
+    guide: str = ""  # guide mode: the ringed step ("2 · Click “Word wrap”")
+    hint: str = ""  # guide mode: a nudge or what a wrong click did (the step stays)
 
     @property
     def accent(self) -> str:
@@ -197,9 +203,13 @@ def _state(view: View, event: StateChanged) -> View:
     before = view.machine
     if event.new != before:
         view = replace(view, machine=event.new)
+    if view.guide and event.new not in GUIDED:
+        view = replace(view, guide="", hint="")  # the command ended: so did its guide
     if view.talk and event.new in IN_SESSION:
         return _in_session(view, event.new, event.why, before)
     new = event.new if event.new in _SHOWN else _resting(view)
+    if new == "acting" and view.guide:
+        new = "guide"
     if new == view.state:
         return view
     if new != "thinking" and view.warming:
@@ -275,6 +285,8 @@ def _closed(view: View) -> View:
     if view.state != "session":
         return view
     shown = view.machine if view.machine in _SHOWN else _resting(view)
+    if shown == "acting" and view.guide:
+        shown = "guide"
     view = replace(view, state=shown)  # a step still running (tap close) shows its own face
     return _warming(view) if shown == "thinking" and view.warming else view
 
@@ -283,6 +295,23 @@ def _skipped(view: View, event: ClausesSkipped) -> View:
     if not event.texts:
         return view
     return replace(view, skipped=cut("Skipped: " + ", ".join(event.texts), MAX_SKIPPED))
+
+
+def _guiding(view: View, event: Guiding) -> View:
+    if not event.on:
+        if not view.guide and not view.hint:
+            return view
+        view = replace(view, guide="", hint="")
+        return replace(view, state="acting") if view.state == "guide" else view
+    if view.machine not in GUIDED:
+        return view  # late: the command is over
+    if event.caption:
+        view = replace(view, guide=event.caption, hint=event.note)
+    elif event.note:
+        view = replace(view, hint=event.note)
+    if view.guide and view.state == "acting":
+        return replace(view, state="guide")
+    return view
 
 
 def cut(text: str, limit: int) -> str:
@@ -318,6 +347,8 @@ def reduce(view: View, event: object) -> View:
         return _talk(view, event)
     if isinstance(event, ClausesSkipped):
         return _skipped(view, event)
+    if isinstance(event, Guiding):
+        return _guiding(view, event)
     if isinstance(event, PartialTranscript):  # a talk keeps the mic open: his words roll in whatever Nova does
         if (state in ("listening", "dictating") or view.talk) and not _older(view, event.utterance):
             return _words(view, event.text, event.utterance, final=False, windowed=event.windowed)

@@ -34,6 +34,7 @@ Item {
     readonly property Item face: liveMode ? liveFace
         : mode === "session" ? sessionFace
         : mode === "acting" ? actingFace
+        : mode === "guide" ? guideFace
         : mode === "done" ? doneFace
         : mode === "confirm" ? confirmFace
         : mode === "clarify" ? clarifyFace
@@ -44,6 +45,7 @@ Item {
         : island.expanded ? clamp(Math.ceil(face.implicitWidth) + 2 + 2 * expandedPadX, 380, 560)
         : mode === "idle" ? Math.ceil(face.implicitWidth) + 2 + 2 * 16
         : mode === "session" ? face.implicitWidth  // fixed: rolling words never make it jitter
+        : mode === "guide" ? clamp(Math.ceil(face.implicitWidth) + 2 + padLeft + padRight, 300, 560)
         : clamp(Math.ceil(face.implicitWidth) + 2 + padLeft + padRight, 176, 420)  // +2: text that just fits never elides
     readonly property real targetHeight: !open || !face ? 30
         : island.expanded ? Math.min(160, face.implicitHeight + 2 * expandedPadY)
@@ -254,6 +256,49 @@ Item {
                 steps: root.island.steps
                 active: root.island.step
                 running: root.mode === "acting"
+            }
+        }
+
+        // guide: the step he should click (a ring marks it on screen) + [Stop] [Do it]
+        Face {
+            id: guideFace
+            active: root.mode === "guide"
+            targetAccent: root.accent
+            targetWidth: root.targetWidth - root.padLeft - root.padRight
+            x: (pill.width - width - root.padLeft - root.padRight) / 2 + root.padLeft
+            y: (pill.height - height) / 2
+            height: root.compactHeight
+            implicitWidth: root.lead + 10 + guideLine.implicitWidth + 12 + guideButtons.implicitWidth
+
+            Orb {
+                x: (root.lead - width) / 2
+                anchors.verticalCenter: parent.verticalCenter
+                running: root.mode === "guide"
+                color: guideFace.accent
+            }
+            Text {
+                id: guideLine
+                anchors.left: parent.left
+                anchors.leftMargin: root.lead + 10
+                anchors.right: guideButtons.left
+                anchors.rightMargin: 12
+                anchors.verticalCenter: parent.verticalCenter
+                text: root.island.hint || root.island.guide
+                color: "white"
+                textFormat: Text.PlainText
+                elide: Text.ElideRight
+                font.family: "Segoe UI Variable Text"
+                font.weight: Font.DemiBold
+                font.pixelSize: 15
+            }
+            Row {
+                id: guideButtons
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 6
+
+                PillButton { text: "Stop"; onClicked: root.island.act("stop", -1, "") }
+                PillButton { text: "Do it"; onClicked: root.island.act("do-it", -1, "") }
             }
         }
 

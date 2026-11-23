@@ -262,7 +262,8 @@ class IslandAction:
     """He answered in the island without speaking (the island never takes focus; keys come from the hook).
 
     what: yes | no | choice (index = 0-based) | retry | show-me | chip (chip = its id) | stop-session (the session
-    pill's stop button: closes the talk session like Esc). via: click | key.
+    pill's stop button: closes the talk session like Esc) | stop / do-it (guide mode's buttons: end the guide, or
+    let Nova do the rest). via: click | key.
     """
 
     what: str
@@ -309,7 +310,7 @@ class AnswerHeard:
 
 @dataclass(frozen=True)
 class SessionCancelled:
-    why: str  # Esc | No (island button) | superseded | no answer | timed out
+    why: str  # Esc | No (island button) | Stop (guide button) | superseded | no answer | timed out
     at: float
 
 
@@ -369,6 +370,16 @@ class GuideRing:
 @dataclass(frozen=True)
 class GuideHidden:
     why: str  # guide | timed out | ...
+
+
+@dataclass(frozen=True)
+class Guiding:
+    """Guide mode's island line (Stage 07d): ``on`` with a caption ("2 · Click “Word wrap”") for each ringed step, a
+    ``note`` alone for a nudge or a wrong click (the caption stays), ``on=False`` when Nova acts or the guide ends."""
+
+    on: bool
+    caption: str = ""
+    note: str = ""
 
 
 @dataclass(frozen=True)

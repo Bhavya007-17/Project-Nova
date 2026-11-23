@@ -501,6 +501,16 @@ def test_stop_button_closes_the_session(rig):
     assert r.next(TalkChanged, where=lambda e: e.what == "closed").why == "stop button"
 
 
+def test_the_guides_stop_button_cancels_the_command(rig):
+    r = rig()
+    assert r.say("Nova, show me how to turn on word wrap").accepted
+    r.bus.publish(BrainProgress("acting"))
+    r.next(StateChanged, where=lambda e: e.new == "acting")
+    r.bus.publish(IslandAction("stop", time.perf_counter()))
+    assert r.next(StateChanged, where=lambda e: e.new == "idle")
+    assert r.next(SessionCancelled).why == "Stop"
+
+
 def test_session_idle_s_follows_settings(rig):
     r = rig(settings=Settings(session=SessionSettings(idle_s=12.0)))
     assert r.triggers.machine.idle_s == 12.0
