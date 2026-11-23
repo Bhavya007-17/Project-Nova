@@ -9,7 +9,7 @@ What is already there (2026-11-13): `nova latency` prints start p50 / p95 per co
 
 ## Do
 1. **`nova latency` grows up.**
-   - One row per line of the SPEC §16 table: budget, p50, p95, n, pass / fail — island reacts, live-words lag, Tier 0 start, skill replay start, Tier 1 start (GPU / CPU), session clause (Tier 0 / Tier 1, queue wait apart), cold first request, page click, UIA click, numbers shown, dictation segment, handoff sent. A budget line with no trace field yet gets one. Rows with n < 20 say "too few".
+   - One row per line of the SPEC §16 table: budget, p50, p95, n, pass / fail — island reacts, live-words lag, Tier 0 start, skill replay start, Tier 1 start (GPU / CPU), session clause (Tier 0 / Tier 1, queue wait apart), cold first request, page click, UIA click, numbers shown, dictation segment, handoff sent. Added 2026-11-22, for whichever are built: click by meaning and one loop step (07d), the next guide ring after the user's click (07d), rewrite replaced (07e), time to first audio (09a), answer card shown after done (09). A budget line with no trace field yet gets one. Rows with n < 20 say "too few".
    - `--slowest 10`: the per-hop breakdown of each. `--since 7d`.
    - **A hop nobody logs can't be fixed.** For 20 random commands, check that the hops add up to the total. A gap over 50 ms that no field explains is the first thing to find.
 2. **Fix the top 3**, ranked by (p95 − budget) × how often that path runs. Candidates, each to be proven before it is kept:
@@ -28,6 +28,7 @@ What is already there (2026-11-13): `nova latency` prints start p50 / p95 per co
    - Run A: 2 h with always-listening on while he works normally (YouTube, a call, Fusion).
    - Run B: 30 min of talk sessions with a video playing and someone else talking.
    - **Actions he didn't ask for:** `nova soak report` lists every command that ran without the key or the name (time + action type); he marks the ones that weren't his. Target per run: 0 risky, ≤ 1 safe.
+   - **Talk back (09a), if built:** run B again with talk back on. Count the `echo` drops and any action that started while Nova was speaking. Target: 0 actions from Nova's own voice.
    - **Resources:** memory growth < 50 MB after the first 10 minutes; handles, threads and GDI objects flat; no hook loss left unrepaired; idle CPU < 2 %.
    - Other people get transcribed during a soak. Tell them, or set `logs.transcripts: false` for the run — the counts still work.
    - Where leaks hide in this code: COM pointers in the ctypes modules (UIA, the audio detector, app activation) — every path must release; clipboard memory; one `threading.Timer` per notice; the llama-server child across reloads; QML objects for chips and number tags; the content script's element map.

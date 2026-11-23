@@ -21,8 +21,11 @@ Nova says when they're done. It started as Bhavya's personal project and is now 
 | 07a | fast + hearing (model never times out, ~1 s loose requests, gate fixes) | built and measured; still open: the live demo, and the name-biasing decision (needs `nova record-set`, 3 min of reading) |
 | 07b | talk sessions (open the mic once, act clause by clause) | built and measured (`nova eval --sessions` 40/40, 0 actions on small talk; TTS replay p50 0.32 s Tier 0 / 0.85 s Tier 1); still open: the live demo and the session pill seen on a real screen; known minor issue: a session opened by name while a tap-closed session's clauses still run mixes their context |
 | 07c | control anything (scroll cascade, PDFs, click by name / number / grid, camera, screenshot) | built; still open: the live demo on his apps |
+| 07d | guide + loop (click by meaning, "show me how" rings, do-it-for-me loop) | not started |
+| 07e | rewrite (selected text rewritten in place) | not started |
 | 08 | teach + learn ("Show me?", learned skills ⚡) | not started — island UI states exist |
-| 09 | handoff to Claude / ChatGPT + done notifications | not started — island chips exist; router has a stub |
+| 09 | handoff to Claude / ChatGPT + done notifications, auto-route, screen questions | not started — island chips exist; router has a stub |
+| 09a | talk back (spoken answers, off by default, stoppable) | not started |
 | 10 | safety + polish (risk audit, settings panel, start with Windows) | not started |
 | 11 | speed + soak | not started |
 | 12 | optional: Todoist / Notion / Calendar, MCP server | only on request |
