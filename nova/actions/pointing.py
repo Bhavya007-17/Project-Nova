@@ -143,6 +143,10 @@ class Pointer:
         texts = [e.name for e in elements if e.role == "text" and e.name]
         return found, texts, elements
 
+    def window_area(self, hwnd: int) -> native.Rect:
+        """The window's frame, clipped to its screen (what a task's pixel signature watches)."""
+        return clip(self._frame(hwnd), self._monitor_for(hwnd).rect)
+
     def rows(self, win: Win) -> tuple[rows_.Row, ...]:
         """The window as numbered rows for the model (Stage 07d): one UIA snapshot; OCR only when it names few."""
         elements = uitree.warm_snapshot(self._focus, win, self._cold_wait) if self._focus is not None else []
@@ -150,7 +154,7 @@ class Pointer:
         first = rows_.focus_area(elements)
         found = rows_.build(elements, generation=generation, first=first)
         if len(found) < rows_.OCR_BELOW:
-            area = clip(self._frame(win.hwnd), self._monitor_for(win.hwnd).rect)
+            area = self.window_area(win.hwnd)
             found = rows_.build(elements, generation=generation, first=first, ocr=self._ocr(area))
         return found
 

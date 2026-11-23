@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from urllib.parse import quote_plus, urlsplit
 
 from ..brain import abilities
+from ..brain import task as task_
 from ..brain.executor import Pick
 from ..brain.plan import Step
 from ..brain.risk import Scene, needs_focus
@@ -26,6 +27,7 @@ from .catalog import App, Catalog, short_name
 from .chrome import ChromeHands
 from .native import ActionError, Win
 from .pointing import Found, Pointer, verb_for
+from .taskworld import WindowWorld
 from .uia import FocusReader
 
 _log = logging.getLogger(__name__)
@@ -84,6 +86,7 @@ class WindowsHands:
         self._found: Found | None = None  # what the last ui_click resolved to (brain thread only)
         self._located = 0
         self._edited = 0  # the window the last undoable step ran in (brain thread only)
+        self.picker: task_.Picker | None = None  # the planner model choosing a task's next step (Stage 07d)
 
     @property
     def chrome(self) -> ChromeHands | None:
@@ -168,6 +171,21 @@ class WindowsHands:
         return Pick(question, choices, tuple(Step("nova", {"op": "help", "topic": t}) for t in topics),
                     optional=True, detail="Say “what can I say?” any time", hold=2.0)
 
+    def task(self, goal: str, mode: str, *, kept: tuple[Step, ...] = (), point: bool = False,
+             confirm: Callable[[str], bool | None], stopped: Callable[[], bool],
+             progress: Callable[[str, int], None], ctx: object = None) -> task_.Result:
+        """A job of several clicks in the window in front (``nova.brain.task``): look, pick, act, settle, check."""
+        if mode == "guide":
+            raise ActionError("I can't show you yet — say it without “show me” and I'll do it.")
+        if self.picker is None:
+            raise ActionError("Tasks need the local model.")
+        native.com_init()
+        world = WindowWorld(self.pointer, self._front, lambda s: self.scene(s or Step("task", {}), ctx),
+                            lambda s: self.run(s, ctx))
+        loop = task_.Loop(world, self.picker, confirm, stopped=lambda: stopped() or self.stop.is_set(),
+                          progress=progress)
+        return loop.run(goal)
+
     def preview(self, s: Step, on: bool) -> None:
         if self._chrome is not None:
             self._chrome.preview(s, on)
@@ -235,6 +253,11 @@ class WindowsHands:
                 return f"Open {_cut(a.get('label') or a.get('name') or '')}".strip()
             case "nova":
                 return {"help": "What can I say", "again": "Again", "undo": "Undo"}.get(a.get("op"), "Nova")
+            case "task":
+                goal = _cut(a.get("goal") or "", 24)
+                if a.get("mode") == "guide":
+                    return f"Show me “{goal}”" if goal else "Show me"
+                return f"Do “{goal}”" if goal else "Do it"
         return s.action.replace("_", " ").capitalize()
 
     def scene(self, s: Step, ctx: object) -> Scene:

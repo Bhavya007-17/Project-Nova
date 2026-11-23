@@ -51,7 +51,7 @@ from ..events import (
 from ..governor import Governor
 from ..log import TraceLog
 from ..state import CLARIFY_S, CONFIRM_S
-from . import meaning
+from . import meaning, task
 from .answers import pick, yes_no
 from .executor import Executor, RunResult
 from .llama_server import connect
@@ -310,6 +310,7 @@ class Brain:
                             warming=lambda: bus.publish(BrainProgress("warming", WARMING)),
                             warmed=lambda: bus.publish(BrainProgress("thinking")))
         self._hands.pointer.meaning = meaning.asker(self._tier1)  # click by meaning (Stage 07d)
+        self._hands.picker = task.model_picker(self._tier1)  # a task's next step (Stage 07d)
         self._router = Router(self._tier1, page=chrome.page_rows if chrome is not None else None,
                               numbers=lambda: self._hands.pointer.showing or self._hands.pointer.grid_on,
                               scrolling=lambda: self._hands.scroller.scrolling, buttons=self._hands.button_named)
