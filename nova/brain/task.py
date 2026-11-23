@@ -9,6 +9,12 @@
 At most 8 steps and 60 s. Never types words the user didn't say, never a key chord he didn't say beyond plain
 navigation keys, never in system settings (guide mode only there: SPEC §14). Pure: the world (eyes + hands), the
 model and the asker come in behind small interfaces, so tests run on fakes.
+
+**Guide mode** ("show me how …"): the same look and pick, but Nova rings the row and waits for his own click. It polls
+the pixels every 150 ms (no mouse hook); a change that moves the rows or the focus is a click — a hover or a tooltip
+moves neither. The mouse on the ring before or after it means he hit the step; anywhere else gets "That opened X —
+the step was Y" and the next pick starts from where he is. A nudge at 30 s, out at 3 min. "just do it" mid-wait does
+the ringed step and the rest; "let me do it" mid-task rings the next one (``Steer``).
 """
 
 from __future__ import annotations
@@ -16,10 +22,11 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from ..actions import screen
+from ..actions.marks import Box
 from ..actions.native import ActionError
 from ..actions.rows import Row, by_number
 from .plan import Plan, Step, act, keys_ok
@@ -40,6 +47,12 @@ PLAIN_KEYS = frozenset({"enter", "tab", "shift+tab", "esc", "escape", "space", "
                         "end", "pageup", "pagedown", "alt", "f10"})
 GIVE_UP = "I couldn't finish — show me?"
 _VERB_LABEL = {"click": "Click", "right": "Right-click", "double": "Double-click"}
+GUIDE_POLL_S = 0.15
+NUDGE_S = 30.0
+GUIDE_MAX_S = 180.0
+NUDGE = "Still here — say “do it” or “stop”"
+ONLY_POINT = "In settings I only point — click it yourself"
+_SLACK = 8  # px around the ring that still count as hitting it
 
 
 @dataclass(frozen=True)
@@ -98,6 +111,16 @@ class World(Protocol):
     def signature(self) -> tuple[int, ...]: ...  # pixels only (settle polls this)
     def where(self, s: Step | None = None) -> Scene: ...  # for risk (a typing step reads the focused control)
     def act(self, row: Row | None, choice: Choice) -> Any: ...  # raises ActionError
+    def show(self, row: Row | None, caption: str) -> Box | None: ...  # ring the row where it is now; its box
+    def hide(self) -> None: ...
+    def cursor(self) -> tuple[int, int] | None: ...  # the mouse, in the rows' pixels
+
+
+class Steer:
+    """Do or guide, flipped from the bus thread while a task runs ("just do it" / "let me do it" / "show me")."""
+
+    def __init__(self, mode: str = "do") -> None:
+        self.mode = mode
 
 
 Picker = Callable[[str, Sequence[str], Sequence[str], str, str], Choice | None]  # goal, lines, did, app, title
@@ -212,11 +235,59 @@ def _presses_blind(s: Step, scene: Scene) -> bool:
     return s.action == "press" and str(s.get("keys", "")).lower() in ACTIVATES and not scene.focus_known
 
 
+@dataclass
+class _Run:
+    """One task's running tally."""
+
+    goal: str
+    began: float
+    guided: bool = False
+    did: list[str] = field(default_factory=list)
+    kept: list[Step] = field(default_factory=list)
+    pick_ms: list[float] = field(default_factory=list)
+    step_ms: list[float] = field(default_factory=list)
+
+    def end(self, exit_: str, detail: str) -> Result:
+        _log.info("task %r: %s after %d steps (%s)", self.goal, exit_, len(self.did), detail)
+        return Result(exit_, detail, tuple(self.did), tuple(self.kept), tuple(self.pick_ms), tuple(self.step_ms))
+
+    def stopped(self) -> Result:
+        return self.end("stopped", f"Stopped after {_count(self.did)}" if self.did else "Stopped")
+
+    def limit(self) -> Result:
+        if self.guided:
+            return self.end("limit", "I stopped showing — say “show me” to start again")
+        return self.end("limit", f"I stopped after {_count(self.did)}: " + " · ".join(self.did))
+
+
+@dataclass(frozen=True)
+class _Seen:
+    """What came of one guided step: his (he hit it) | wrong | do (he said "just do it") | stopped | limit."""
+
+    what: str
+    view: View
+    scene: Scene
+    at: float
+
+
+def _inside(box: Box, at: tuple[int, int] | None, slack: int = 0) -> bool:
+    return (at is not None and box.left - slack <= at[0] <= box.right + slack
+            and box.top - slack <= at[1] <= box.bottom + slack)
+
+
+def _under(rows: Sequence[Row], at: tuple[int, int] | None) -> Row | None:
+    """The smallest row under the mouse (a menu item, not the menu around it)."""
+    hits = [r for r in rows if _inside(r.target.box, at)]
+    return min(hits, key=lambda r: r.target.box.area) if hits else None
+
+
 class Loop:
     def __init__(self, world: World, picker: Picker, confirm: Callable[[str], bool | None], *,
                  clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep,
                  stopped: Callable[[], bool] = lambda: False,
                  progress: Callable[[str, int], None] = lambda label, n: None,
+                 note: Callable[[str], None] = lambda text: None,
+                 steer: Steer | None = None,
                  changed: Callable[[tuple[int, ...], tuple[int, ...]], bool] = screen.changed,
                  max_steps: int = MAX_STEPS, max_s: float = MAX_S) -> None:
         self._world = world
@@ -226,87 +297,154 @@ class Loop:
         self._sleep = sleep
         self._stopped = stopped
         self._progress = progress
+        self._note = note
+        self._steer = steer if steer is not None else Steer()
         self._changed = changed
         self._max_steps = max_steps
         self._max_s = max_s
 
-    def run(self, goal: str) -> Result:
-        began = self._clock()
-        did: list[str] = []
-        kept: list[Step] = []
-        pick_ms: list[float] = []
-        step_ms: list[float] = []
-
-        def end(exit_: str, detail: str) -> Result:
-            _log.info("task %r: %s after %d steps (%s)", goal, exit_, len(did), detail)
-            return Result(exit_, detail, tuple(did), tuple(kept), tuple(pick_ms), tuple(step_ms))
-
-        def over() -> bool:
-            return len(did) >= self._max_steps or self._clock() - began > self._max_s
-
+    def run(self, goal: str, mode: str = "do", point: bool = False) -> Result:
+        """``mode`` "do" acts, "guide" rings each step for his click; ``point`` rings the first step and returns
+        ("where is X"), leaving the ring for the caller to time out."""
+        self._steer.mode = "guide" if point else mode
+        run = _Run(goal, self._clock(), guided=self._steer.mode == "guide")
         scene = self._world.where()
-        if guide_only(scene):
-            return end("guide_only", "In settings I only point — say “show me how …” and click it yourself.")
+        if self._steer.mode == "do" and guide_only(scene):
+            return run.end("guide_only", "In settings I only point — say “show me how …” and click it yourself.")
         view = self._world.look()
-        acted_at: float | None = None
+        since: float | None = None  # when the last step was seen done (acted, or his click seen)
         while True:
             if self._stopped():
-                return end("stopped", f"Stopped after {_count(did)}" if did else "Stopped")
-            if over():
-                return end("limit", f"I stopped after {_count(did)}: " + " · ".join(did))
+                return run.stopped()
+            if self._over(run):
+                return run.limit()
             asked_at = self._clock()
             try:
-                choice = self._pick(goal, view.lines, tuple(did), scene.app, scene.title)
+                choice = self._pick(goal, view.lines, tuple(run.did), scene.app, scene.title)
             except Exception:  # noqa: BLE001 - a model failure ends the task, never the brain
                 _log.warning("task pick failed", exc_info=True)
                 choice = None
-            pick_ms.append((self._clock() - asked_at) * 1000)
-            if acted_at is not None:
-                step_ms.append((self._clock() - acted_at) * 1000)
+            run.pick_ms.append((self._clock() - asked_at) * 1000)
+            if since is not None:
+                run.step_ms.append((self._clock() - since) * 1000)
             if choice is None:
-                return end("failed", GIVE_UP)
+                return run.end("failed", GIVE_UP)
             if choice.done:
-                return end("done", choice.say or "Done")
+                return run.end("done", choice.say or "Done")
             if choice.ask:
-                return end("asked", choice.ask)
-            if over():
-                return end("limit", f"I stopped after {_count(did)}: " + " · ".join(did))
+                return run.end("asked", choice.ask)
+            if self._over(run):
+                return run.limit()
             row = by_number(view.rows, choice.row) if choice.row is not None else None
             if choice.row is not None and row is None:
-                return end("failed", GIVE_UP)
-            if choice.verb == "type" and not said(choice.text, goal):
-                return end("asked", "What should I type there?")
-            if choice.verb == "press" and not keys_allowed(choice.keys, goal):
-                return end("asked", f"Press {choice.keys}? Say it if you want it.")
+                return run.end("failed", GIVE_UP)
+            name = label(row, choice)
             steps = steps_for(row, choice)
+            if self._steer.mode == "do" and guide_only(scene):  # "just do it" said between steps, in settings
+                self._note(ONLY_POINT)
+                self._steer.mode = "guide"
+            if self._steer.mode == "guide":
+                run.guided = True
+                self._progress(name, len(run.did) + 1)
+                if point:
+                    self._world.show(row, name)
+                    return run.end("done", f"There: “{_cut(row.target.name)}”" if row is not None else name)
+                seen = self._guide(run, view, scene, row, name)
+                if seen.what == "stopped":
+                    return run.stopped()
+                if seen.what == "limit":
+                    return run.limit()
+                if seen.what != "do":
+                    if seen.what == "his":
+                        run.did.append(name)
+                        run.kept.extend(steps)
+                    view, scene, since = seen.view, seen.scene, seen.at
+                    continue
+            # do it: Nova acts (from the start, or he said "just do it" while a step was ringed)
+            if choice.verb == "type" and not said(choice.text, goal):
+                return run.end("asked", "What should I type there?")
+            if choice.verb == "press" and not keys_allowed(choice.keys, goal):
+                return run.end("asked", f"Press {choice.keys}? Say it if you want it.")
             for s in steps:
                 here = self._world.where(s)
+                if guide_only(here):
+                    return run.end("guide_only", "That's settings — I only point there. Say “show me how …”.")
                 risk = assess(_risk_step(s), here)
                 if risk is not None and risk.refuse:
-                    return end("failed", risk.reason)
+                    return run.end("failed", risk.reason)
                 question = risk.question if risk is not None and risk.confirm else ""
                 if not question and _presses_blind(s, here):
                     question = f"Press {choice.keys.capitalize()} here? (I couldn't check what it presses)"
                 if question and not self._confirm(question):
-                    return end("declined", "Cancelled")
+                    return run.end("declined", "Cancelled")
             if self._stopped():
-                return end("stopped", f"Stopped after {_count(did)}" if did else "Stopped")
-            name = label(row, choice)
-            self._progress(name, len(did) + 1)
+                return run.stopped()
+            self._progress(name, len(run.did) + 1)
             try:
                 self._world.act(row, choice)
             except ActionError as error:
-                return end("failed", str(error))
-            did.append(name)
-            kept.extend(steps)
-            acted_at = self._clock()
+                return run.end("failed", str(error))
+            run.did.append(name)
+            run.kept.extend(steps)
+            since = self._clock()
             self._settle()
             before, view = view, self._world.look()
             if view.lines == before.lines and not self._changed(before.signature, view.signature):
-                return end("stuck", f"That didn't change anything — stopped at step {len(did)}: {name}.")
+                return run.end("stuck", f"That didn't change anything — stopped at step {len(run.did)}: {name}.")
             scene = self._world.where()
-            if guide_only(scene):
-                return end("guide_only", "That opened settings — I only point there. Say “show me how …”.")
+            if guide_only(scene) and self._steer.mode == "do":
+                return run.end("guide_only", "That opened settings — I only point there. Say “show me how …”.")
+
+    def _over(self, run: _Run) -> bool:
+        limit = GUIDE_MAX_S if run.guided else self._max_s
+        return len(run.did) >= self._max_steps or self._clock() - run.began > limit
+
+    def _guide(self, run: _Run, view: View, scene: Scene, row: Row | None, name: str) -> _Seen:
+        """Ring the row and wait for his own click; the ring follows the window and goes when this returns."""
+        world = self._world
+        try:
+            box = world.show(row, name)
+            base = world.signature()
+            last = world.cursor()
+            shown_at = self._clock()
+            nudged = False
+            while True:
+                now = self._clock()
+                if self._stopped():
+                    return _Seen("stopped", view, scene, now)
+                if self._steer.mode == "do":
+                    if not guide_only(scene):
+                        return _Seen("do", view, scene, now)
+                    self._note(ONLY_POINT)
+                    self._steer.mode = "guide"
+                if now - run.began > GUIDE_MAX_S:
+                    return _Seen("limit", view, scene, now)
+                if not nudged and now - shown_at >= NUDGE_S:
+                    self._note(NUDGE)
+                    nudged = True
+                self._sleep(GUIDE_POLL_S)
+                box = world.show(row, name) or box
+                pixels = world.signature()
+                at = world.cursor()
+                if not self._changed(base, pixels):
+                    last = at
+                    continue
+                seen_at = self._clock()
+                self._settle()
+                after = world.look()
+                moved = world.where()
+                if after.lines == view.lines and moved.focus_name == scene.focus_name:
+                    base, last = after.signature, at  # a hover, a tooltip, a caret: nothing he did
+                    continue
+                if box is None or _inside(box, at, _SLACK) or _inside(box, last, _SLACK):
+                    return _Seen("his", after, moved, seen_at)
+                hit = _under(view.rows, at) or _under(view.rows, last)
+                step = _cut(row.target.name) if row is not None else name
+                self._note(f"That opened “{_cut(hit.target.name)}” — the step was “{step}”" if hit is not None
+                           else f"That wasn't it — the step was “{step}”")
+                return _Seen("wrong", after, moved, seen_at)
+        finally:
+            world.hide()
 
     def _settle(self) -> None:
         """Two equal signature reads 100 ms apart, or 2 s, whichever comes first."""
