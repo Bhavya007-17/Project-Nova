@@ -81,6 +81,7 @@ STEP_SCHEMAS = (
     _step("system", op=_enum(SYSTEM_OPS)),
     _step("open_path", ("folder",), name=_TEXT, folder=_TEXT),
     _step("nova", ("topic",), op=_enum(NOVA_OPS), topic=_enum(HELP_TOPICS)),
+    _step("task", ("point",), goal=_TEXT, mode=_enum(("do", "guide")), point={"type": "boolean"}),
 )
 
 # Required properties come out first, in this order (llama.cpp's schema grammar), then the optional ones.
@@ -104,7 +105,7 @@ kind:
 - clarify: you can't tell which app, site or window he means. Short question + 2-4 short choices.
 - handoff: open-ended work for an AI (write, solve, research, explain, summarize, plan something), or he names Claude or ChatGPT ("ask Claude", "have ChatGPT", "on Claude, ...", "put ... on Claude"). to: claude unless he says ChatGPT. prompt: his words for the job.
 - dictate: he wants to dictate text he hasn't said yet ("take a note", "let me dictate").
-- teach: a task on this computer that none of the actions can do.
+- teach: a job outside the app in front that none of the actions can do.
 - ignore: not a command for Nova. A command asks Nova to do something now. Statements and chat are not commands, even with words like open, close, next, search, page or song in them.
 
 actions:
@@ -142,6 +143,7 @@ camera{}: take a photo with the webcam now (only opening the Camera app is open_
 system{op}: lock | sleep (the computer itself)
 open_path{name,folder}: a file or folder by name. folder: where he says it is (downloads, documents, desktop ...)
 nova{op,topic}: help (what he can say; topic apps | web | screen | system) | again (repeat the last command) | undo (the last thing typed or clicked)
+task{goal,mode,point}: a job in the app in front that takes several clicks and no action above does ("turn on word wrap", "add a page number"). goal: his words for the job. mode: guide when he asks how, or to be shown or walked through; else do. point: true when he only asks where something is
 
 rules:
 - text, query and prompt are copied word for word from "said". Never add, fix, translate or reword them.
@@ -252,7 +254,7 @@ EXAMPLES: tuple[tuple[dict[str, Any], dict[str, Any]], ...] = (
      {"kind": "act", "steps": [{"action": "scroll_to", "description": "the reviews", "element": 1}], "confidence": 0.85}),
     ({"said": "turn on dark mode in fusion", "front": "Autodesk Fusion", "open": ["Autodesk Fusion"],
       "apps": ["Autodesk Fusion"]},
-     {"kind": "teach", "steps": [], "confidence": 0.7}),
+     {"kind": "act", "steps": [{"action": "task", "goal": "turn on dark mode", "mode": "do"}], "confidence": 0.8}),
     ({"said": "yeah I told him we'd open the lab at nine", "front": "Google Chrome", "open": ["Google Chrome"]},
      {"kind": "ignore", "steps": [], "confidence": 0.9}),
     ({"said": "the next video in that playlist is so good", "front": "Google Chrome", "open": ["Google Chrome"],

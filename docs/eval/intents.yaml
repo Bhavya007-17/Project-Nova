@@ -12,6 +12,7 @@
 #   docs_new (a new Google Doc, Stage 07)
 #   pick N [VERB] [to M] · numbers OP · grid · autoscroll OP · doc OP [PAGE] · screenshot [TARGET] · camera
 #   system OP · open_path NAME · nova OP   (Stage 07c)
+#   task [do|guide]   (a job of several clicks, Stage 07d)
 # Negatives: conversation that must not cause an action (asking is fine, acting is not).
 # Every item's screen: Chrome in front, these apps open (an item can set its own `front` / `open`).
 
@@ -650,13 +651,36 @@ positives:
   - say: do that again
     want: nova again
 
+  # --- tasks: several clicks in the app in front (Stage 07d) --------------------------------------------------------
+  - say: turn on word wrap
+    want: task do || click
+    front: Notepad
+  - say: show me how to turn on word wrap
+    want: task guide
+    front: Notepad
+  - say: how do I change the font size here
+    want: task guide
+    front: Notepad
+  - say: walk me through adding a page number
+    want: task guide
+  - say: where is the print setting
+    want: task guide
+  - say: make the brush bigger
+    want: task do || click
+    front: Paint
+    open: [Paint, Google Chrome]
+  - say: just do it
+    want: task do
+  - say: let me do it
+    want: task guide
+
   # --- things Nova can't do yet: "show me?" ----------------------------------------------------------------------
   - say: switch fusion over to the dark theme
-    want: teach || clarify
+    want: task || teach || clarify || open Autodesk Fusion ; task
   - say: mark all my emails as read
-    want: teach || clarify || click
+    want: task || teach || clarify || click
   - say: change my desktop wallpaper
-    want: teach || clarify
+    want: teach || clarify || task
 
 negatives:
   - the homework due friday is brutal
