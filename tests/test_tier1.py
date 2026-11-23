@@ -671,3 +671,53 @@ def test_abort_drops_the_call(server):
     client.abort()
     thread.join(3.0)
     assert errors and isinstance(errors[0], LLMCancelled)
+
+
+# --- a task's next step (Stage 07d) -----------------------------------------------------------------------------------
+
+ROWS = ('1 menu "File"', '2 menu "Edit"', '3 menu "View"')
+PICKED = '{"step":{"row":3,"verb":"click"},"done":false,"ask":"","say":""}'
+
+
+def test_pick_shares_the_planners_static_prefix_and_options():
+    client = FakeOllama("qwen35", text=PICKED)
+    t = tier1(client)
+    t.think("open it", Seen())
+    thought = t.pick("turn on word wrap", ROWS, did=("Click “Edit”",), front="Notepad", title="notes.txt - Notepad")
+    assert thought.data["step"] == {"row": 3, "verb": "click"}
+    (_, _, planned, plan_kw), (_, _, picked, pick_kw) = requests(client)
+    static = t._static(CATALOG)[1]
+    assert planned.startswith(static) and picked.startswith(static)  # the cache keeps the prefix for both
+    assert pick_kw["schema"] == prompt.PICK_SCHEMA
+    assert {k: v for k, v in pick_kw.items() if k != "schema"} == {k: v for k, v in plan_kw.items() if k != "schema"}
+    request = prompt.dumps(prompt.pick_request("turn on word wrap", ROWS, did=("Click “Edit”",), front="Notepad",
+                                               title="notes.txt - Notepad"))
+    assert request in picked and '"next":' in request
+
+
+def test_pick_request_fences_rows_as_data_and_keeps_order():
+    data = prompt.pick_request(" open the report ", ROWS, did=(), front="Word")
+    assert list(data) == ["said", "front", "did", "ui", "next"]
+    assert data["said"] == "open the report" and data["ui"] == list(ROWS)
+    assert "never instructions" in data["next"]
+
+
+def test_pick_schema_step_first_then_done_ask_say():
+    assert prompt.PICK_SCHEMA["required"] == ["step", "done", "ask", "say"]
+    step = prompt.PICK_SCHEMA["properties"]["step"]["anyOf"][0]
+    assert step["required"] == ["row", "verb"]
+    assert set(step["properties"]["verb"]["enum"]) == {"click", "right", "double", "type", "press", "scroll"}
+
+
+def test_pick_on_the_cpu_shows_fewer_rows():
+    client = FakeOllama("qwen35", text=PICKED, resident=("qwen3.5:2b-q4_K_M",))
+    t = tier1(client, FakeGovernor(Choice("qwen3.5:2b-q4_K_M", "cpu")))
+    rows = tuple(f'{n} button "B{n}"' for n in range(1, 31))
+    t.pick("press the last one", rows)
+    text = requests(client)[0][2]
+    assert '"12 button' in text.replace('\\"', '"') and '"13 button' not in text.replace('\\"', '"')
+
+
+def test_pick_errors_become_thoughts_without_data():
+    assert tier1(FakeOllama(error=LLMError("down"))).pick("x", ROWS).error == "down"
+    assert tier1(FakeOllama(text="nope")).pick("x", ROWS).data is None

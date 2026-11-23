@@ -215,9 +215,39 @@ class Tier1:
         """``page``: the ranked page elements, one line each (``nova.chrome.pagemap.llm_rows``), when he points at
         the page. ``before``: a talk session's last steps, oldest first (``Router.before``). ``ui``: the native
         window's rows (``nova.actions.rows``) for click by meaning — same static prefix, so the cache still hits."""
+        catalog = catalog or self._catalog()
+
+        def build(choice: Choice) -> dict[str, Any]:
+            nonlocal page, ui, before
+            listed = [name for name in prompt.relevant_apps(text, catalog, seen.open_apps) if name not in seen.open_apps]
+            if page and choice.device == "cpu":
+                page = page[:CPU_PAGE_ROWS]  # every row is ~20 tokens: the CPU reads them ~10x slower
+            if ui and choice.device == "cpu":
+                ui = ui[:CPU_PAGE_ROWS]  # open menu and dialog rows come first, so the cut keeps them
+            if before and choice.device == "cpu":
+                before = tuple(before)[-CPU_BEFORE:]  # the newest ones: "it" points at the last step
+            return prompt.request(text, front=seen.front, open_apps=seen.open_apps, tab=seen.tab, apps=listed,
+                                  asked=asked, answer=answer, page=page, before=before or None, ui=ui)
+
+        return self._ask(build, prompt.SCHEMA, catalog, choice)
+
+    def pick(self, goal: str, rows: Sequence[str], *, did: Sequence[str] = (), front: str | None = None,
+             title: str | None = None, choice: Choice | None = None) -> Thought:
+        """One step of a task (Stage 07d, ``nova.brain.task``): the goal, the steps done so far and the window's rows
+        -> ``prompt.PICK_SCHEMA``. Same model, same static prefix and options as planning: only the request's own
+        part differs, so the cached prefix stays and the next command doesn't re-read it."""
+
+        def build(choice: Choice) -> dict[str, Any]:
+            lines = list(rows)[:CPU_PAGE_ROWS] if choice.device == "cpu" else list(rows)
+            return prompt.pick_request(goal, lines, did=did, front=front, title=title)
+
+        return self._ask(build, prompt.PICK_SCHEMA, self._catalog(), choice)
+
+    def _ask(self, build: Callable[[Choice], dict[str, Any]], schema: dict[str, Any], catalog: Catalog,
+             choice: Choice | None) -> Thought:
+        """The model the governor picks (loaded first if it's cold), the static prefix + ``build(choice)`` -> JSON."""
         began = time.perf_counter()
         self._cancel.clear()
-        catalog = catalog or self._catalog()
         llm = self._settings()
         warm_ms = 0.0
         try:
@@ -238,22 +268,14 @@ class Tier1:
                 _log.info("LLM loaded for a request: %s on the %s, waited %.0f ms", choice.model,
                           choice.device.upper(), warm_ms)
                 self._on_warmed()
-            listed = [name for name in prompt.relevant_apps(text, catalog, seen.open_apps) if name not in seen.open_apps]
-            if page and choice.device == "cpu":
-                page = page[:CPU_PAGE_ROWS]  # every row is ~20 tokens: the CPU reads them ~10x slower
-            if ui and choice.device == "cpu":
-                ui = ui[:CPU_PAGE_ROWS]  # open menu and dialog rows come first, so the cut keeps them
-            if before and choice.device == "cpu":
-                before = tuple(before)[-CPU_BEFORE:]  # the newest ones: "it" points at the last step
-            request = prompt.request(text, front=seen.front, open_apps=seen.open_apps, tab=seen.tab, apps=listed,
-                                     asked=asked, answer=answer, page=page, before=before or None, ui=ui)
+            request = build(choice)
             if dialect.raw:
                 reply = self._client.generate(
-                    choice.model, static + chatml_turn(prompt.dumps(request), dialect.think_block), schema=prompt.SCHEMA,
+                    choice.model, static + chatml_turn(prompt.dumps(request), dialect.think_block), schema=schema,
                     options=self._options(choice), keep_alive=llm.keep_alive, timeout=llm.timeout_s,
                     num_predict=MAX_TOKENS)
             else:
-                reply = self._client.chat(choice.model, prompt.messages(messages, request), schema=prompt.SCHEMA,
+                reply = self._client.chat(choice.model, prompt.messages(messages, request), schema=schema,
                                           options=self._options(choice), keep_alive=llm.keep_alive,
                                           timeout=llm.timeout_s, num_predict=MAX_TOKENS)
             self._governor.used()

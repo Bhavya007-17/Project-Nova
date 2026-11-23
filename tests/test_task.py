@@ -7,7 +7,7 @@ from nova.actions.native import ActionError
 from nova.actions.rows import Row
 from nova.brain.plan import Step
 from nova.brain.risk import Scene
-from nova.brain.task import Choice, Loop, View, kept_plan, parse
+from nova.brain.task import Choice, Loop, View, keys_allowed, kept_plan, model_picker, parse, said
 
 
 def _row(number: int, name: str, role: str = "menu item") -> Row:
@@ -216,6 +216,29 @@ def test_never_types_into_a_password_field():
     assert result.exit == "failed" and world.acted == []
 
 
+def test_typing_matches_whole_words_only():
+    assert said("cats", "search for cats") and said("for cats", "Search for  cats!")
+    assert not said("at", "search for cats")  # a piece of a word is not something he said
+    assert not said("cats search", "search for cats")
+
+
+def test_keys_he_said_must_be_a_whole_word_too():
+    assert keys_allowed("ctrl+s", "save it with ctrl + s")
+    assert not keys_allowed("s", "save it with ctrl+s")  # "s" is inside "save" and "ctrl+s", never said alone
+    assert keys_allowed("enter", "anything")
+
+
+def test_enter_with_an_unknown_focus_is_confirmed():
+    class Unknown(World):
+        def where(self, s=None):
+            return Scene(app="Notepad", exe="notepad.exe", title="Untitled", focus_known=s is None)
+
+    world = Unknown([MENU_BAR, VIEW_MENU])
+    loop, asked = _loop(world, picker(Choice(verb="press", keys="enter")), answer=False)
+    assert loop.run(WRAP).exit == "declined" and world.acted == []
+    assert asked == ["Press Enter here? (I couldn't check what it presses)"]
+
+
 def test_only_plain_keys_unless_said():
     world = World([MENU_BAR, VIEW_MENU, MENU_BAR])
     result = _loop(world, picker(Choice(verb="press", keys="ctrl+a")))[0].run(WRAP)
@@ -257,6 +280,25 @@ def test_parse_the_models_answer():
     assert parse({"step": {"verb": "press", "keys": "enter"}}) == Choice(verb="press", keys="enter")
     assert parse("nonsense") is None
     assert parse({"done": False, "ask": "", "step": None}) is None
+
+
+def test_model_picker_parses_the_thought_and_maps_errors_to_none():
+    class Thought:
+        def __init__(self, data=None, error=None):
+            self.data, self.error, self.ms = data, error, 120.0
+
+    class Tier1:
+        def __init__(self, thought):
+            self.thought, self.calls = thought, []
+
+        def pick(self, goal, lines, *, did, front, title):
+            self.calls.append((goal, tuple(lines), tuple(did), front, title))
+            return self.thought
+
+    good = Tier1(Thought({"step": {"row": 3, "verb": "click"}, "done": False, "ask": "", "say": ""}))
+    assert model_picker(good)(WRAP, ["3 menu \"View\""], ("x",), "Notepad", "") == Choice(row=3)
+    assert good.calls == [(WRAP, ('3 menu "View"',), ("x",), "Notepad", None)]
+    assert model_picker(Tier1(Thought(error="down")))(WRAP, [], (), "", "") is None
 
 
 def test_progress_reports_each_step():

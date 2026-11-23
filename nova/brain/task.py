@@ -23,7 +23,7 @@ from ..actions import screen
 from ..actions.native import ActionError
 from ..actions.rows import Row, by_number
 from .plan import Plan, Step, act, keys_ok
-from .risk import Scene, assess
+from .risk import ACTIVATES, Scene, assess
 
 _log = logging.getLogger(__name__)
 
@@ -103,6 +103,18 @@ class World(Protocol):
 Picker = Callable[[str, Sequence[str], Sequence[str], str, str], Choice | None]  # goal, lines, did, app, title
 
 
+def model_picker(tier1: Any) -> Picker:
+    """The planner model as a Picker (``Tier1.pick``): no answer, an error or an unusable one -> None."""
+
+    def pick(goal: str, lines: Sequence[str], did: Sequence[str], app: str, title: str) -> Choice | None:
+        thought = tier1.pick(goal, lines, did=did, front=app or None, title=title or None)
+        choice = parse(thought.data) if thought.data is not None else None
+        _log.info("task pick %.0f ms: %s%s", thought.ms, choice, f" ({thought.error})" if thought.error else "")
+        return choice
+
+    return pick
+
+
 @dataclass(frozen=True)
 class Result:
     exit: str  # done | stuck | limit | stopped | failed | asked | declined | guide_only
@@ -125,21 +137,29 @@ def guide_only(scene: Scene) -> bool:
     return scene.exe.lower() in GUIDE_ONLY
 
 
-def _norm(text: str) -> str:
-    return " ".join(text.casefold().split())
+_EDGE = " .,!?;:\"'“”‘’()"
+
+
+def _words(text: str) -> list[str]:
+    return [w for w in (w.strip(_EDGE) for w in text.casefold().split()) if w]
+
+
+def _within(part: list[str], whole: list[str]) -> bool:
+    n = len(part)
+    return n > 0 and any(whole[i:i + n] == part for i in range(len(whole) - n + 1))
 
 
 def said(text: str, goal: str) -> bool:
-    """Typing: only words he said (SPEC §7.4 payload rule)."""
-    text = _norm(text).strip(" .,!?\"'“”")
-    return bool(text) and text in _norm(goal)
+    """Typing: only words he said, whole words in his order (SPEC §7.4 payload rule)."""
+    return _within(_words(text), _words(goal))
 
 
 def keys_allowed(keys: str, goal: str) -> bool:
+    """Plain navigation keys, or a chord he said as a word of its own ("ctrl+s", "ctrl + s")."""
     keys = keys.lower().replace(" ", "")
     if not keys_ok(keys):
         return False
-    return keys in PLAIN_KEYS or keys in _norm(goal).replace(" + ", "+")
+    return keys in PLAIN_KEYS or keys in _words(" ".join(goal.split()).replace(" + ", "+"))
 
 
 def _cut(text: str, limit: int = 24) -> str:
@@ -185,6 +205,11 @@ def steps_for(row: Row | None, choice: Choice) -> tuple[Step, ...]:
 def _risk_step(s: Step) -> Step:
     """Risk judges what gets clicked by its own name."""
     return Step(s.action, {**s.args, "label": s.get("name")}) if s.action == "ui_click" else s
+
+
+def _presses_blind(s: Step, scene: Scene) -> bool:
+    """The model chose Enter / Space and UI Automation couldn't say what's focused: it might be a "Delete"."""
+    return s.action == "press" and str(s.get("keys", "")).lower() in ACTIVATES and not scene.focus_known
 
 
 class Loop:
@@ -255,10 +280,14 @@ class Loop:
                 return end("asked", f"Press {choice.keys}? Say it if you want it.")
             steps = steps_for(row, choice)
             for s in steps:
-                risk = assess(_risk_step(s), self._world.where(s))
+                here = self._world.where(s)
+                risk = assess(_risk_step(s), here)
                 if risk is not None and risk.refuse:
                     return end("failed", risk.reason)
-                if risk is not None and risk.confirm and not self._confirm(risk.question):
+                question = risk.question if risk is not None and risk.confirm else ""
+                if not question and _presses_blind(s, here):
+                    question = f"Press {choice.keys.capitalize()} here? (I couldn't check what it presses)"
+                if question and not self._confirm(question):
                     return end("declined", "Cancelled")
             if self._stopped():
                 return end("stopped", f"Stopped after {_count(did)}" if did else "Stopped")
