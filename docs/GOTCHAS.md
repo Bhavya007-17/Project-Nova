@@ -175,6 +175,16 @@ memories aren't shared, this file is.
   (Claude Code) retitles the window but not the tab, so title and tab name can share no word. "close this" /
   "close it" closes the tab in such an app (and in a browser); "close this window" / "quit this" close the window.
 
+## Guide + loop (07d)
+- **Click by meaning costs ~12 tokens a row, read on top of the cached planner prefix:** 20 / 40 / 60 rows =
+  230 / 482 / 742 prompt tokens, 0.82–0.88 / 0.92–1.13 / 1.11–1.17 s on the RTX (qwen3.5:4b through llama-server,
+  2026-11-22, synthetic Notepad rows, 12 of 12 right picks). Answer decoding is a flat ~0.63 s; row reading grows.
+- **The model's confidence on a pick is the few-shot examples' number** (0.85 on all 12, right or not). The 0.7 gate
+  (`pointing.SURE`) only catches the model saying it found nothing; a wrong row comes back just as sure. Read the
+  resolved row's real name for the risk check (`label`), never the words he said.
+- **The `auto` / `llama-server` runtime still needs Ollama running:** the GGUF path comes from `ollama show`. With
+  Ollama down every call fails after ~2 s with "Ollama isn't answering" even though llama-server would serve it.
+
 ## Chrome extension
 - **Branded Chrome 137+ ignores `--load-extension`**: loading `extension/` unpacked is a one-time manual step.
   Chrome for Testing (Playwright's copy) still honours it (+ `--disable-features=DisableLoadExtensionCommandLineSwitch`,
