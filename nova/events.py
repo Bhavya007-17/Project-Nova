@@ -383,6 +383,22 @@ class Guiding:
 
 
 @dataclass(frozen=True)
+class TaskRunning:
+    """A task (Stage 07d) runs in this mode (do | guide), or ended (""): while it runs, "just do it" / "next" /
+    "where?" steer it instead of queueing or interrupting."""
+
+    mode: str
+
+
+@dataclass(frozen=True)
+class TaskSteered:
+    """He steered the running task by voice: do | guide | next | where."""
+
+    what: str
+    at: float
+
+
+@dataclass(frozen=True)
 class SteadyScroll:
     """Steady scrolling started / stopped (the gate lets a bare "stop" through while it runs)."""
 

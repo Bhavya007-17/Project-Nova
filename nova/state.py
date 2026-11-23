@@ -21,7 +21,7 @@ from dataclasses import dataclass, replace
 
 from .clauses import split as split_clauses
 from .dictation.rules import split_stop
-from .gate import Addressing, Decision, Env, decide, is_stop, strip_wake
+from .gate import Addressing, Decision, Env, decide, is_stop, steers, strip_wake
 from .keys import Cancel, DoubleTap, Press, Release
 
 
@@ -212,6 +212,15 @@ class Queued:
 
 
 @dataclass(frozen=True)
+class Steered:
+    """Said while a task runs, and only a steer for it (gate.steers): do | guide | next | where. Not a command: it
+    neither queues nor interrupts; the task takes it."""
+
+    what: str
+    utterance: int
+
+
+@dataclass(frozen=True)
 class Dropped:
     """A queued command that will not run. stale: it waited too long (the island says so)."""
 
@@ -286,7 +295,7 @@ class Skipped:
 
 Effect = (
     Transition | EndUtterance | DropUtterance | Preload | Command | Queued | Dropped | Ignored | Woke | Answer
-    | Dictated | Dictation | Cancelled | PassthroughEnded | TalkEvent | Skipped
+    | Dictated | Dictation | Cancelled | PassthroughEnded | TalkEvent | Skipped | Steered
 )
 
 
@@ -469,6 +478,15 @@ def addressing(m: Machine, utterance: int, now: float) -> Addressing:
         working=working,
         talk=said.talk if said is not None else m.talk is not None,  # judged by when he began, like follow_up
     )
+
+
+def _steer(e: Heard) -> str | None:
+    """A steer for the running task: a mode switch always, "next" / "where?" only while it guides. Over the speakers
+    only with the name (an ad's "just do it" must not take over his guide)."""
+    if e.env.speakers and not (e.env.wake.enabled and strip_wake(e.text, e.env.wake) is not None):
+        return None
+    word = steers(e.text, e.env.wake)
+    return word if word in ("do", "guide") or (word and e.env.task == "guide") else None
 
 
 def _working(m: Machine) -> bool:
@@ -893,6 +911,10 @@ def _heard(m: Machine, e: Heard) -> Step:
         heard = e.text.strip()
         return _idle(m, "stopped", Cancelled("stop"),
                      Ignored(Decision(False, "stop", heard, heard, "stopped the running command"), e.utterance))
+    if working and e.env.task and (word := _steer(e)):  # "just do it" / "next" / "where?": the task takes it
+        heard = e.text.strip()
+        steered = Decision(False, "steer", heard, heard, f"steered the task: {word}", talk=m.talk is not None)
+        return Step(m, (Ignored(steered, e.utterance), Steered(word, e.utterance)))
     if _talk_final(m, e):
         return _talk_heard(m, e)
     decision = decide(e.text, addressing(m, e.utterance, e.at), e.env)

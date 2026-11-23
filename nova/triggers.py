@@ -52,6 +52,8 @@ from .events import (
     StateChanged,
     TalkChanged,
     TalkEndRequested,
+    TaskRunning,
+    TaskSteered,
 )
 from .gate import Decision, Env, NoResolver, Resolver, WakeName, strip_wake
 from .keys import Cancel, Gestures, TriggerEvent, TriggerKeys, parse_chord
@@ -77,6 +79,7 @@ from .state import (
     Queued,
     Skipped,
     Sleep,
+    Steered,
     SpeechEnd,
     SpeechStart,
     State,
@@ -122,7 +125,7 @@ _STOP = object()
 _SUBSCRIBED = (
     SpeechStarted, SpeechEnded, PartialTranscript, FinalTranscript, PowerChanged, ConfigChanged,
     AlwaysListeningChanged, CommandFinished, BrainProgress, IslandAction, SleepRequested, TalkEndRequested,
-    MarksShown, MarksHidden, SteadyScroll,
+    MarksShown, MarksHidden, SteadyScroll, TaskRunning,
 )
 _STATES = {state.value: state for state in State}
 
@@ -165,6 +168,7 @@ class Triggers:
         self._always = settings.triggers.always_listening
         self._marks_up = False  # numbers / a grid are on screen (Esc hides them first)
         self._scrolling = False  # steady scrolling runs (a bare "stop" reaches it)
+        self._task = ""  # a task runs in this mode: its steers reach it (gate.steers)
         self._wake = WakeName.of(settings.wake_name)
         self._apply_settings(settings, first=True)
         # Per-utterance detector notes (controller thread only).
@@ -310,6 +314,8 @@ class Triggers:
                 self._keys.marks_up = self._marks_up
         elif isinstance(item, SteadyScroll):
             self._scrolling = item.on
+        elif isinstance(item, TaskRunning):
+            self._task = item.mode
 
     def _answer_key(self, event: TriggerEvent, now: float) -> None:
         """Enter / 1-4 from the hook while the island asks: the same as clicking it."""
@@ -383,7 +389,7 @@ class Triggers:
         return Env(
             self._wake, self._always, self._seen(),
             mic_busy=", ".join(recording) or None, speakers=speakers_playing(peaks),
-            numbers=self._marks_up, scrolling=self._scrolling,
+            numbers=self._marks_up, scrolling=self._scrolling, task=self._task,
         )
 
     def _seen(self) -> Resolver:
@@ -455,6 +461,9 @@ class Triggers:
             bus.publish(TalkChanged(effect.what, effect.why, effect.closes_at, now))
         elif isinstance(effect, Skipped):
             bus.publish(ClausesSkipped(effect.texts, effect.why, now))
+        elif isinstance(effect, Steered):
+            _log.info("task steered: %s", effect.what)
+            bus.publish(TaskSteered(effect.what, now))
 
     def _gated(self, effect: Command | Ignored | Woke, now: float) -> None:
         d = effect.decision

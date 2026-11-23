@@ -25,7 +25,7 @@ from ..actions.catalog import Catalog, Match, Target, sounds_like
 from ..actions.marks import parse_number
 from ..chrome import canvas
 from ..clauses import is_acknowledgement
-from ..gate import Resolved
+from ..gate import DO_IT, LET_ME, Resolved
 from .plan import Plan, PlanError, Step, check, dictate_after_docs, step
 
 _log = logging.getLogger(__name__)
@@ -1026,12 +1026,7 @@ _WHERE_STARTS = sorted(
      ("where", "would", "i", "find")],
     key=len, reverse=True,
 )
-_DO_IT = frozenset({("just", "do", "it"), ("do", "it"), ("you", "do", "it"), ("go", "ahead", "and", "do", "it"),
-                    ("do", "it", "yourself"), ("just", "do", "it", "yourself"), ("you", "do", "it", "then"),
-                    ("just", "finish", "it"), ("you", "finish", "it")})
-_LET_ME = frozenset({("let", "me", "do", "it"), ("ill", "do", "it"), ("ill", "do", "it", "myself"),
-                     ("let", "me", "do", "it", "myself"), ("let", "me", "try"), ("show", "me"), ("show", "me", "how"),
-                     ("show", "me", "again"), ("show", "me", "how", "again"), ("walk", "me", "through", "it")})
+_DO_IT, _LET_ME = DO_IT, LET_ME  # also steer a running task (gate.steers)
 _POINTS_BACK = frozenset({("it",), ("that",), ("this",), ("it", "again"), ("that", "again")})
 # "… here" / "… in this app": the job is in the window in front, so "how do I …" is a guide, not a question for Claude
 _HERE_ENDS = sorted(

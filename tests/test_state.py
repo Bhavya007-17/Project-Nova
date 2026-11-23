@@ -43,6 +43,7 @@ from nova.state import (
     Progress,
     Queued,
     Skipped,
+    Steered,
     Sleep,
     SpeechEnd,
     SpeechStart,
@@ -386,6 +387,48 @@ def test_stop_while_busy_aborts_the_action_and_clears_the_queue(said):
     assert not run.has(Command)
     run(Done(True, 2.0))  # a late result of the stopped command changes nothing
     assert run.state is State.IDLE and not run.has(Command)
+
+
+def guiding(utterance, text, at, mode="guide"):
+    return Heard(utterance, text, at, replace(ENV, task=mode))
+
+
+@pytest.mark.parametrize(("said", "word"), [("just do it", "do"), ("Nova, do it", "do"), ("let me do it", "guide"),
+                                            ("next", "next"), ("where is it?", "where")])
+def test_a_steer_while_a_task_runs_reaches_the_task_and_nothing_else(said, word):
+    run = busy()(guiding(2, said, 1.5))
+    assert run.has(Steered) == [Steered(word, 2)]
+    assert run.state is State.ACTING and not run.has(Cancelled) and not run.has(Queued) and not run.has(Command)
+    assert run.has(Ignored)[0].decision.via == "steer"
+
+
+def test_next_and_where_steer_only_a_guide():
+    run = busy()(guiding(2, "next", 1.5, mode="do"))
+    assert not run.has(Steered)
+    run = busy()(guiding(2, "show me", 1.5, mode="do"))
+    assert run.has(Steered) == [Steered("guide", 2)]
+
+
+def test_over_the_speakers_a_steer_needs_the_name():
+    loud = replace(ENV, task="guide", speakers=True)
+    assert not busy()(Heard(2, "just do it", 1.5, loud)).has(Steered)
+    assert busy()(Heard(2, "Nova, just do it", 1.5, loud)).has(Steered) == [Steered("do", 2)]
+
+
+def test_without_a_task_the_same_words_are_ordinary():
+    run = busy()(heard(2, "just do it", 1.5))
+    assert not run.has(Steered)
+
+
+def test_in_a_talk_a_steer_neither_queues_nor_interrupts():
+    run = talking(1.0)
+    say(run, 1, "show me how to turn on word wrap", 2.0)
+    run(Progress(State.ACTING, 3.1))
+    run(SpeechStart(2, 4.0), SpeechEnd(2, "silence", 4.6), guiding(2, "Nova, next", 4.8))
+    assert run.has(Steered) == [Steered("next", 2)]
+    assert run.state is State.ACTING and not run.has(Cancelled) and not run.has(Queued) and run.m.talk is not None
+    run(SpeechStart(3, 5.0), SpeechEnd(3, "silence", 5.6), guiding(3, "and then open spotify", 5.8))
+    assert run.has(Queued) and not run.has(Steered)  # anything else still waits its turn
 
 
 def test_a_sentence_with_stop_in_it_is_not_a_stop():
