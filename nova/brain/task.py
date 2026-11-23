@@ -379,6 +379,10 @@ class Loop:
                     continue
             run.clicked_at = None
             # do it: Nova acts (from the start, or he said "just do it" while a step was ringed)
+            if row is not None and choice.verb in _ON_ROW and run.did and run.did[-1] == name:
+                # the small model repeats its last step; a toggle clicked again flips back — ask, "no" = done
+                if not self._confirm(f"“{_cut(row.target.name)}” again? It may be done already."):
+                    return run.end("done", "Done")
             if choice.verb == "type" and not said(choice.text, goal):
                 return run.end("asked", "What should I type there?")
             if choice.verb == "press" and not keys_allowed(choice.keys, goal):

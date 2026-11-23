@@ -168,6 +168,30 @@ def test_asked_passes_the_question_on():
     assert result.exit == "asked" and result.detail == "Which file?"
 
 
+def test_the_same_click_twice_in_a_row_asks_first():
+    # a toggle clicked again flips back: the model repeating its last step asks, and "no" ends it as done
+    world = World([VIEW_MENU, VIEW_MENU, VIEW_MENU])
+    loop, asked = _loop(world, picker(Choice(row=3), Choice(row=3)), answer=False)
+    result = loop.run(WRAP)
+    assert asked == ["“Word wrap” again? It may be done already."]
+    assert result.exit == "done" and [a[0] for a in world.acted] == ["Word wrap"]
+    assert result.did == ("Click “Word wrap”",)
+
+
+def test_the_same_click_again_goes_ahead_on_yes():
+    world = World([VIEW_MENU, VIEW_MENU, VIEW_MENU])
+    pick = picker(Choice(row=3), Choice(row=3), Choice(done=True))
+    loop, asked = _loop(world, pick, answer=True)
+    assert loop.run(WRAP).exit == "done" and len(asked) == 1 and len(world.acted) == 2
+
+
+def test_a_different_verb_on_the_same_row_is_not_a_repeat():
+    world = World([VIEW_MENU, VIEW_MENU, VIEW_MENU])
+    pick = picker(Choice(row=3), Choice(row=3, verb="right"), Choice(done=True))
+    loop, asked = _loop(world, pick, answer=False)
+    assert loop.run(WRAP).exit == "done" and asked == [] and len(world.acted) == 2
+
+
 def test_risky_step_confirms_and_declined_stops():
     rows = (_row(1, "Send", "button"),)
     world = World([rows, MENU_BAR])
