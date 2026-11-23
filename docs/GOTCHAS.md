@@ -199,7 +199,18 @@ memories aren't shared, this file is.
   name ("Nova, next"). The Narrator publishes `TaskRunning` on every step, since the mode can change mid-task.
 - **`nova eval --tasks` rows are hand-built** (`docs/eval/tasks.yaml`, `source: hand-built`) from Windows 11 /
   Chrome layouts in the row format, until someone records them with `nova rows --dump --title …` (takes focus).
-  Each step is scored on its own, with the wanted steps before it as history.
+  Each step is scored on its own, with the wanted steps before it as history. First full run (qwen3.5:4b, RTX,
+  2026-11-23): 50 / 103 steps (48.5 %), 5 / 30 whole tasks, pick p50 655 / p95 888 ms. Most misses are "done" a
+  step or two early and Settings paths (System → Display → Night light) the model doesn't know.
+- **The JSON-schema grammar makes the model write every string the schema offers.** A required `ask` won every
+  pick (5.8 % of eval steps right); an optional free `text` on a click echoed the instructions back. The pick schema
+  is one of three exclusive shapes — `{step}`, `{done, say}`, `{ask}` — and text exists only on type / scroll. The
+  first pick (nothing in "did") has no `done` shape: the model said done on 21 of 30 first steps (35.9 → 45.6 %).
+- **Pick wording moves the 4B model a lot, in odd ways** (same 103 steps, 2026-11-23): "a verb (type: …" made it
+  type everywhere; "right" alone read as "correct" (spell out "right-click"); naming `"step": null` in the rule made
+  it say done early (32 %). Measure every wording change with `nova eval --tasks`; don't reason about it.
+- **qwen3.5:4b repeats the last step in "did" and misses "done"** at the last step of a task (clicks Bluetooth
+  again, which flips it back). The loop asks “X” again? before repeating its last click; "no" ends the task as done.
 
 ## Chrome extension
 - **Branded Chrome 137+ ignores `--load-extension`**: loading `extension/` unpacked is a one-time manual step.
