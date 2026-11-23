@@ -184,6 +184,22 @@ memories aren't shared, this file is.
   resolved row's real name for the risk check (`label`), never the words he said.
 - **The `auto` / `llama-server` runtime still needs Ollama running:** the GGUF path comes from `ollama show`. With
   Ollama down every call fails after ~2 s with "Ollama isn't answering" even though llama-server would serve it.
+- **The task loop's pick rule lives in the request (`prompt.pick_request`'s `next`), not the system prompt:** the
+  system prompt stays the planner's, so plans and picks share one cached prefix. A task step adds ~90 prompt tokens.
+- **Tier 0 looks for a task before it splits clauses** ("turn on word wrap and zoom in" is one goal, not two plans).
+  "how do I …" with no app named goes to Tier 1; "where's … on maps" stays a search, not a point. Tier 1 turns
+  some chatter into a task goal: watch `nova eval`'s misses for it.
+- **Guide mode can't hook the user's click:** a step counts as done when the rows or the focus change *and* the
+  cursor is inside the ring's box. Hover alone never counts (menus open on hover). Enter / Space don't move the
+  cursor: ask UIA for the focused control instead. A key press while Nova is ACTING supersedes the step (he took over).
+- **The ring is its own overlay layer, not the island's window:** it never takes focus and the island's hit-test
+  region stays the pill. "Where is X" leaves it up `POINT_S` (5 s); the next task takes it down first.
+- **Steering a running task by voice** ("just do it", "let me do it", "next", "where?") goes through `gate.steers` with
+  `Env.task` set. Check Ignored before Steered, or stray speech steers. Heard over the speakers, a steer needs the
+  name ("Nova, next"). The Narrator publishes `TaskRunning` on every step, since the mode can change mid-task.
+- **`nova eval --tasks` rows are hand-built** (`docs/eval/tasks.yaml`, `source: hand-built`) from Windows 11 /
+  Chrome layouts in the row format, until someone records them with `nova rows --dump --title …` (takes focus).
+  Each step is scored on its own, with the wanted steps before it as history.
 
 ## Chrome extension
 - **Branded Chrome 137+ ignores `--load-extension`**: loading `extension/` unpacked is a one-time manual step.
