@@ -149,6 +149,19 @@ def test_a_chromium_window_with_few_buttons_waits_at_most_cold_wait():
     assert len(pointer.gather(chromium)) == 3 and 2 <= focus.generation <= 4
 
 
+def test_rows_read_uia_and_ocr_only_when_it_names_few():
+    ocr_asked: list = []
+    focus = FakeFocus([button(i, f"B{i}", (110, 110 + i * 30, 200, 130 + i * 30)) for i in range(12)])
+    pointer = Pointer(focus, ocr_lines=lambda rect: ocr_asked.append(rect) or [], monitor_for=lambda hwnd: MON,
+                      frame=lambda hwnd: FRAME)
+    out = pointer.rows(WIN)
+    assert len(out) == 12 and not ocr_asked and out[0].target.ref[0] == focus.generation
+    few = Pointer(FakeFocus([button(0, "OK", (110, 110, 150, 130))]),
+                  ocr_lines=lambda rect: [Target(Box(300, 300, 400, 320), "Export", "text", "ocr")],
+                  monitor_for=lambda hwnd: MON, frame=lambda hwnd: FRAME)
+    assert [r.text for r in few.rows(WIN)] == ['1 button "OK"', '2 text "Export"']
+
+
 def test_ocr_lines_get_numbers_too():
     pointer, _, _ = make(ROW, lines=[Target(Box(600, 300, 700, 320), "Fit to width", "text", "ocr")])
     pointer.show(WIN)
@@ -370,6 +383,69 @@ def test_no_match_numbers_everything_or_shows_the_grid():
     assert empty.locate(WIN, "frobnicate").method == "grid"
     pointer.hide()
     empty.hide()
+
+
+# --- click by meaning (Stage 07d): the model reads the rows only when the name misses or ties ---------------------
+
+class Meaning:
+    def __init__(self, answer=None, error=None):
+        self.answer, self.error, self.calls = answer, error, []
+
+    def __call__(self, name, lines):
+        self.calls.append((name, list(lines)))
+        if self.error:
+            raise self.error
+        return self.answer
+
+
+def test_a_name_that_matches_never_asks_the_model():
+    pointer, _, _ = make(ROW)
+    pointer.meaning = Meaning((3, 0.9))
+    assert pointer.locate(WIN, "open").target.name == "Open"
+    assert pointer.meaning.calls == []
+
+
+def test_no_match_asks_the_model_and_a_sure_row_is_found():
+    pointer, _, events = make([text(9, "Delete this file?")] + ROW)
+    pointer.meaning = Meaning((2, 0.85))
+    found = pointer.locate(WIN, "the one that loads a file")
+    assert found.target.name == "Open" and found.target.source == "uia"
+    assert found.dialog == "Delete this file?"  # the risk check still reads the window
+    name, lines = pointer.meaning.calls[0]
+    assert name == "the one that loads a file" and lines[:2] == ['1 button "Save"', '2 button "Open"']
+    assert shown(events) == []
+
+
+def test_a_tie_asks_the_model_and_takes_only_one_of_the_tied():
+    two = [button(0, "Save", (200, 200, 260, 230)), button(1, "Save", (200, 400, 260, 430)),
+           button(2, "Open", (300, 200, 360, 230))]
+    pointer, _, events = make(two)
+    pointer.meaning = Meaning((3, 0.9))  # row 3 is the lower Save
+    assert pointer.locate(WIN, "save").target.box == Box(200, 400, 260, 430)
+
+    pointer.meaning = Meaning((2, 0.95))  # Open: not one of the tied, so ask
+    outcome = pointer.locate(WIN, "save")
+    assert outcome.method == "numbers" and len(shown(events)[-1].tags) == 2
+    pointer.hide()
+
+
+def test_an_unsure_pick_puts_at_most_three_numbers_up():
+    pointer, _, events = make(ROW)
+    pointer.meaning = Meaning((3, 0.5))
+    outcome = pointer.locate(WIN, "the one that quits")
+    assert outcome.method == "numbers" and "Close" in outcome.detail
+    assert [box for _, box in shown(events)[-1].tags] == [(400, 200, 460, 230)]
+    pointer.hide()
+
+
+def test_no_answer_a_failure_or_a_bad_number_keeps_the_old_way():
+    for meaning in (Meaning(None), Meaning(error=RuntimeError("model gone")), Meaning((7, 0.99))):
+        pointer, _, events = make(ROW)
+        pointer.meaning = meaning
+        outcome = pointer.locate(WIN, "frobnicate")
+        assert outcome.method == "numbers" and "don't see" in outcome.detail
+        assert len(shown(events)[-1].tags) == 3
+        pointer.hide()
 
 
 # --- through the hands --------------------------------------------------------------------------------------------

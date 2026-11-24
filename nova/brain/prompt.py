@@ -69,7 +69,8 @@ STEP_SCHEMAS = (
     _step("dictation", op=_enum(("start", "stop", "paste"))),
     _step("docs_new"),
     _step("listening", op=_enum(("sleep", "wake", "end_session"))),
-    _step("ui_click", ("button", "count"), name=_TEXT, button=_enum(BUTTONS), count={"type": "integer"}),
+    _step("ui_click", ("element", "button", "count"), name=_TEXT, element={"type": "integer"}, button=_enum(BUTTONS),
+          count={"type": "integer"}),
     _step("numbers", ("scope",), op=_enum(NUMBERS_OPS), scope=_enum(SCOPES)),
     _step("grid", ("scope",), scope=_enum(SCOPES)),
     _step("pick", ("verb", "to"), n={"type": "integer"}, verb=_enum(CLICK_VERBS), to={"type": "integer"}),
@@ -130,7 +131,7 @@ canvas_item_text{item}: what an assignment on Canvas says (its instructions)
 dictation{op}: start | stop | paste (type his last dictation again)
 docs_new{}: a new blank Google Doc, only when he names a Google Doc or Docs; what he wants written in it: a type_text step after it
 listening{op}: sleep (you stop listening) | wake | end_session (he's done talking to you: "that's all", "we're done")
-ui_click{name,button,count}: click a button, link, file, folder or menu item by its name, in any app. button: right | middle | hover (point at it). count: 2 to double-click
+ui_click{name,element,button,count}: click a button, link, file, folder or menu item by its name, in any app. element: its number in "ui", if listed. button: right | middle | hover (point at it). count: 2 to double-click
 numbers{op,scope}: numbered tags on what he can click: show | hide | more (smaller things too). scope: here (this window) | everywhere (the screen)
 grid{scope}: a numbered grid, to point anywhere
 pick{n,verb,to}: the thing with tag n: verb click | right | double | middle | hover; to: drag it onto tag to
@@ -152,6 +153,7 @@ rules:
 - Never make up an app, site or text he didn't mention. Not sure which app or site: clarify.
 - "asked" and "answer": you asked him something and this is his answer; now plan it.
 - "page": what's on the web page in front, one per line: number, role, name, [its part of the page], text beside it. For page_click / page_fill / scroll_to give the number he means as element; not listed: the description only.
+- "ui": the controls of the window in front, one per line: number, role, "name", on/off, (where it sits). He may call one by what it does, not its name: give its number as element. Not sure which: lower confidence.
 - Homework, assignments, quizzes and what's due are on Canvas (canvas_due, canvas_open_item), even when "page" is shown.
 - "before": what you just did for him, oldest first ("said: result"). It's done: never repeat, redo or continue it unless "said" asks for that now. It only tells what "there", "it", "that", "this new note" point at. Nothing they could point at: clarify. "said" asks for nothing new: ignore.
 """
@@ -234,6 +236,15 @@ EXAMPLES: tuple[tuple[dict[str, Any], dict[str, Any]], ...] = (
      {"kind": "act", "steps": [{"action": "page_click", "description": "sign up", "element": 1}], "confidence": 0.85}),
     ({"said": "double click on the budget folder", "front": "File Explorer", "open": ["File Explorer", "Google Chrome"]},
      {"kind": "act", "steps": [{"action": "ui_click", "name": "the budget folder", "count": 2}], "confidence": 0.9}),
+    ({"said": "click the thing that wraps the lines", "front": "Notepad", "open": ["Notepad"],
+      "ui": ['1 menu item "Zoom" (View menu)', '2 menu item "Status bar" on (View menu)',
+             '3 menu item "Word wrap" off (View menu)']},
+     {"kind": "act", "steps": [{"action": "ui_click", "name": "the thing that wraps the lines", "element": 3}],
+      "confidence": 0.85}),
+    ({"said": "click the one that starts a new file", "front": "Notepad", "open": ["Notepad"],
+      "ui": ['1 tab item "notes.txt"', '2 button "Add New Tab"', '3 menu item "File"', '4 button "Settings"']},
+     {"kind": "act", "steps": [{"action": "ui_click", "name": "the one that starts a new file", "element": 2}],
+      "confidence": 0.8}),
     ({"said": "jump to page forty two", "front": "Google Chrome", "open": ["Google Chrome"], "tab": "lecture7.pdf"},
      {"kind": "act", "steps": [{"action": "doc", "op": "goto_page", "page": 42}], "confidence": 0.9}),
     ({"said": "take me down to the reviews", "front": "Google Chrome", "open": ["Google Chrome"],
@@ -304,8 +315,10 @@ def relevant_apps(text: str, catalog: Catalog, running: Iterable[str] = (), limi
 
 def request(text: str, *, front: str | None, open_apps: Sequence[str], tab: str | None,
             apps: Sequence[str], asked: str | None = None, answer: str | None = None,
-            page: Sequence[str] | None = None, before: Sequence[str] | None = None) -> dict[str, Any]:
-    """``before``: a talk session's last steps ("said: result", oldest first); only given inside a session."""
+            page: Sequence[str] | None = None, before: Sequence[str] | None = None,
+            ui: Sequence[str] | None = None) -> dict[str, Any]:
+    """``before``: a talk session's last steps ("said: result", oldest first); only given inside a session. ``ui``:
+    the native window's rows (``nova.actions.rows``), when click-by-name found nothing or a tie."""
     data: dict[str, Any] = {"said": text.strip()}
     if front:
         data["front"] = front
@@ -319,6 +332,8 @@ def request(text: str, *, front: str | None, open_apps: Sequence[str], tab: str 
         data["apps"] = list(apps)
     if page:
         data["page"] = list(page)
+    if ui:
+        data["ui"] = list(ui)
     if asked:
         data["asked"] = asked
         data["answer"] = answer or ""

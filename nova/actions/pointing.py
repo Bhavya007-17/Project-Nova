@@ -18,6 +18,7 @@ from dataclasses import dataclass
 
 from ..events import MarksHidden, MarksShown
 from . import marks, native, screen, uitree
+from . import rows as rows_
 from .apps import Outcome
 from .marks import Box, Mark, Target
 from .native import ActionError, Win
@@ -31,6 +32,11 @@ DIALOG_TEXT = 300  # characters of the window's own text kept for the risk check
 _BUTTONS = {"click": ("left", 1), "right": ("right", 1), "double": ("left", 2), "middle": ("middle", 1)}
 _DONE = {"click": "Clicked", "right": "Right-clicked", "double": "Double-clicked", "middle": "Middle-clicked"}
 VERBS = frozenset(_BUTTONS) | {"hover"}
+SURE = 0.7  # the model's confidence in one row before Nova clicks it without asking (SPEC §7.4)
+MEANING_ASK = 3  # unsure: numbers on at most this many rows
+
+# (what he called it, the rows one per line) -> (row number, confidence), or None: no idea / no model
+Meaning = Callable[[str, Sequence[str]], "tuple[int, float] | None"]
 
 
 @dataclass(frozen=True)
@@ -103,6 +109,7 @@ class Pointer:
         self._texts: list[str] = []  # the window's own text from the last snapshot
         self._timer: threading.Timer | None = None
         self._showing = 0  # bumps with every showing: a stale timer must not hide a newer one
+        self.meaning: Meaning | None = None  # click by meaning (Stage 07d): set once Tier 1 exists
 
     # --- what's showing ---------------------------------------------------------------------------------------
 
@@ -123,14 +130,29 @@ class Pointer:
     # --- gathering -------------------------------------------------------------------------------------------
 
     def _elements(self, win: Win) -> tuple[list[Target], list[str]]:
+        found, texts, _ = self._snapshot(win)
+        return found, texts
+
+    def _snapshot(self, win: Win) -> tuple[list[Target], list[str], list[uitree.Element]]:
         if self._focus is None:
-            return [], []
+            return [], [], []
         elements = uitree.warm_snapshot(self._focus, win, self._cold_wait)
         generation = getattr(self._focus, "generation", 0)
         found = [Target(Box(*e.rect), e.name, e.role, "uia", (generation, e.index, e.patterns))
                  for e in elements if e.clickable]
         texts = [e.name for e in elements if e.role == "text" and e.name]
-        return found, texts
+        return found, texts, elements
+
+    def rows(self, win: Win) -> tuple[rows_.Row, ...]:
+        """The window as numbered rows for the model (Stage 07d): one UIA snapshot; OCR only when it names few."""
+        elements = uitree.warm_snapshot(self._focus, win, self._cold_wait) if self._focus is not None else []
+        generation = getattr(self._focus, "generation", 0)
+        first = rows_.focus_area(elements)
+        found = rows_.build(elements, generation=generation, first=first)
+        if len(found) < rows_.OCR_BELOW:
+            area = clip(self._frame(win.hwnd), self._monitor_for(win.hwnd).rect)
+            found = rows_.build(elements, generation=generation, first=first, ocr=self._ocr(area))
+        return found
 
     def _area(self, win: Win, monitor: native.Monitor, scope: str) -> native.Rect:
         return monitor.rect if scope == "everywhere" else clip(self._frame(win.hwnd), monitor.rect)
@@ -265,23 +287,55 @@ class Pointer:
     # --- click by name ---------------------------------------------------------------------------------------
 
     def locate(self, win: Win, name: str, role: str = "", near: str = "") -> Found | Outcome:
-        """One match → Found. Several → numbers on those ("Which one?"). None → numbers on everything, or the grid
-        when there is nothing at all."""
-        uia, self._texts = self._elements(win)
+        """One match → Found. Several, or none: the model reads the window's rows (``meaning``, Stage 07d) — one row
+        it is sure of → Found; unsure → numbers on its row and the tied ones. Without an answer: several → numbers on
+        those ("Which one?"); none → numbers on everything, or the grid when there is nothing at all."""
+        uia, self._texts, elements = self._snapshot(win)
         hits = marks.rank(name, uia, role=role, near=near)
         if len(hits) == 1:
             return Found(hits[0], win.hwnd, self.dialog_text())
-        if hits:
-            return self.show(win, targets=hits, note="Which one? Say its number")
-        everything = self.gather(win, uia=uia)
-        hits = marks.rank(name, everything, role=role, near=near)
-        if len(hits) == 1:
-            return Found(hits[0], win.hwnd, self.dialog_text())
+        everything: list[Target] = []
+        if not hits:
+            everything = self.gather(win, uia=uia)
+            hits = marks.rank(name, everything, role=role, near=near)
+            if len(hits) == 1:
+                return Found(hits[0], win.hwnd, self.dialog_text())
+        ocr = [t for t in everything if t.source == "ocr"]
+        by_meaning = self._by_meaning(win, name, elements, ocr, hits)
+        if by_meaning is not None:
+            return by_meaning
         if hits:
             return self.show(win, targets=hits, note="Which one? Say its number")
         if everything:
             return self.show(win, targets=everything, note=f"I don't see “{_cut(name)}” — say a number")
         return self.grid(win, "here", note=f"I don't see “{_cut(name)}” — say a square")
+
+    def _by_meaning(self, win: Win, name: str, elements: Sequence[uitree.Element], ocr: Sequence[Target],
+                    hits: Sequence[Target]) -> Found | Outcome | None:
+        """Ask the model which row ``name`` means. None: no model, no rows, no usable answer (the old way runs)."""
+        meaning = self.meaning
+        if meaning is None:
+            return None
+        found = rows_.build(elements, generation=getattr(self._focus, "generation", 0),
+                            first=rows_.focus_area(elements), ocr=ocr)
+        if not found:
+            return None
+        try:
+            answer = meaning(name, rows_.lines(found))
+        except Exception:  # noqa: BLE001 - a model failure is never worse than click-by-name without it
+            _log.warning("click by meaning failed", exc_info=True)
+            return None
+        row = rows_.by_number(found, answer[0]) if answer else None
+        if row is None:
+            return None
+        tied = [h for h in hits if h.box == row.target.box]
+        if answer[1] >= SURE and (not hits or tied):
+            return Found(tied[0] if tied else row.target, win.hwnd, self.dialog_text())
+        if hits and not tied:
+            return None  # it picked none of the tied ones: "Which one?" on those
+        others = [h for h in hits if h.box != row.target.box]
+        return self.show(win, targets=[row.target, *others][:MEANING_ASK],
+                         note=f"“{_cut(row.target.name)}”? Say its number")
 
     def has_tabs(self, win: Win) -> bool:
         """``win`` shows document tabs of its own (Notepad, Explorer, Terminal): tab keys belong to it, not the

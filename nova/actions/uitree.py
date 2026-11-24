@@ -50,6 +50,10 @@ _LARGE_DECREMENT, _NO_AMOUNT, _LARGE_INCREMENT = 0, 2, 3
 _P_RECT, _P_CONTROL_TYPE, _P_NAME, _P_FOCUSABLE, _P_ENABLED, _P_OFFSCREEN = 30001, 30003, 30005, 30009, 30010, 30022
 _P_EXPAND, _P_INVOKE, _P_SCROLL, _P_SELECT, _P_TOGGLE = 30028, 30031, 30034, 30036, 30041
 _P_PASSWORD, _P_VALUE = 30019, 30045
+_P_AUTOMATION_ID, _P_HELP, _P_EXPAND_STATE, _P_TOGGLE_STATE = 30011, 30013, 30070, 30086
+_TOGGLE_STATES = {0: "off", 1: "on", 2: "mixed"}
+_EXPAND_STATES = {0: "closed", 1: "open", 2: "open"}  # collapsed | expanded | partially expanded (leaf: none)
+TEXT_MAX = 120  # characters of a name / help text kept
 _EDIT = 50004
 VALUE_MAX = 40  # characters of an edit's value kept
 _PATTERN_PROPS = {"invoke": _P_INVOKE, "toggle": _P_TOGGLE, "select": _P_SELECT, "expand": _P_EXPAND,
@@ -84,6 +88,10 @@ class Element:
     rect: tuple[int, int, int, int]  # left, top, right, bottom (physical px)
     patterns: frozenset[str]  # invoke | toggle | select | expand | scroll | focusable
     value: str = field(default="", repr=False)  # an edit's text, cut short (never a password field's; not logged)
+    help: str = field(default="", repr=False)  # HelpText: an icon button's tooltip ("Bold (Ctrl+B)")
+    auto_id: str = field(default="", repr=False)  # AutomationId: the developer's id, when nothing else names it
+    state: str = ""  # on | off | mixed (a toggle), open | closed (expands): how a step can tell it worked
+    secret: bool = False  # a password field: never a row, never typed into
 
     @property
     def role(self) -> str:
@@ -143,6 +151,21 @@ def _cached_text(element: c_void_p, prop: int) -> str:
         _oleaut32.VariantClear(byref(v))
 
 
+def _cached_int(element: c_void_p, prop: int) -> int | None:
+    v = _VARIANT()
+    if native.com_call(element, _GET_CACHED_PROPERTY_VALUE, prop, byref(v), types=(c_int, POINTER(_VARIANT))) < 0:
+        return None
+    return v.value & 0xFFFFFFFF if v.vt == 3 else None  # VT_I4 (an enum)
+
+
+def _state(element: c_void_p, patterns: frozenset[str]) -> str:
+    if "toggle" in patterns:
+        return _TOGGLE_STATES.get(_cached_int(element, _P_TOGGLE_STATE), "")
+    if "expand" in patterns:
+        return _EXPAND_STATES.get(_cached_int(element, _P_EXPAND_STATE), "")
+    return ""
+
+
 def add_ref(pointer: c_void_p) -> None:
     vtable = ctypes.cast(pointer, POINTER(POINTER(c_void_p)))[0]
     ctypes.WINFUNCTYPE(ctypes.c_ulong, c_void_p)(vtable[1])(pointer)
@@ -153,14 +176,14 @@ def _cache_request(automation: c_void_p) -> c_void_p | None:
     if request is None:
         return None
     for prop in (_P_RECT, _P_CONTROL_TYPE, _P_NAME, _P_ENABLED, _P_OFFSCREEN, _P_PASSWORD, _P_VALUE,
-                 *_PATTERN_PROPS.values()):
+                 _P_AUTOMATION_ID, _P_HELP, _P_EXPAND_STATE, _P_TOGGLE_STATE, *_PATTERN_PROPS.values()):
         native.com_call(request, _CACHE_ADD_PROPERTY, prop, types=(c_int,))
     return request
 
 
-def _read(element: c_void_p) -> tuple[str, int, tuple[int, int, int, int], bool, frozenset[str], str] | None:
-    """(name, control type, rect, usable, patterns, value) from the cache. The value only of edits, never of a
-    password field."""
+def _read(element: c_void_p) -> tuple[str, int, tuple[int, int, int, int], bool, frozenset[str], str, dict] | None:
+    """(name, control type, rect, usable, patterns, value, extra) from the cache. The value only of edits, never of a
+    password field. ``extra``: help, auto_id, state, secret (``Element``'s fields)."""
     rect = _rect(element, _CACHED_BOUNDING_RECTANGLE)
     if rect[2] <= rect[0] or rect[3] <= rect[1]:
         return None
@@ -171,10 +194,13 @@ def _read(element: c_void_p) -> tuple[str, int, tuple[int, int, int, int], bool,
     patterns = frozenset(name for name, prop in _PATTERN_PROPS.items() if _cached_bool(element, prop))
     control_type = _int(element, _CACHED_CONTROL_TYPE)
     value = ""
-    if control_type == _EDIT and not _cached_bool(element, _P_PASSWORD):
+    secret = control_type == _EDIT and _cached_bool(element, _P_PASSWORD)
+    if control_type == _EDIT and not secret:
         value = _cached_text(element, _P_VALUE)[:VALUE_MAX]
-    return (_bstr(element, _CACHED_NAME)[:120], control_type, rect, bool(enabled.value) and not offscreen.value,
-            patterns, value)
+    extra = {"help": _cached_text(element, _P_HELP)[:TEXT_MAX], "auto_id": _cached_text(element, _P_AUTOMATION_ID)[:60],
+             "state": _state(element, patterns), "secret": secret}
+    return (_bstr(element, _CACHED_NAME)[:TEXT_MAX], control_type, rect, bool(enabled.value) and not offscreen.value,
+            patterns, value, extra)
 
 
 def _visible(rect: tuple[int, int, int, int], window: tuple[int, int, int, int]) -> bool:
@@ -208,8 +234,8 @@ def snapshot(automation: c_void_p, hwnd: int, *, skip_documents: bool = False,
             if info is None or not info[3] or not _visible(info[2], window) or info[1] in _NEVER:
                 native.com_release(pointer)
                 continue
-            name, control_type, rect, _, patterns, value = info
-            elements.append(Element(len(pointers), name, control_type, rect, patterns, value))
+            name, control_type, rect, _, patterns, value, extra = info
+            elements.append(Element(len(pointers), name, control_type, rect, patterns, value, **extra))
             pointers.append(pointer)
         return elements, pointers
 

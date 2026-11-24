@@ -296,7 +296,9 @@ def _fix(action: str, args: Mapping[str, Any], said: str, catalog: Catalog,
             return step("dictation", op=args.get("op"), **({"text": cut} if cut else {}))  # only words he said
         case "docs_new":
             return step("docs_new")
-        case "ui_click" | "pick" | "open_path":  # what's on screen / on disk is found by the hands, never the model
+        case "ui_click":  # an element number means something only to the click-by-meaning call that showed rows
+            return Step(action, {k: v for k, v in args.items() if k not in _RESOLVED and k != "element"})
+        case "pick" | "open_path":  # what's on screen / on disk is found by the hands, never the model
             return Step(action, {k: v for k, v in args.items() if k not in _RESOLVED})
     return Step(action, dict(args))
 

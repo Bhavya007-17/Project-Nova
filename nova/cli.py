@@ -76,6 +76,11 @@ def _parser() -> argparse.ArgumentParser:
     numbers.add_argument("--delay", type=float, default=3.0, metavar="S",
                          help="seconds to switch to the window first (default 3)")
     numbers.add_argument("--title", metavar="TEXT", help="the first app window with TEXT in its title, no waiting")
+    rows = sub.add_parser("rows", help="the rows the model would see for a window: --dump saves them to data/")
+    rows.add_argument("--dump", action="store_true", required=True, help="save the rows (JSON) to data/")
+    rows.add_argument("--delay", type=float, default=3.0, metavar="S",
+                      help="seconds to switch to the window first (default 3)")
+    rows.add_argument("--title", metavar="TEXT", help="the first app window with TEXT in its title, no waiting")
     chrome = sub.add_parser("chrome", help="Chrome extension: --install registers its native host (then load it once)")
     what = chrome.add_mutually_exclusive_group(required=True)
     what.add_argument("--install", action="store_true", help="write the host manifest + registry key, print the manual step")
@@ -142,6 +147,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         from . import latency
 
         return latency.main()
+    if command == "rows":
+        from .actions import rows_dump
+
+        return rows_dump.main(delay=args.delay, title=args.title)
     if command == "numbers":
         from .actions import numbers_dump
 

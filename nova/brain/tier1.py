@@ -210,9 +210,11 @@ class Tier1:
 
     def think(self, text: str, seen: Seen, catalog: Catalog | None = None, *, asked: str | None = None,
               answer: str | None = None, choice: Choice | None = None,
-              page: Sequence[str] | None = None, before: Sequence[str] = ()) -> Thought:
+              page: Sequence[str] | None = None, before: Sequence[str] = (),
+              ui: Sequence[str] | None = None) -> Thought:
         """``page``: the ranked page elements, one line each (``nova.chrome.pagemap.llm_rows``), when he points at
-        the page. ``before``: a talk session's last steps, oldest first (``Router.before``)."""
+        the page. ``before``: a talk session's last steps, oldest first (``Router.before``). ``ui``: the native
+        window's rows (``nova.actions.rows``) for click by meaning — same static prefix, so the cache still hits."""
         began = time.perf_counter()
         self._cancel.clear()
         catalog = catalog or self._catalog()
@@ -239,10 +241,12 @@ class Tier1:
             listed = [name for name in prompt.relevant_apps(text, catalog, seen.open_apps) if name not in seen.open_apps]
             if page and choice.device == "cpu":
                 page = page[:CPU_PAGE_ROWS]  # every row is ~20 tokens: the CPU reads them ~10x slower
+            if ui and choice.device == "cpu":
+                ui = ui[:CPU_PAGE_ROWS]  # open menu and dialog rows come first, so the cut keeps them
             if before and choice.device == "cpu":
                 before = tuple(before)[-CPU_BEFORE:]  # the newest ones: "it" points at the last step
             request = prompt.request(text, front=seen.front, open_apps=seen.open_apps, tab=seen.tab, apps=listed,
-                                     asked=asked, answer=answer, page=page, before=before or None)
+                                     asked=asked, answer=answer, page=page, before=before or None, ui=ui)
             if dialect.raw:
                 reply = self._client.generate(
                     choice.model, static + chatml_turn(prompt.dumps(request), dialect.think_block), schema=prompt.SCHEMA,

@@ -254,6 +254,7 @@ def _check_step(s: Step) -> None:
             _number(a, "page", 1, 99999, required=a.get("op") == "goto_page")
         case "ui_click":
             _text(a, "name")
+            _number(a, "element", 1, 999, required=False)
             _one_of(a, "button", BUTTONS, required=False)
             _number(a, "count", 1, 3, required=False)
             _text(a, "role", required=False)
