@@ -24,7 +24,7 @@ from datetime import datetime
 from ..actions.catalog import Catalog, Match, Target, sounds_like
 from ..actions.marks import parse_number
 from ..chrome import canvas
-from ..clauses import is_acknowledgement
+from ..clauses import IMPERATIVE_VERBS, is_acknowledgement
 from ..gate import DO_IT, LET_ME, Resolved
 from .plan import Plan, PlanError, Step, check, dictate_after_docs, step
 
@@ -1090,6 +1090,151 @@ def _task_steps(text: str, said: Sequence[Tok], words: tuple[str, ...], begin: i
     return [*([app] if app else []), step("task", goal=goal, mode="guide", **point)]
 
 
+# --- rewrite: the selected text, his words choose how (Stage 07e) -------------------------------------------------
+
+_REST_VERBS = frozenset({"make", "turn", "put", "rewrite", "rephrase", "reword"})  # instruction = what follows the text
+_OWN_VERBS = frozenset({"translate", "shorten", "simplify", "proofread", "condense", "tighten", "polish", "expand",
+                        "elaborate"})  # the verb is part of the instruction
+_FIX_VERBS = frozenset({"fix", "correct"})  # only with a grammar word: "fix this" alone is not a rewrite
+REWRITE_VERBS = _REST_VERBS | _OWN_VERBS | _FIX_VERBS
+_NEEDS_TEXT = frozenset({"make", "turn", "put", "expand", "elaborate"})  # "make a new doc", "expand" (a tree): need "this"
+_TEXT_DETS = frozenset({"this", "that", "the", "my", "these", "those", "your", "our"})
+_TEXT_NOUNS = frozenset({
+    "text", "selection", "selected", "paragraph", "paragraphs", "sentence", "sentences", "line", "lines", "email",
+    "message", "reply", "note", "draft", "bit", "part", "wording", "words", "intro", "ending", "post", "comment",
+    "caption", "bio", "summary", "answer", "response", "letter", "essay", "title", "heading", "list", "document"})
+_NOT_TEXT = frozenset({
+    "page", "pages", "site", "website", "webpage", "tab", "tabs", "window", "app", "screen", "video", "song", "music",
+    "file", "folder", "pdf", "image", "picture", "photo", "font", "volume", "brightness", "computer", "laptop",
+    "browser", "chrome", "one", "audio", "mic", "camera", "cursor", "mouse"})
+_PHYSICAL = frozenset({  # what "make it …" means on a screen or speaker, not in a text
+    "louder", "quieter", "softer", "bigger", "smaller", "larger", "brighter", "darker", "dimmer", "wider", "narrower",
+    "taller", "full", "fullscreen", "visible", "invisible", "transparent", "bold", "italic", "underlined", "default",
+    "public", "private", "bright", "dark", "loud", "quiet", "big", "small", "large", "stop", "go", "work", "faster",
+    "slower"})
+_LANGUAGES = frozenset({
+    "spanish", "french", "german", "english", "hindi", "italian", "portuguese", "chinese", "japanese", "korean", "arabic",
+    "russian", "dutch", "turkish", "gujarati"})
+_TONE = _LANGUAGES | frozenset({
+    "formal", "formally", "informal", "casual", "casually", "polite", "politely", "politer", "professional",
+    "professionally", "friendly", "friendlier", "warm", "warmer", "kind", "kinder", "nice", "nicer", "concise",
+    "clear", "clearer", "simple", "simpler", "plain", "direct", "confident", "assertive", "persuasive", "academic",
+    "fun", "funny", "funnier", "playful", "serious", "neutral", "respectful", "enthusiastic", "apologetic", "firm",
+    "firmer", "gentle", "gentler", "shorter", "longer", "brief", "briefer", "punchy", "punchier", "tighter",
+    "smoother", "readable", "natural", "conversational", "grammatical", "correct", "better", "cleaner", "crisp",
+    "crisper", "elegant", "positive", "diplomatic", "humble", "sincere", "upbeat", "urgent", "detailed", "technical",
+    "human", "succinct", "bullet", "bullets", "bulleted", "list", "points", "email", "tweet", "paragraph",
+    "sentence", "sentences", "summary", "haiku", "poem"})
+_GRAMMAR_WORDS = frozenset({"grammar", "spelling", "typo", "typos", "punctuation", "mistakes", "errors", "wording"})
+_DEGREE = frozenset({"a", "bit", "little", "slightly", "way", "much", "even", "lot", "tad", "somewhat", "sound",
+                     "read", "more", "less", "it", "so", "to", "be", "into", "seem", "look"})
+
+
+def _text_pointer(words: tuple[str, ...], at: int) -> tuple[bool, int] | None:
+    """(said which text, index after it) for "this / it / the selection / this paragraph" at ``at``; None when it
+    points at something that isn't text ("this page", "the window")."""
+    if at < len(words) and words[at] in ("on", "upon") and at + 1 < len(words):  # "elaborate on this"
+        at += 1
+    if at >= len(words):
+        return False, at
+    w = words[at]
+    nxt = words[at + 1] if at + 1 < len(words) else ""
+    if w in _NOT_TEXT or w in _TEXT_DETS and nxt in _NOT_TEXT:
+        return None
+    if w == "what" and nxt in ("i", "ive") and at + 2 < len(words):  # "what I wrote / selected"
+        return True, at + 3
+    if w in _TEXT_DETS and nxt in _TEXT_NOUNS:
+        at += 2
+        if nxt == "selected" and at < len(words) and words[at] in _TEXT_NOUNS:  # "the selected text"
+            at += 1
+        return True, at
+    if w in ("this", "that", "it", "these", "those", "everything", "all"):
+        return True, at + 1
+    return False, at
+
+
+def _sounds_like_text(rest: tuple[str, ...]) -> bool:
+    """ "more formal", "a bit friendlier", "sound confident", "a bulleted list", "Spanish": a way to write, not a
+    size or a volume ("louder", "full screen", "bold")."""
+    if not rest or rest[0] in _PHYSICAL or any(w in _PHYSICAL or w in _NOT_TEXT for w in rest[:3]):
+        return False
+    if any(w in _TONE for w in rest):
+        return True
+    k = 0
+    while k < len(rest) and rest[k] in _DEGREE:
+        k += 1
+    return 0 < k < len(rest) and rest[k - 1] in ("more", "less")  # "more <anything a text can be>"
+
+
+def _rewrite_request(text: str, toks: Sequence[Tok]) -> Step | None:
+    """A rewrite of the selected text, asked as a whole utterance ("make this more formal and friendlier" is one
+    instruction, so it is read before clauses split). The instruction is cut from what he said."""
+    said = [t for t in toks if t.word]
+    lead = _lead([t.word for t in said])
+    said = said[lead:]
+    words = _trail(tuple(t.word for t in said))
+    said = said[: len(words)]
+    if not words or words[0] not in REWRITE_VERBS:
+        return None
+    verb = words[0]
+    pointed = _text_pointer(words, 1)
+    if pointed is None:
+        return None
+    has_text, at = pointed
+    rest = words[at:]
+    for k, w in enumerate(rest):  # "… and then send it": a second command — Tier 1 plans both
+        nxt = rest[k + 1] if k + 1 < len(rest) else ""
+        if w in ("and", "then") and (nxt in IMPERATIVE_VERBS or nxt == "then"):
+            return None
+    if verb in _NEEDS_TEXT and not has_text:
+        return None
+
+    def cut(first: int) -> str:
+        return _clean_payload(text[said[first].start : said[-1].end])
+
+    if verb in _FIX_VERBS:
+        return step("rewrite", instruction=cut(0)) if _GRAMMAR_WORDS & set(words[1:]) else None
+    if verb == "make":
+        return step("rewrite", instruction=cut(at)) if _sounds_like_text(rest) else None
+    if verb == "turn":
+        into = rest[:1] == ("into",) and len(rest) > 1 and not any(w in _NOT_TEXT for w in rest)
+        return step("rewrite", instruction=cut(at)) if into else None
+    if verb == "put":  # "put that in French"; "put this on the left / in my notes" is something else
+        language = len(rest) == 2 and rest[0] in ("in", "into") and rest[1] in _LANGUAGES
+        return step("rewrite", instruction=cut(at)) if language else None
+    if verb == "translate":
+        if any(w in _NOT_TEXT for w in rest):  # "translate this page": Chrome's own translate, not his selection
+            return None
+        if not has_text and not rest:
+            return None
+    if not rest:
+        return step("rewrite", instruction=text[said[0].start : said[0].end])
+    if verb in _REST_VERBS:
+        return step("rewrite", instruction=cut(at))
+    return step("rewrite", instruction=cut(0))
+
+
+DICTATED_REWRITE_WORDS = 12  # longer than this, it's more to type ("I'll make that more formal next time, ...")
+
+
+def rewrite_that(text: str) -> str | None:
+    """Dictation (07e): the instruction when the whole utterance asks to rewrite the text it points at ("make that
+    more formal", "translate it to Spanish", "fix the grammar in that sentence"); None = words to type. Pointing is
+    required: "simplify everything" or "shorten" alone may be what he means to write."""
+    toks = tokenize(text)
+    said = [t.word for t in toks if t.word]
+    if len(said) > DICTATED_REWRITE_WORDS:
+        return None
+    asked = _rewrite_request(text, toks)
+    if asked is None:
+        return None
+    words = _trail(tuple(said[_lead(said):]))
+    if words and words[0] in _FIX_VERBS:  # "fix the grammar in that": the pointer comes later
+        return asked.get("instruction") if {"this", "that", "it"} & set(words) else None
+    pointed = _text_pointer(words, 1)
+    return asked.get("instruction") if pointed is not None and pointed[0] else None
+
+
 # --- payloads: type ... / search ... ----------------------------------------------------------------------------
 
 _SUBMIT = re.compile(r"(?:(?:press|hit|tap|push)(?: the)? )?(?:enter|return)(?: key)?|submit(?: it)?|send(?: it)?")
@@ -1238,6 +1383,9 @@ def parse(text: str, catalog: Catalog, *, strict: bool = False, running: Iterabl
     job = _task_request(text, toks, catalog, strict, frozenset(running))
     if job is not None:
         return _plan(list(job), 1.0)
+    rewrite = _rewrite_request(text, toks)
+    if rewrite is not None:
+        return _plan([rewrite], 1.0)
     clauses = split_clauses(toks)
     st = _State(catalog, strict, running=frozenset(running))
     guessed: set[int] = set()  # clauses whose first word was a misheard verb
@@ -1483,6 +1631,8 @@ def describe(plan: Plan) -> str:
             said = f"{'Show you how to' if a.get('mode') == 'guide' else 'Do'} “{a['goal']}”"
         case "task":
             said = "Show you how" if a.get("mode") == "guide" else "Do it for you"
+        case "rewrite":
+            said = f"Rewrite it: “{a['instruction']}”"
         case _:
             said = s.action.replace("_", " ").capitalize()
     return said + (" …" if len(plan.steps) > 1 else "")

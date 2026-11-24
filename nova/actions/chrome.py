@@ -189,10 +189,14 @@ class Chrome:
             request["tabId"] = tab.id
         return self._request("page.call", request, timeout) or {}
 
-    def caret(self, limit: int = 300) -> dict[str, Any]:
+    def caret(self, limit: int = 300, *, selected: int = 0, whole: int = 0) -> dict[str, Any]:
         """The focused field of the active tab (any frame) and the text before its caret: {editable, before,
-        secret, docs, cursor, ...} (``nova.dictation.target``)."""
-        return self._request("page.caret", {"limit": limit}, CARET_S) or {}
+        secret, docs, cursor, ...} (``nova.dictation.target``). ``selected`` / ``whole`` > 0 add the selected text
+        (up to that many characters + 1; "" = nothing selected, missing = can't tell) / the field's whole text."""
+        args: dict[str, Any] = {"limit": limit}
+        if selected or whole:
+            args["opts"] = {"selected": selected, "whole": whole}
+        return self._request("page.caret", args, CARET_S) or {}
 
     # --- Google Docs (SPEC §10) ----------------------------------------------------------------------------------
 

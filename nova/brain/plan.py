@@ -287,6 +287,8 @@ def _check_step(s: Step) -> None:
             _one_of(a, "mode", TASK_MODES, required=False)
             if "point" in a and not isinstance(a["point"], bool):
                 raise PlanError("point must be true or false")
+        case "rewrite":  # the selected text, rewritten in place as he asked ("more formal", "to Spanish")
+            _text(a, "instruction")
         case _:
             raise PlanError(f"unknown action {s.action!r}")
 
@@ -296,6 +298,7 @@ ACTIONS = frozenset({
     "type_text", "page_click", "scroll_to", "page_fill", "page_read", "canvas_due", "canvas_open_item",
     "canvas_item_text", "canvas_open", "press", "volume", "media", "dictation", "docs_new", "listening", "autoscroll",
     "doc", "ui_click", "numbers", "grid", "pick", "screenshot", "camera", "system", "open_path", "nova", "task",
+    "rewrite",
 })  # every action _check_step knows (the help card is checked against it)
 
 

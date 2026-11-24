@@ -196,6 +196,8 @@ class Executor:
         """Resolve, ask what needs asking, check the risk, run. Returns the result and how long to show it."""
         if s.action == "task":
             return self._task(s, ctx, labels, index), 0.0
+        if s.action == "rewrite":
+            return self._rewrite(s, ctx, labels, index)
         current: Any = s
         for _ in range(MAX_RESOLVES):
             began = self._clock()
@@ -276,6 +278,43 @@ class Executor:
         if result.exit in ("stopped", "declined"):
             raise _Stop("Cancelled" if result.exit == "declined" else result.detail, cancelled=True)
         raise _Stop(result.detail, failed=StepResult("task", False, result.detail, ms, result.exit, *hops))
+
+    def _rewrite(self, s: Step, ctx: Any, labels: list[str], index: int) -> tuple[StepResult, float]:
+        """The selected text rewritten in place (``nova.brain.rewrite``): the hands read it, the model rewrites it,
+        a card asks when the result looks odd or can't go back, and Esc / a tap stops it while the model works."""
+        rewrite = getattr(self._hands, "rewrite", None)
+        if rewrite is None:
+            raise _Stop("I can't rewrite here.", failed=StepResult("rewrite", False, "no rewrite hands", 0.0))
+        risk = assess(s, self._hands.scene(s, ctx))
+        if risk is not None and risk.refuse:
+            raise _Stop(risk.reason, failed=StepResult("rewrite", False, risk.reason, 0.0))
+        if risk is not None and risk.confirm:
+            self._asked = "confirm"
+            if not self._asker.confirm(risk.question):
+                raise _Stop("Cancelled", cancelled=True)
+        if self._cancel.is_set():
+            raise _Stop("Cancelled", cancelled=True)
+
+        def choose(question: str, choices: tuple[str, ...]) -> int | None:
+            self._asked = "clarify"
+            return self._asker.choose(question, choices)
+
+        self._progress(tuple(labels), index)
+        began = self._clock()
+        if self._started is None:
+            self._started = began
+        try:
+            outcome = rewrite(s.get("instruction") or "", choose=choose, stopped=self._cancel.is_set, ctx=ctx)
+        except ActionError as error:
+            raise _Stop(str(error), failed=StepResult("rewrite", False, str(error), (self._clock() - began) * 1000)) from None
+        except Exception as error:  # noqa: BLE001 - a bug in the rewrite must not take the brain down
+            _log.exception("rewrite failed")
+            raise _Stop("Something went wrong — details in the log.",
+                        failed=StepResult("rewrite", False, f"rewrite failed: {error}", (self._clock() - began) * 1000)) from None
+        if outcome is None:
+            raise _Stop("Cancelled", cancelled=True)
+        return (StepResult("rewrite", True, outcome.detail, (self._clock() - began) * 1000, outcome.method),
+                float(outcome.hold or 0.0))
 
     def _resolve(self, s: Step, ctx: Any) -> Any:
         resolve = getattr(self._hands, "resolve", None)

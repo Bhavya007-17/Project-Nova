@@ -6,6 +6,7 @@ them, one at a time and in order, on its own thread ("nova-dictation"):
 
 1. rules (``nova.dictation.rules``): spoken commands, fillers, self-corrections (also one a pause split off:
    "No wait, Wednesday." rewrites the segment before); "scratch that" takes back the last segment typed;
+   "make that more formal" has the local model rewrite the last segment and swaps it in place (07e);
 2. join + insert (``nova.dictation.target``): space / capital to fit the text before the cursor, a clipboard
    paste, a check that it landed — right away, so a segment lands well inside a second of the pause;
 3. cleanup (``nova.dictation.cleanup``): the small model looks for misheard words meanwhile (it starts while he is
@@ -37,7 +38,10 @@ from datetime import datetime
 from typing import Any
 
 from ..actions.native import ActionError
+from ..brain import rewrite as rw
+from ..brain.llm import LOAD_TIMEOUT_S
 from ..brain.risk import assess_dictation
+from ..brain.tier0 import rewrite_that
 from ..bus import Bus
 from ..events import DictatedText, DictationChanged, DictationTyped, JobChip, PauseCandidate, SpeechEnded
 from ..log import TraceLog
@@ -52,6 +56,7 @@ MIN_LLM_WORDS = 3  # "Okay." / "Thanks!" aren't worth a model call
 FIX_GIVE_UP_S = 5.0  # cleanup later than this is dropped
 CONTEXT_CHARS = 300
 _FIX_CHARS = 280  # a fix rewrites at most this much (and only what it can see before the cursor)
+_REWRITE_CHARS = 1500  # "make that more formal" swaps at most this much (backspaces, then a paste)
 _KEEP = 16
 SAVED_NOTE = "Saved — say “paste my last dictation”"
 NOTICE_S = 8.0
@@ -129,9 +134,12 @@ def _flat(text: str) -> str:
 
 class Dictation:
     def __init__(self, bus: Bus | None, cleaner: Cleaner, target: Target, history: History, *,
-                 trace: TraceLog | None = None, clock: Callable[[], float] = time.perf_counter) -> None:
+                 trace: TraceLog | None = None, clock: Callable[[], float] = time.perf_counter,
+                 rewriter: Any = None) -> None:
         self._bus = bus
         self._cleaner = cleaner
+        self._rewriter = rewriter  # ``nova.brain.rewrite.Rewriter``: "make that more formal" (07e); None = off
+        self._ending = threading.Event()  # dictation is ending: a rewrite the dictation thread waits on gives up
         self._target = target
         self._history = history
         self._trace = trace
@@ -175,6 +183,7 @@ class Dictation:
 
     def begin(self, why: str, text: str | None = None, *, utterance: int | None = None, new_doc: bool = False) -> None:
         """A plan starts dictation: hold what he says until ``release`` (the doc / field is ready)."""
+        self._ending.clear()
         self._queue.put(_Open(why, text, utterance, hold=True, new_doc=new_doc, at=self._clock()))
 
     def release(self, wait_for_field: bool = False) -> None:
@@ -196,6 +205,10 @@ class Dictation:
             time.sleep(0.05)
 
     def _on_changed(self, event: DictationChanged) -> None:
+        if event.on:
+            self._ending.clear()
+        else:
+            self._ending.set()  # Esc / a tap: a rewrite in flight stops now, not when the model answers
         self._queue.put(_Open(event.why, at=event.at) if event.on else _Close(event.why))
 
     def _on_speech_end(self, event: SpeechEnded) -> None:
@@ -322,6 +335,11 @@ class Dictation:
             said, self._marker = f"{self._marker} {said}", ""
         record: dict[str, Any] = {"kind": "dictation", "utterance": seg.utterance, "raw_text": said,
                                   "initial": seg.initial}
+        if self._typed and self._rewriter is not None and not self._break:
+            instruction = rewrite_that(said)
+            if instruction:  # "make that more formal": the segment just typed, rewritten in place
+                self._rewrite_last(instruction, seg, record)
+                return
         lead = correction_lead(said)
         if lead == "only" and self._typed:
             self._marker = said  # "No wait." — what he says next is the correction
@@ -423,11 +441,22 @@ class Dictation:
             self._write(record, seg)
             return
         record.update(llm="fixed", changes=[list(f) for f in result.fixes])
+        applied, outcome = self._replace(typed, result.text, _FIX_CHARS)
+        if outcome is None:
+            self._write({**record, "applied": applied}, seg)
+            return
+        said = ", ".join(f"{heard} → {meant}" for heard, meant in result.fixes)
+        self._publish(DictationTyped(seg.utterance, result.text.strip(), True, f"Fixed {said}"))
+        record.update(applied="yes", fix_landed=outcome.ok)
+        self._write(record, seg, landed_at=outcome.at)
+
+    def _replace(self, typed: _Typed, words: str, limit: int) -> tuple[str, Any]:
+        """Swap a segment this session typed for ``words`` in place: back to where they differ, retype the rest (and
+        what came after it) — only if the text before the cursor still ends with exactly what Nova typed.
+        Returns ("yes", the paste's outcome) or (why not, None)."""
         index = next((i for i, t in enumerate(self._typed) if t is typed), None)
         if index is None:
-            self._write({**record, "applied": "scratched since"}, seg)
-            return
-        words = result.text
+            return "scratched since", None
         breaks = typed.source[: len(typed.source) - len(typed.source.lstrip("\n"))]
         if breaks and not words.startswith("\n"):  # (cleanup started before a paragraph break joined it)
             words = breaks + words
@@ -438,27 +467,86 @@ class Dictation:
         while keep < min(len(old), len(new)) and old[keep] == new[keep]:
             keep += 1
         spot = self._target.look()
-        if spot.hwnd != typed.hwnd or spot.before is None or len(old) > _FIX_CHARS \
+        if spot.hwnd != typed.hwnd or spot.before is None or len(old) > limit \
                 or not landed(spot.before, old, tail=len(old)):
             why = "can't read the field" if spot.before is None else "the text changed"
-            self._write({**record, "applied": f"no: {why}"}, seg)
-            return
+            return f"no: {why}", None
         try:
             self._target.erase(spot, len(old) - keep)
             outcome = self._target.insert(spot, new[keep:])
         except ActionError as error:
-            self._write({**record, "applied": f"no: {error}"}, seg)
-            return
+            return f"no: {error}", None
         self._typed[index] = replace(typed, text=fixed, source=words)
         with self._lock:
             self._tail = "".join(t.text for t in self._typed)[-CONTEXT_CHARS:]
         if self._entry is not None and _flat(self._entry.text).endswith(old):
             self._entry = replace(self._entry, text=_flat(self._entry.text)[: -len(old)] + new)
             self._history.update_last(self._entry)
-        said = ", ".join(f"{heard} → {meant}" for heard, meant in result.fixes)
-        self._publish(DictationTyped(seg.utterance, result.text.strip(), True, f"Fixed {said}"))
-        record.update(applied="yes", fix_landed=outcome.ok)
-        self._write(record, seg, landed_at=outcome.at)
+        return "yes", outcome
+
+    # --- "make that more formal": the segment just typed, rewritten (07e) -------------------------------------------
+
+    def _rewrite_last(self, instruction: str, seg: _Segment, record: dict[str, Any]) -> None:
+        """Have the local model rewrite the segment just typed and swap it in place. This thread waits for the model
+        (what he says meanwhile queues up); dictation ending (Esc / a tap) stops the wait. The trace keeps the kind,
+        word counts and timings — never the rewritten text."""
+        rewriter, typed = self._rewriter, self._typed[-1]
+        source = typed.source.lstrip("\n")
+        what = rw.kind(instruction)
+        n = rw.word_count(source)
+        record.update(rewrite=what, rewrite_words_in=n)
+        try:
+            choice = rewriter.choice()
+            too_long = n > rewriter.limit(instruction, choice)
+        except Exception as error:  # noqa: BLE001 - no model to choose: say so, keep dictating
+            self._rewrite_note(seg, record, f"no model: {error}", "I can't rewrite right now.")
+            return
+        if too_long:
+            self._rewrite_note(seg, record, "too long", "That's too long to rewrite here.")
+            return
+        began = self._clock()
+        job = rewriter.start(instruction, source, choice)
+        deadline = time.monotonic() + job.timeout + LOAD_TIMEOUT_S + 5
+        while not job.done and not self._ending.is_set() and time.monotonic() < deadline:
+            job.wait(0.05)
+        out = job.wait(0) if job.done else None
+        if not job.done:
+            job.cancel()
+        record.update(rewrite_ms=round((self._clock() - began) * 1000, 1), device=job.device,
+                      cold=job.cold or None)
+        if out is None:
+            if self._ending.is_set():
+                self._write({**record, "rewrite_result": "stopped"}, seg)
+            else:
+                self._rewrite_note(seg, record, f"failed: {job.error or 'no answer'}",
+                                   "The rewrite didn't come back — try again.")
+            return
+        verdict = rw.guard(source, out, what)
+        if verdict == "fail":
+            self._rewrite_note(seg, record, "empty", "The rewrite came back empty — try again.")
+            return
+        if verdict == "same":
+            self._rewrite_note(seg, record, "same", "Already reads that way — nothing changed", ok=True)
+            return
+        if verdict == "preview":  # an odd length and no card while he dictates: his words stay, the rewrite is saved
+            self._history.add(Entry(datetime.now().astimezone().isoformat(timespec="seconds"), out.strip(),
+                                    self._entry.app if self._entry is not None else "", landed=False))
+            self._entry = None
+            self._rewrite_note(seg, record, "odd length", f"The rewrite looked off, so I kept yours · {SAVED_NOTE}")
+            return
+        applied, outcome = self._replace(typed, rw.keep_edges(source, out.strip()), _REWRITE_CHARS)
+        record.update(rewrite_result=applied, rewrite_words_out=rw.word_count(out))
+        if outcome is None:
+            why = "the text changed" if "changed" in applied or "scratched" in applied else "I can't read that field"
+            self._publish(DictationTyped(seg.utterance, "", False, f"Couldn't rewrite that — {why}"))
+            self._write(record, seg)
+            return
+        self._publish(DictationTyped(seg.utterance, "", True, f"Rewrote {n} word{'' if n == 1 else 's'}"))
+        self._write({**record, "fix_landed": outcome.ok}, seg, landed_at=outcome.at)
+
+    def _rewrite_note(self, seg: _Segment, record: dict[str, Any], result: str, note: str, ok: bool = False) -> None:
+        self._publish(DictationTyped(seg.utterance, "", ok, note))
+        self._write({**record, "rewrite_result": result}, seg)
 
     # --- taking text back -------------------------------------------------------------------------------------------
 

@@ -82,6 +82,7 @@ STEP_SCHEMAS = (
     _step("open_path", ("folder",), name=_TEXT, folder=_TEXT),
     _step("nova", ("topic",), op=_enum(NOVA_OPS), topic=_enum(HELP_TOPICS)),
     _step("task", ("point",), goal=_TEXT, mode=_enum(("do", "guide")), point={"type": "boolean"}),
+    _step("rewrite", instruction=_TEXT),
 )
 
 # Required properties come out first, in this order (llama.cpp's schema grammar), then the optional ones.
@@ -144,9 +145,10 @@ system{op}: lock | sleep (the computer itself)
 open_path{name,folder}: a file or folder by name. folder: where he says it is (downloads, documents, desktop ...)
 nova{op,topic}: help (what he can say; topic apps | web | screen | system) | again (repeat the last command) | undo (the last thing typed or clicked)
 task{goal,mode,point}: a job in the app in front that takes several clicks and no action above does ("turn on word wrap", "add a page number"). goal: his words for the job. mode: guide when he asks how, or to be shown or walked through; else do. point: true when he only asks where something is
+rewrite{instruction}: rewrite the text he selected, in place: another tone, shorter, longer, fixed grammar, bullets, another language. instruction: his words for how. Summarize or explain it: handoff
 
 rules:
-- text, query and prompt are copied word for word from "said". Never add, fix, translate or reword them.
+- text, query, prompt and instruction are copied word for word from "said". Never add, fix, translate or reword them.
 - "front", "open", "tab" and "apps" only describe the screen. Act only on what he said: never open, type or search something just because it's on screen.
 - Use the app names in "apps", "open" and "front". A site he names: open_url. His short names are below.
 - "this", "it", "the window", "this window": target "active". Don't ask which window.
@@ -191,6 +193,8 @@ EXAMPLES: tuple[tuple[dict[str, Any], dict[str, Any]], ...] = (
      {"kind": "act", "steps": [{"action": "type_text", "text": "see you soon", "submit": False}], "confidence": 0.85}),
     ({"said": "type on my way and hit send", "front": "WhatsApp", "open": ["WhatsApp"]},
      {"kind": "act", "steps": [{"action": "type_text", "text": "on my way", "submit": True}], "confidence": 0.9}),
+    ({"said": "could you make this sound a little less stiff", "front": "Notepad", "open": ["Notepad", "Google Chrome"]},
+     {"kind": "act", "steps": [{"action": "rewrite", "instruction": "sound a little less stiff"}], "confidence": 0.9}),
     ({"said": "it's way too loud", "front": "Google Chrome", "open": ["Google Chrome"]},
      {"kind": "act", "steps": [{"action": "volume", "op": "down"}], "confidence": 0.85}),
     ({"said": "switch to the other one", "front": "Google Chrome", "open": ["Google Chrome", "Claude", "Notepad"]},

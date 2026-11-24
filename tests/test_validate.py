@@ -301,3 +301,11 @@ def test_a_click_he_never_asked_for_becomes_a_task():
                  "double-click budget", "right click the file"):
         plan = check(act({"action": "ui_click", "name": "save"}), said).plan
         assert plan.steps[0].action == "ui_click", said
+
+
+def test_rewrite_instruction_is_his_words():
+    checked = check(act({"action": "rewrite", "instruction": "more formal"}), "make this more formal")
+    assert checked.plan.steps == (step("rewrite", instruction="more formal"),)
+    # the model's paraphrase never reaches the rewrite prompt: what he said does
+    checked = check(act({"action": "rewrite", "instruction": "professional business tone"}), "make this more formal")
+    assert checked.plan.steps == (step("rewrite", instruction="make this more formal"),)
