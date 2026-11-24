@@ -266,10 +266,12 @@ class Executor:
             raise _Stop("Something went wrong — details in the log.",
                         failed=StepResult("task", False, f"task failed: {error}", (self._clock() - began) * 1000)) from None
         ms = (self._clock() - began) * 1000
-        self._task_last = (goal, tuple(result.kept) or kept)
-        self._kept[index] = tuple(result.kept)
+        # a task that didn't finish kept the wrong steps ("What's new" for word wrap): "just do it" starts fresh
+        finished = result.exit == "done"
+        self._task_last = (goal, (tuple(result.kept) or kept) if finished else ())
+        self._kept[index] = tuple(result.kept) if finished else ()
         hops = (tuple(result.pick_ms), tuple(result.step_ms), tuple(result.ring_ms))
-        if result.exit == "done":
+        if result.exit in ("done", "unsure"):  # unsure: the doubt is the detail, and nothing is kept to replay
             return StepResult("task", True, result.detail, ms, "task", *hops)
         if result.exit in ("stopped", "declined"):
             raise _Stop("Cancelled" if result.exit == "declined" else result.detail, cancelled=True)

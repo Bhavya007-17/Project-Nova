@@ -25,7 +25,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from ..actions import screen
+from ..actions import rows, screen
 from ..actions.marks import Box
 from ..actions.native import ActionError
 from ..actions.rows import Row, by_number
@@ -47,6 +47,7 @@ GUIDE_ONLY = frozenset({"systemsettings.exe", "control.exe", "consent.exe", "cre
 PLAIN_KEYS = frozenset({"enter", "tab", "shift+tab", "esc", "escape", "space", "up", "down", "left", "right", "home",
                         "end", "pageup", "pagedown", "alt", "f10"})
 GIVE_UP = "I couldn't finish — show me?"
+UNSURE = "Not sure that did it — last step: {}"
 _VERB_LABEL = {"click": "Click", "right": "Right-click", "double": "Double-click"}
 GUIDE_POLL_S = 0.15
 NUDGE_S = 30.0
@@ -133,14 +134,16 @@ class Steer:
         self.poke = ""  # "next" (he says he did the step) | "where" (ring it again): read once by the guide
 
 
-Picker = Callable[[str, Sequence[str], Sequence[str], str, str], Choice | None]  # goal, lines, did, app, title
+# goal, lines, did, app, title; called with done=False too, when a done is doubted (``proven``)
+Picker = Callable[..., Choice | None]
 
 
 def model_picker(tier1: Any) -> Picker:
     """The planner model as a Picker (``Tier1.pick``): no answer, an error or an unusable one -> None."""
 
-    def pick(goal: str, lines: Sequence[str], did: Sequence[str], app: str, title: str) -> Choice | None:
-        thought = tier1.pick(goal, lines, did=did, front=app or None, title=title or None)
+    def pick(goal: str, lines: Sequence[str], did: Sequence[str], app: str, title: str,
+             done: bool = True) -> Choice | None:
+        thought = tier1.pick(goal, lines, did=did, front=app or None, title=title or None, done=done)
         choice = parse(thought.data) if thought.data is not None else None
         _log.info("task pick %.0f ms: %s%s", thought.ms, choice, f" ({thought.error})" if thought.error else "")
         return choice
@@ -150,7 +153,7 @@ def model_picker(tier1: Any) -> Picker:
 
 @dataclass(frozen=True)
 class Result:
-    exit: str  # done | stuck | limit | stopped | failed | asked | declined | guide_only
+    exit: str  # done | unsure | stuck | limit | stopped | failed | asked | declined | guide_only
     detail: str
     did: tuple[str, ...] = ()  # step labels, in order
     kept: tuple[Step, ...] = ()  # what "do that again" replays
@@ -186,6 +189,13 @@ def _within(part: list[str], whole: list[str]) -> bool:
 def said(text: str, goal: str) -> bool:
     """Typing: only words he said, whole words in his order (SPEC §7.4 payload rule)."""
     return _within(_words(text), _words(goal))
+
+
+def proven(goal: str, did: Sequence[str]) -> bool:
+    """A step done names what he asked for ("Click “Word wrap”" for "turn on word wrap"), or he named nothing a
+    step could: cheap evidence that a "done" is real. The model said done after a wrong first click (the demo:
+    "What's new" for word wrap)."""
+    return not rows.words(goal) or rows.shares_word(goal, " ".join(did))
 
 
 def keys_allowed(keys: str, goal: str) -> bool:
@@ -259,6 +269,13 @@ class _Run:
     step_ms: list[float] = field(default_factory=list)
     ring_ms: list[float] = field(default_factory=list)
     clicked_at: float | None = None  # his last click the pixels saw, until the next ring goes up
+    doubted: bool = False  # a done was doubted once (``proven``); the next is taken
+
+    def done(self, say: str) -> Result:
+        """Done — unless steps were taken and none names what he asked for: a wrong pick says "done" too."""
+        if self.did and not proven(self.goal, self.did):
+            return self.end("unsure", UNSURE.format(self.did[-1]))
+        return self.end("done", say)
 
     def end(self, exit_: str, detail: str) -> Result:
         _log.info("task %r: %s after %d steps (%s)", self.goal, exit_, len(self.did), detail)
@@ -334,19 +351,19 @@ class Loop:
                 return run.stopped()
             if self._over(run):
                 return run.limit()
-            asked_at = self._clock()
-            try:
-                choice = self._pick(goal, view.lines, tuple(run.did), scene.app, scene.title)
-            except Exception:  # noqa: BLE001 - a model failure ends the task, never the brain
-                _log.warning("task pick failed", exc_info=True)
-                choice = None
-            run.pick_ms.append((self._clock() - asked_at) * 1000)
+            choice = self._choose(goal, view, run, scene)
             if since is not None:
                 run.step_ms.append((self._clock() - since) * 1000)
+            if choice is not None and choice.done and run.did and not run.doubted and not proven(goal, run.did):
+                # nothing done names what he asked for ("What's new" for word wrap): look once more, done off the table
+                run.doubted = True
+                again = self._choose(goal, view, run, scene, done=False)
+                if again is not None and not again.done and not again.ask:
+                    choice = again
             if choice is None:
                 return run.end("failed", GIVE_UP)
             if choice.done:
-                return run.end("done", choice.say or "Done")
+                return run.done(choice.say or "Done")
             if choice.ask:
                 return run.end("asked", choice.ask)
             if self._over(run):
@@ -382,7 +399,7 @@ class Loop:
             if row is not None and choice.verb in _ON_ROW and run.did and run.did[-1] == name:
                 # the small model repeats its last step; a toggle clicked again flips back — ask, "no" = done
                 if not self._confirm(f"“{_cut(row.target.name)}” again? It may be done already."):
-                    return run.end("done", "Done")
+                    return run.done("Done")
             if choice.verb == "type" and not said(choice.text, goal):
                 return run.end("asked", "What should I type there?")
             if choice.verb == "press" and not keys_allowed(choice.keys, goal):
@@ -416,6 +433,19 @@ class Loop:
             scene = self._world.where()
             if guide_only(scene) and self._steer.mode == "do":
                 return run.end("guide_only", "That opened settings — I only point there. Say “show me how …”.")
+
+    def _choose(self, goal: str, view: View, run: _Run, scene: Scene, *, done: bool = True) -> Choice | None:
+        asked_at = self._clock()
+        try:
+            if done:
+                choice = self._pick(goal, view.lines, tuple(run.did), scene.app, scene.title)
+            else:
+                choice = self._pick(goal, view.lines, tuple(run.did), scene.app, scene.title, done=False)
+        except Exception:  # noqa: BLE001 - a model failure ends the task, never the brain
+            _log.warning("task pick failed", exc_info=True)
+            choice = None
+        run.pick_ms.append((self._clock() - asked_at) * 1000)
+        return choice
 
     def _over(self, run: _Run) -> bool:
         limit = GUIDE_MAX_S if run.guided else self._max_s

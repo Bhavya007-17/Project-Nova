@@ -12,6 +12,7 @@ import logging
 from collections.abc import Callable, Sequence
 from typing import Any, Protocol
 
+from ..actions import rows
 from .tier1 import Seen, Thought
 
 _log = logging.getLogger(__name__)
@@ -48,7 +49,19 @@ def asker(tier1: _Thinks, front: Callable[[], str | None] = lambda: None) -> Cal
             _log.info("click by meaning: no answer (%s)", thought.error)
             return None
         answer = parse(thought.data)
+        if answer is not None and 1 <= answer[0] <= len(lines) and answer[1] > 0:
+            row = rows.row_name(lines[answer[0] - 1])
+            if not any(rows.shares_word(said, row) for said in (name, _named(thought.data))):
+                answer = (answer[0], 0.0)  # its confidence is in the request, not the row: numbers, not a click
         _log.info("click by meaning: %r -> %s in %.0f ms (%s rows)", name, answer, thought.ms, len(lines))
         return answer
 
     return meaning
+
+
+def _named(data: Any) -> str:
+    """What the model called the thing it clicks (its step's "name"): a synonym it saw ("Open" for "the one that
+    loads a file") counts as evidence for the row only when that row carries the word."""
+    step = data["steps"][0] if isinstance(data, dict) and isinstance(data.get("steps"), list) and data["steps"] else None
+    name = step.get("name") if isinstance(step, dict) else None
+    return name if isinstance(name, str) else ""

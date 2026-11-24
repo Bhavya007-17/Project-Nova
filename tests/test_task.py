@@ -73,8 +73,8 @@ def picker(*answers: Choice | None):
     calls: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = []
     queue = list(answers)
 
-    def pick(goal, lines, did, app, title):
-        calls.append((goal, tuple(lines), tuple(did)))
+    def pick(goal, lines, did, app, title, done=True):
+        calls.append((goal, tuple(lines), tuple(did), done))
         return queue.pop(0) if queue else None
 
     pick.calls = calls  # type: ignore[attr-defined]
@@ -111,6 +111,58 @@ def test_done_after_two_steps_keeps_a_replayable_plan():
     # the model saw the goal, the rows fenced as lines and the steps done so far
     assert pick.calls[1][0] == WRAP and pick.calls[1][1][2] == '3 menu item "Word wrap"'
     assert pick.calls[1][2] == ("Click “View”",)
+
+
+def test_done_that_names_what_he_asked_for_is_taken_at_once():
+    world = World([MENU_BAR, VIEW_MENU, MENU_BAR])
+    pick = picker(Choice(row=3), Choice(row=3), Choice(done=True))
+    assert _loop(world, pick)[0].run(WRAP).exit == "done"
+    assert [c[3] for c in pick.calls] == [True, True, True]  # "Word wrap" was clicked: no second look
+
+
+def test_done_without_evidence_looks_once_more_without_done():
+    # the demo: "What's new" clicked for word wrap, then "done". Nothing done names word wrap -> one more pick, in
+    # which done isn't offered; its step goes ahead
+    world = World([MENU_BAR, VIEW_MENU, MENU_BAR])
+    pick = picker(Choice(row=3), Choice(done=True), Choice(row=3), Choice(done=True, say="Word wrap is on"))
+    result = _loop(world, pick)[0].run(WRAP)
+    assert result.exit == "done" and result.detail == "Word wrap is on"
+    assert result.did == ("Click “View”", "Click “Word wrap”")
+    assert [c[3] for c in pick.calls] == [True, True, False, True]
+
+
+def test_done_without_evidence_ends_unsure_when_the_second_look_has_no_step():
+    # the demo: "Close Tab" right-clicked for "turn off word wrap", then "done" — never a plain "Done" after that
+    for second in (None, Choice(ask="Which one?"), Choice(done=True)):
+        world = World([MENU_BAR, VIEW_MENU])
+        pick = picker(Choice(row=3), Choice(done=True, say="Done"), second)
+        result = _loop(world, pick)[0].run(WRAP)
+        assert result.exit == "unsure" and not result.ok and len(pick.calls) == 3
+        assert result.detail == "Not sure that did it — last step: Click “View”"
+
+
+def test_the_second_look_happens_once_per_task():
+    # "make the text bigger" by a key press never names text: the second look is spent once, then it ends unsure
+    world = World([MENU_BAR, VIEW_MENU, MENU_BAR, VIEW_MENU])
+    pick = picker(Choice(row=3), Choice(done=True), Choice(row=1), Choice(done=True))
+    result = _loop(world, pick)[0].run(WRAP)
+    assert result.exit == "unsure" and len(world.acted) == 2
+    assert [c[3] for c in pick.calls] == [True, True, False, True]
+
+
+def test_no_to_the_same_click_again_ends_unsure_when_nothing_names_the_goal():
+    # the demo: "Word wrap" clicked for "hide the status bar", picked again, "no" — not a plain "Done"
+    world = World([MENU_BAR, MENU_BAR, MENU_BAR])
+    loop, asked = _loop(world, picker(Choice(row=3), Choice(row=3)), answer=False)
+    result = loop.run(WRAP)
+    assert asked == ["“View” again? It may be done already."]
+    assert result.exit == "unsure" and result.detail == "Not sure that did it — last step: Click “View”"
+
+
+def test_done_with_nothing_done_is_still_done():
+    # "it's already on": no step taken, nothing to doubt
+    result = _loop(World([VIEW_MENU]), picker(Choice(done=True, say="Already on")))[0].run(WRAP)
+    assert result.exit == "done" and result.detail == "Already on"
 
 
 def test_stuck_when_nothing_changes():
@@ -291,7 +343,7 @@ def test_settle_gives_up_after_two_seconds():
 
     world = Busy([MENU_BAR, VIEW_MENU, MENU_BAR])
     loop, _ = _loop(world, picker(Choice(row=3), Choice(done=True)), clock=clock)
-    assert loop.run(WRAP).exit == "done"
+    assert loop.run("open the view menu").exit == "done"
     assert 2.0 <= clock.t <= 2.2
 
 
@@ -321,13 +373,15 @@ def test_model_picker_parses_the_thought_and_maps_errors_to_none():
         def __init__(self, thought):
             self.thought, self.calls = thought, []
 
-        def pick(self, goal, lines, *, did, front, title):
-            self.calls.append((goal, tuple(lines), tuple(did), front, title))
+        def pick(self, goal, lines, *, did, front, title, done=True):
+            self.calls.append((goal, tuple(lines), tuple(did), front, title, done))
             return self.thought
 
     good = Tier1(Thought({"step": {"row": 3, "verb": "click"}, "done": False, "ask": "", "say": ""}))
     assert model_picker(good)(WRAP, ["3 menu \"View\""], ("x",), "Notepad", "") == Choice(row=3)
-    assert good.calls == [(WRAP, ('3 menu "View"',), ("x",), "Notepad", None)]
+    assert good.calls == [(WRAP, ('3 menu "View"',), ("x",), "Notepad", None, True)]
+    model_picker(good)(WRAP, [], ("x",), "Notepad", "", done=False)
+    assert good.calls[-1][-1] is False
     assert model_picker(Tier1(Thought(error="down")))(WRAP, [], (), "", "") is None
 
 

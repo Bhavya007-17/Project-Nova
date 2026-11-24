@@ -712,6 +712,14 @@ def test_the_first_pick_has_no_done():
     assert prompt.pick_schema(("Click “View”",)) == prompt.PICK_SCHEMA
 
 
+def test_a_second_look_at_done_has_no_done():
+    # the loop doubts a done that nothing it did names; it looks once more with done off the table
+    client = FakeOllama("qwen35", text=PICKED)
+    tier1(client).pick("turn on word wrap", ROWS, did=("Click “What's new”",), done=False)
+    (_, _, _, pick_kw), = requests(client)
+    assert pick_kw["schema"] == prompt.PICK_FIRST_SCHEMA == prompt.pick_schema(("x",), done=False)
+
+
 def test_pick_schema_is_one_of_step_done_or_ask():
     # each answer is exactly one shape: a required "ask" got filled on every pick and won over the step (eval 6 %);
     # a "step": null in the done / ask shapes, and naming it in the rule, made the model say done early (eval 32 %)

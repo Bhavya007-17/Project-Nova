@@ -63,3 +63,16 @@ def test_plan_check_takes_an_element():
     assert plan.steps[0].get("element") == 4
     with pytest.raises(PlanError):
         from_dict(act({"action": "ui_click", "name": "zoom", "element": 0}))
+
+
+def test_a_sure_row_that_shares_no_word_with_either_name_is_unsure():
+    # "a new file" -> row 1 "Back", the model's own name for it "new file": nothing ties the number to the words
+    lines = ['1 button "Back"', '2 button "New tab"']
+    wrong = FakeTier1(Thought(act({"action": "ui_click", "name": "new file", "element": 1}, 0.9)))
+    assert meaning.asker(wrong)("the button that makes a new file", lines) == (1, 0.0)
+    # a synonym the model names: "loads a file" -> "Open", which it called "Open"
+    synonym = FakeTier1(Thought(act({"action": "ui_click", "name": "Open", "element": 2}, 0.85)))
+    assert meaning.asker(synonym)("the one that loads a file", ['1 button "Save"', '2 button "Open"']) == (2, 0.85)
+    # his words name the row
+    said = FakeTier1(Thought(act({"action": "ui_click", "name": "the one that loads", "element": 2}, 0.85)))
+    assert meaning.asker(said)("new tab", lines) == (2, 0.85)

@@ -216,6 +216,23 @@ memories aren't shared, this file is.
   It fires only on "show me / how do I / click / where's / turn on…" partials, idle only (no command, no dictation),
   and is reused once, within 3 s, same window, same frame, no snapshot in between: a prefetch that replaced a running
   command's snapshot would make its Invoke refs stale.
+- **Live Notepad demo (2026-11-24, typed commands, no mic) — the model says "done" after a wrong click** ("What's new",
+  "Right-click Close Tab" for word wrap; "Word wrap" for the status bar). The loop now doubts a done when no step's
+  label shares a word with the goal (`task.proven`): one more pick with no done shape; still no step → exit `unsure`
+  ("Not sure that did it — last step: …"), nothing kept for "do that again". Cost: a right task whose clicks never name
+  the goal ("Zoom in" for "make the text bigger") ends unsure too. The fix lives in code: rewording the pick (a
+  menu-bar hint, a "none" answer) dropped `nova eval --tasks` from 50 to 46–47 / 103 and doubled its asks.
+- **qwen3.5:4b never opens a menu to find a setting** (View → Word wrap / Status bar): it picks a visible row that
+  sounds close, or text in an open panel (Notepad 11's Settings page and What's new panel stay open between commands,
+  and their rows outnumber the menu bar's). Biggest remaining wrong-pick source; needs learned skills (08) or a menu walk.
+- **Click by meaning has to vouch for its row:** its confidence is the few-shot number, so a wrong row came back sure.
+  Now a row that shares no word with what he said *or* the model's step name drops to 0 → numbers. Live: "System" for
+  "Settings" and "Back" for "a new file" became numbers, not clicks. Fooled if the step name copies the wrong row.
+- **The planner turns outcomes into blind clicks** ("turn off word wrap" → ui_click "Word wrap", a row it never saw).
+  `validate` keeps a ui_click only when he said a click word (click, tap, press, select, open, …); else it's a task.
+- **First pick after a cold start took 11.7 s** (warming 4.4 → 12.4 s, ring at 13.2 s after the command); a warm
+  click → settle → next step took 1.3 s. A demo harness that publishes typed commands needs one blank `SendInput` mouse event (no move, no
+  button) before it brings a window forward — the Copilot key press gives the real app that right.
 
 ## Chrome extension
 - **Branded Chrome 137+ ignores `--load-extension`**: loading `extension/` unpacked is a one-time manual step.

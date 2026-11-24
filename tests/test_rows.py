@@ -100,3 +100,20 @@ def test_rows_can_be_found_by_number_and_text_lines_for_the_model():
     assert rows.by_number(out, 3) is None and rows.by_number(out, 0) is None
     assert rows.lines(out) == ['1 button "Save"', '2 button "Open"']
     assert rows.lines(out, limit=1) == ['1 button "Save"']
+
+
+def test_shares_word_ignores_filler_verbs_and_ui_nouns():
+    assert rows.shares_word("turn on word wrap", "Click “Word wrap”")
+    assert rows.shares_word("add a page number", "Click “Page numbering”")  # a stem: number / numbering
+    assert rows.shares_word("hide the status bars", "Status bar")
+    assert not rows.shares_word("turn on word wrap", "Click “View”")
+    assert not rows.shares_word("turn on word wrap", "Click “What's new”")
+    assert not rows.shares_word("the button that makes a new file", "Back")
+    assert not rows.shares_word("click the button", "Click button")  # only filler in common
+    assert rows.shares_word("the button that makes a new file", "New tab")
+    assert not rows.shares_word("is it on", "Turn on")  # short words match whole, never as a prefix
+
+
+def test_row_name_is_the_quoted_label():
+    assert rows.row_name('12 menu item "Word wrap" off (View menu)') == "Word wrap"
+    assert rows.row_name("3 text What's new") == "3 text What's new"  # no quotes: the whole line

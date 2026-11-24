@@ -291,3 +291,13 @@ def test_task_mode_and_point():
     assert checked.plan.steps == (step("task", goal="the export button", mode="guide", point=True),)
     checked = check(act({"action": "task", "goal": "export it", "mode": "sideways", "point": True}), "export it")
     assert checked.plan.steps == (step("task", goal="export it", mode="do"),)
+
+
+def test_a_click_he_never_asked_for_becomes_a_task():
+    # "turn off word wrap" planned as ui_click "Word wrap": not a click he asked for, a job the loop finds the way to
+    plan = check(act({"action": "ui_click", "name": "Word wrap"}), "turn off word wrap").plan
+    assert plan.steps == (step("task", goal="turn off word wrap", mode="do"),)
+    for said in ("click the save button", "hit save", "tap Word wrap", "press the OK button", "open the File menu",
+                 "double-click budget", "right click the file"):
+        plan = check(act({"action": "ui_click", "name": "save"}), said).plan
+        assert plan.steps[0].action == "ui_click", said

@@ -35,6 +35,9 @@ _SAME_SOUND = 60.0  # the catalog's score for a sound-alike with the very same s
 
 _WORD = re.compile(r"[^\W_]+(?:['’][^\W_]+)*")
 _SUBMIT_WORDS = re.compile(r"\b(enter|return|send|submit|post)\b", re.IGNORECASE)
+# he asked for a click ("hit save", "double-click budget", "open the File menu"), not just for an outcome
+_CLICK_WORDS = re.compile(r"\b(click|clicks|clicked|tap|hit|press|push|select|choose|pick|open|hover|point)\b",
+                          re.IGNORECASE)
 _GENERIC = frozenset({"app", "application", "program", "browser", "window", "website", "site", "page"})
 _POINTER_WORDS = frozenset({"active", "it", "this", "that", "here", "current", "window", "app", "one", "the", "my",
                             "focused", "front"})
@@ -297,6 +300,10 @@ def _fix(action: str, args: Mapping[str, Any], said: str, catalog: Catalog,
         case "docs_new":
             return step("docs_new")
         case "ui_click":  # an element number means something only to the click-by-meaning call that showed rows
+            if not _CLICK_WORDS.search(said):
+                # he asked for an outcome ("turn off word wrap"), not a click: the model guessed a control name it
+                # never saw. The task loop looks at the window and finds the way
+                return step("task", goal=said.strip(), mode="do")
             return Step(action, {k: v for k, v in args.items() if k not in _RESOLVED and k != "element"})
         case "task":  # the job is his words; the model's paraphrase never becomes the goal
             goal = args.get("goal")
@@ -356,6 +363,8 @@ def _act(data: Mapping[str, Any], said: str, catalog: Catalog, running: frozense
         if isinstance(made, _Unsure):
             unsure = True
             made = made.step
+        if made.action == "task" and steps and steps[-1] == made:
+            continue  # several guessed clicks for one outcome: one task
         steps.append(made)
     if ask is not None:
         at, pending = ask

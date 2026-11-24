@@ -115,7 +115,7 @@ def picker(*answers):
     calls: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
     queue = list(answers)
 
-    def pick(goal, lines, did, app, title):
+    def pick(goal, lines, did, app, title, done=True):
         calls.append((tuple(lines), tuple(did)))
         return queue.pop(0) if queue else None
 

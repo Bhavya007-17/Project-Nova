@@ -141,3 +141,41 @@ def by_number(found: Sequence[Row], number: int) -> Row | None:
 
 def lines(found: Sequence[Row], limit: int | None = None) -> list[str]:
     return [r.text for r in (found if limit is None else found[:limit])]
+
+
+_QUOTED = re.compile(r'"([^"]*)"')
+
+
+def row_name(line: str) -> str:
+    """The label in a row line (``12 menu item "Word wrap" off (View menu)`` -> ``Word wrap``); an unquoted line
+    whole."""
+    found = _QUOTED.search(line)
+    return found.group(1) if found else line
+
+
+# words that say nothing about which control: filler, how he asks, what he does to it, what kind of control it is
+_FILLER = frozenset(
+    "a an the this that these those it its is are be to of in on off at for with from by into and or i me my you your "
+    "we our please can could would will want just one thing things so now then do does there here "
+    "click clicks clicked tap hit press push select choose pick hover point double right "
+    "turn switch set make makes change show hide enable disable get put use "
+    "button buttons icon menu item tab link box option".split())
+_WORD = re.compile(r"[a-z0-9]+")
+
+
+def _stem(word: str) -> str:
+    return word[:-1] if len(word) > 3 and word.endswith("s") and not word.endswith("ss") else word
+
+
+def words(text: str) -> frozenset[str]:
+    """The words in ``text`` that name something, lower case, a plural ``s`` dropped."""
+    plain = text.casefold().replace("'", "").replace("’", "")
+    return frozenset(s for w in _WORD.findall(plain) if w not in _FILLER and (s := _stem(w)) not in _FILLER)
+
+
+def shares_word(a: str, b: str) -> bool:
+    """True when ``a`` and ``b`` name a thing in common: a word the same, or one the start of the other (both at
+    least four letters: "number" / "Page numbering"). Cheap evidence that a row, or a step done, is what he meant."""
+    theirs = words(b)
+    return any(w == v or (len(w) >= 4 and len(v) >= 4 and (w.startswith(v) or v.startswith(w)))
+               for w in words(a) for v in theirs)

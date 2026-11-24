@@ -363,8 +363,13 @@ PICK_SCHEMA: dict[str, Any] = {"anyOf": [_PICK_STEP, _PICK_DONE, _PICK_ASK]}
 PICK_FIRST_SCHEMA: dict[str, Any] = {"anyOf": [_PICK_STEP, _PICK_ASK]}
 
 
-def pick_schema(did: Sequence[str]) -> dict[str, Any]:
-    return PICK_SCHEMA if did else PICK_FIRST_SCHEMA
+def pick_schema(did: Sequence[str], done: bool = True) -> dict[str, Any]:
+    """``done`` False: the loop doubted a done (``task.proven``) and looks again with only a step or a question.
+    The wording below is measured: a menu-bar hint and a "none" answer each cost steps in the task eval (2026-11-24:
+    50/103 -> 46-47/103, the model asked twice as often)."""
+    return PICK_SCHEMA if did and done else PICK_FIRST_SCHEMA
+
+
 PICK_NEXT = ('the next single step toward what he said. "did" lists the steps already done, oldest first; "ui" is the '
              'window now, after them. If "ui" has the thing, act on its row by number: click, right-click, '
              'double-click, or type (only words he said, into a box); or press keys, or scroll up / down. If not, '
