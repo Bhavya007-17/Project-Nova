@@ -470,7 +470,13 @@
     return best || page;
   }
 
+  // Chrome's PDF viewer is a plugin the page can't scroll: say so, Nova uses real keys / wheel there.
+  function kind() {
+    return { ok: true, type: document.contentType, pdf: document.contentType === "application/pdf", url: location.href };
+  }
+
   function scroll(dir, amount) {
+    if (document.contentType === "application/pdf") return { ok: true, moved: false, pdf: true };
     const el = scroller();
     const page = el === document.scrollingElement || el === document.documentElement;
     const h = page ? innerHeight : el.clientHeight;
@@ -482,7 +488,8 @@
     const x = el.scrollLeft;
     let top = y;
     let left = x;
-    if (dir === "down") top = Math.min(maxY, y + share * h);
+    if (amount === "half" && (dir === "up" || dir === "down")) top = Math.round(maxY / 2);
+    else if (dir === "down") top = Math.min(maxY, y + share * h);
     else if (dir === "up") top = Math.max(0, y - share * h);
     else if (dir === "top") top = 0;
     else if (dir === "bottom") top = maxY;
@@ -617,5 +624,5 @@
     return { ok: false, ms: Math.round(performance.now() - started) };
   }
 
-  globalThis.__nova = { version: 2, map, click, fill, read, highlight, wait, scroll, scrollTo, describe, canvasItems, caret, docsReady };
+  globalThis.__nova = { version: 2, map, click, fill, read, highlight, wait, scroll, scrollTo, kind, describe, canvasItems, caret, docsReady };
 })();

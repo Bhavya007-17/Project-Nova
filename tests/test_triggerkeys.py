@@ -166,6 +166,14 @@ def test_esc_passes_unless_armed():
     assert not t.on_key(up(VK_ESCAPE)).swallow
 
 
+def test_esc_is_taken_while_numbers_show():
+    t = keys()
+    t.marks_up = True
+    press = t.on_key(down(VK_ESCAPE, 2.0))
+    assert press.swallow and press.event == TriggerEvent("esc", True, 2.0)
+    assert t.on_key(up(VK_ESCAPE, 2.1)).swallow
+
+
 def test_armed_esc_is_swallowed_with_its_repeats_and_release():
     t = keys()
     t.esc_armed = True

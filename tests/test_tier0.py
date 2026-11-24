@@ -53,7 +53,11 @@ FUSION = "Autodesk Fusion"
         ("close notepad", step("close_app", app="Notepad")),
         ("quit spotify", step("close_app", app="Spotify")),
         ("close this window", step("window", op="close", target="active")),
-        ("close it", step("window", op="close", target="active")),
+        ("close it", step("window", op="close", target="active", tab=True)),
+        ("close this", step("window", op="close", target="active", tab=True)),
+        ("close that one", step("window", op="close", target="active", tab=True)),
+        ("close this app", step("window", op="close", target="active")),
+        ("quit this", step("window", op="close", target="active")),
         # window ops
         ("maximize this", step("window", op="maximize", target="active")),
         ("maximize", step("window", op="maximize", target="active")),
@@ -108,7 +112,7 @@ FUSION = "Autodesk Fusion"
         ("press ctrl plus c", step("press", keys="ctrl+c")),
         ("press f5", step("press", keys="f5")),
         ("press page down", step("press", keys="pagedown")),
-        ("undo that", step("press", keys="ctrl+z")),
+        ("undo that", step("nova", op="undo")),
         ("select all", step("press", keys="ctrl+a")),
         ("show the desktop", step("press", keys="win+d")),
         # volume / media
@@ -254,10 +258,10 @@ def test_commands_without_and_between_them():
     assert steps("open chrome maximize it") == [step("open_app", app=CHROME), step("window", op="maximize", target="active")]
 
 
-def test_clicks_become_page_clicks():
+def test_clicks_by_name_find_the_element():
     assert one("click the first link") == step("page_click", description="the first link")
-    assert one("click sign in") == step("page_click", description="sign in")
-    assert one("click the assignments link") == step("page_click", description="the assignments link")
+    assert one("click sign in") == step("ui_click", name="sign in")
+    assert one("click the assignments link") == step("ui_click", name="the assignments link")
 
 
 @pytest.mark.parametrize(
@@ -299,9 +303,9 @@ def test_scroll_to_a_part_of_the_page():
 
 
 def test_buttons_by_name():
-    assert one("press the submit button") == step("page_click", description="the submit button")
-    assert one("hit the sign in button") == step("page_click", description="the sign in button")
-    assert one("tap the remember me checkbox") == step("page_click", description="the remember me checkbox")
+    assert one("press the submit button") == step("ui_click", name="the submit button")
+    assert one("hit the sign in button") == step("ui_click", name="the sign in button")
+    assert one("tap the remember me checkbox") == step("ui_click", name="the remember me checkbox")
     assert one("press enter") == step("press", keys="enter")
 
 

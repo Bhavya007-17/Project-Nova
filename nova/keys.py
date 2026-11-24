@@ -169,6 +169,7 @@ class TriggerKeys:
         self._config = _Config(chord, copilot)
         self.esc_armed = False  # the controller arms Esc while a session can be cancelled
         self.asking: str | None = None  # the controller arms answer keys while the island asks
+        self.marks_up = False  # numbers / a grid are showing: Esc hides them
         self._modifiers: frozenset[int] = frozenset()
         self._masked: frozenset[int] = frozenset()  # Win / Alt keys whose release gets the mask
         self._copilot_down = False
@@ -254,7 +255,7 @@ class TriggerKeys:
         if key.down:
             if self._esc_down:
                 return _SWALLOW
-            if not self.esc_armed:
+            if not (self.esc_armed or self.marks_up):
                 return PASS
             self._esc_down = True
             return Verdict(swallow=True, event=TriggerEvent("esc", True, key.at))

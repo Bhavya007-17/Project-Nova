@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from ..actions.catalog import Catalog, Match, Target, sounds_like
+from ..actions.marks import parse_number
 from ..chrome import canvas
 from ..clauses import is_acknowledgement
 from ..gate import Resolved
@@ -144,7 +145,7 @@ def _lead(words: Sequence[str]) -> int:
     i = 0
     for _ in range(6):
         before = i
-        while i < len(words) and words[i] in _FILLERS:
+        while i < len(words) and words[i] in _FILLERS and not _right_click(words, i):
             i += 1
         for frame in _POLITE:
             if tuple(words[i : i + len(frame)]) == frame:
@@ -153,6 +154,11 @@ def _lead(words: Sequence[str]) -> int:
         if i == before:
             break
     return i
+
+
+def _right_click(words: Sequence[str], i: int) -> bool:
+    """ "right click": a verb, not the filler "right"."""
+    return words[i] == "right" and i + 1 < len(words) and words[i + 1] == "click"
 
 
 def _trail(words: tuple[str, ...]) -> tuple[str, ...]:
@@ -244,9 +250,123 @@ _UP_WORDS = {"louder": "up", "raise": "up", "increase": "up", "boost": "up", "qu
 _MEDIA_PLAY = {"play": "play", "resume": "play", "unpause": "play", "pause": "pause"}
 _EDGE = {"top": "top", "start": "top", "beginning": "top", "bottom": "bottom", "end": "bottom"}
 
+_MORE_ORDINALS = frozenset({"sixth", "seventh", "eighth", "ninth", "tenth"})
+
+
+def _num(said: str | None, high: int = 999) -> int | None:
+    """A number he said for a tag or a page ("12", "twelve", "twenty one"); None for anything else."""
+    if not said:
+        return None
+    if said.isdigit():
+        n = int(said)
+        return n if 1 <= n <= high else None
+    last = said.split()[-1]
+    if last in _ORDINAL_WORDS or last in _MORE_ORDINALS:
+        return None  # "click the first link" is the page map's order, not a tag
+    return parse_number(said)
+
+
+def _pick(m: re.Match, **extra: object) -> Step | None:
+    n = _num(m["n"])
+    return step("pick", n=n, **extra) if n is not None else None
+
+
+def _drag(m: re.Match) -> Step | None:
+    n, to = _num(m["n"]), _num(m["to"])
+    return step("pick", n=n, to=to) if n is not None and to is not None else None
+
+
+def _named(m: re.Match, **extra: object) -> Step:
+    name = re.sub(r"^(?:the|that|this|my) ", "", m["x"])
+    return step("ui_click", name=name, **extra)
+
+
+_SPEED = {"slowly": "slow", "slow": "slow", "fast": "fast", "quickly": "fast"}
+
+
+def _autoscroll(m: re.Match) -> Step:
+    speed = _SPEED.get(m.groupdict().get("speed") or "")
+    return step("autoscroll", op="start", dir=m["dir"] or "down", **({"speed": speed} if speed else {}))
+
+
+_HERE = frozenset({"here", "in this window", "on this window", "in this app"})
+
+
+def _scoped(action: str, m: re.Match, **args: object) -> Step:
+    said = m.groupdict().get("scope")
+    if said:
+        args["scope"] = "here" if said in _HERE else "everywhere"
+    return step(action, **args)
+
+
+def _goto_page(m: re.Match) -> Step | None:
+    n = _num(m["n"], 99999)
+    return step("doc", op="goto_page", page=n) if n is not None else None  # "page up" is a scroll
+
+
+def _shot(m: re.Match) -> Step:
+    what = m.groupdict().get("what") or m.groupdict().get("what2")
+    if what in ("window", "app"):
+        return step("screenshot", target="window")
+    return step("screenshot", target="screen") if what == "screen" else step("screenshot")
+
+
+# "the budget spreadsheet": a name, then what kind of file (``nova.actions.places`` reads the kind)
+_KIND = (r"(?:pdf|spreadsheet|excel file|excel sheet|csv|word doc|word document|doc|document|presentation|slides"
+         r"|powerpoint|photo|picture|image|video|zip|zip file|text file|song|file)")
+_FOLDER = r" (?:in|from) (?:my |the )?(?P<f>downloads|documents|desktop|pictures|music|videos|screenshots|docs|photos)(?: folder)?"
+_IN_FOLDER = r"(?:" + _FOLDER + r")?"
+_NOT_FILE = frozenset({"the", "my", "that", "this", "a", "an", "new", "blank", "google", "word", "excel", "powerpoint",
+                       "youtube", "another", "some", "any", "last", "next", "previous", "first"})
+
+
+def _file(m: re.Match) -> Step | None:
+    named = m["x"].split()
+    if not named or named[0] in _NOT_FILE:
+        return None
+    folder = {"folder": m["f"]} if m["f"] else {}
+    return step("open_path", name=f"{m['x']} {m['k']}", **folder)
+
+
+def _file_in(m: re.Match) -> Step | None:
+    """"open the lab report in documents": any name, as long as he says which folder."""
+    named = m["x"].split()
+    if not named or named[0] in _NOT_FILE:
+        return None
+    return step("open_path", name=m["x"], folder=m["f"])
+
+
+_TOPICS = {"apps": "apps", "windows": "apps", "web": "web", "browser": "web", "chrome": "web", "screen": "screen",
+           "system": "system", "computer": "system"}
+
+
+def _help(m: re.Match) -> Step:
+    topic = _TOPICS.get(m.groupdict().get("topic") or "")
+    return step("nova", op="help", **({"topic": topic} if topic else {}))
+
+
+_NUM = r"(?:number |tag )?(?P<n>[a-z0-9]+(?: [a-z]+)?)"
+_SCOPE = r"(?: (?P<scope>here|in this window|on this window|in this app|everywhere|on (?:the |my )?(?:whole )?screen))?"
 _DOC = r"(?:google (?:doc|document|docs)|doc)"
-_TEMPLATES: list[tuple[re.Pattern[str], Callable[[re.Match], Step]]] = [
+_TEMPLATES: list[tuple[re.Pattern[str], Callable[[re.Match], Step | None]]] = [
     (re.compile(p), make) for p, make in [
+        # numbers on the screen (prompt 07c §4); a make that returns None lets the next template try
+        (r"(?:click|tap|choose|pick|select)(?: on)? " + _NUM, lambda m: _pick(m)),
+        (r"(?P<verb>right|double|middle) click(?: on)? " + _NUM, lambda m: _pick(m, verb=m["verb"])),
+        (r"hover(?: over| on)? " + _NUM, lambda m: _pick(m, verb="hover")),
+        # (lazy first number: "drag five over to nine" is 5 -> 9, not "five over" -> 9)
+        (r"drag (?:number |tag )?(?P<n>[a-z0-9]+(?: [a-z]+)??) (?:over )?(?:to|onto|into) (?:number |tag )?"
+         r"(?P<to>[a-z0-9]+(?: [a-z]+)?)", _drag),
+        # by name, with another button (plain "click X" keeps his words: see _payload_step)
+        (r"(?P<verb>right|middle) click(?: on)? (?P<x>.+)", lambda m: _named(m, button=m["verb"])),
+        (r"hover(?: over| on)? (?P<x>.+)", lambda m: _named(m, button="hover")),
+        (r"(?:show|put up|turn on|give me|bring up)(?: me)?(?: the)? (?:numbers|tags)" + _SCOPE,
+         lambda m: _scoped("numbers", m, op="show")),
+        (r"(?:numbers|tags)" + _SCOPE, lambda m: _scoped("numbers", m, op="show")),
+        (r"(?:hide|clear|remove|turn off|get rid of|close|lose)(?: the)? (?:numbers|tags|grid)",
+         lambda m: step("numbers", op="hide")),
+        (r"(?:show |give me )?(?:me )?more (?:numbers|tags)", lambda m: step("numbers", op="more")),
+        (r"(?:(?:show|give me|put up|turn on|bring up)(?: me)?(?: the| a)? )?grid" + _SCOPE, lambda m: _scoped("grid", m)),
         # tabs and windows of the browser
         (r"(?:open |make |create )?(?:a )?(?:new|another) tab", lambda m: step("tab", op="new")),
         (r"close (?:the |this |that |current |the current )?tab", lambda m: step("tab", op="close")),
@@ -260,10 +380,24 @@ _TEMPLATES: list[tuple[re.Pattern[str], Callable[[re.Match], Step]]] = [
         (r"(?:open )?(?:a )?new (?:incognito|private) window", lambda m: step("press", keys="ctrl+shift+n")),
         (r"(?:open )?(?:a )?new window", lambda m: step("press", keys="ctrl+n")),
         # back / forward / reload
-        (r"(?:go )?back(?: (?:a|one) page)?|go back to the (?:previous|last) page|previous page",
-         lambda m: step("nav", op="back")),
+        (r"(?:go )?back(?: (?:a|one) page)?|go back to the (?:previous|last) page", lambda m: step("nav", op="back")),
         (r"(?:go )?forward(?: (?:a|one) page)?", lambda m: step("nav", op="forward")),
         (r"(?:reload|refresh)(?: (?:the|this))?(?: (?:page|tab|site|website))?", lambda m: step("nav", op="reload")),
+        # documents (PDFs; elsewhere next / previous page are Page Down / Up)
+        (r"(?:(?:go|jump|skip|turn|flip|move) to |take me to )?(?:the )?page(?: number)? (?P<n>[a-z0-9]+(?: [a-z]+)?)",
+         _goto_page),
+        (r"(?:(?:go|turn|flip|skip|jump|move) to )?(?:the )?next page", lambda m: step("doc", op="next_page")),
+        (r"(?:(?:go|turn|flip|skip|jump|move) to )?(?:the )?(?:previous|prior) page", lambda m: step("doc", op="prev_page")),
+        (r"fit (?:to )?(?:the )?(?:page )?width|(?:fit|zoom) to (?:the )?(?:page )?width",
+         lambda m: step("doc", op="fit_width")),
+        # steady scrolling until "stop" (prompt 07c §2)
+        (r"(?:keep|continue|start|begin|go on|carry on) scrolling(?: (?P<dir>up|down|left|right))?"
+         r"(?: (?P<speed>slowly|slow|fast|quickly))?", _autoscroll),
+        (r"scroll(?: (?P<dir>up|down|left|right))? (?:(?P<speed>slowly|slow|fast|quickly)|continuously|nonstop"
+         r"|non stop|automatically|constantly|forever)", _autoscroll),
+        (r"(?:scroll |go )?(?:a bit |a little )?faster|speed (?:it )?up", lambda m: step("autoscroll", op="faster")),
+        (r"(?:scroll |go )?(?:a bit |a little )?slower|slow (?:it )?down", lambda m: step("autoscroll", op="slower")),
+        (r"stop scrolling", lambda m: step("autoscroll", op="stop")),
         # scroll
         (r"scroll(?: all the way)?(?: back)?(?: up| down)?(?: to)? (?:the )?(?P<edge>top|bottom|end|start|beginning)",
          lambda m: step("scroll", dir=_EDGE[m["edge"]])),
@@ -320,12 +454,29 @@ _TEMPLATES: list[tuple[re.Pattern[str], Callable[[re.Match], Step]]] = [
         (r"(?:thanks |thank you )?(?:thats all|that is all|that will be all|thatll be all|were done|im done|all done"
          r"|end (?:the |this )?session|goodbye|bye)(?: (?:for now|nova|thanks|thank you))?",
          lambda m: step("listening", op="end_session")),
+        # the computer itself (sleep asks first: nova.brain.risk)
+        (r"(?:put|send) (?:the |my |this )?(?:computer|pc|laptop|machine) to sleep"
+         r"|(?:sleep|suspend|hibernate) (?:the |my |this )?(?:computer|pc|laptop|machine)",
+         lambda m: step("system", op="sleep")),
+        (r"lock(?: (?:the |my |this )?(?:computer|screen|pc|laptop|machine|it|up))?", lambda m: step("system", op="lock")),
         (r"(?:stop listening|go to sleep|sleep|take a break)(?: (?:for now|for a bit|for a while|for a minute"
          r"|for a few minutes|for the night))?",
          lambda m: step("listening", op="sleep")),
         (r"wake up|start listening|resume listening|listen again", lambda m: step("listening", op="wake")),
         # everyday shortcuts
-        (r"undo(?: (?:that|it|this|the last thing))?", lambda m: step("press", keys="ctrl+z")),
+        (r"undo(?: (?:that|it|this|the last thing))?", lambda m: step("nova", op="undo")),
+        (r"(?:do |try )?(?:that|it|this) again|again|repeat(?: that| it)?|one more time|(?:do )?(?:the )?same (?:thing )?again",
+         lambda m: step("nova", op="again")),
+        (r"what (?:can|should|do) (?:i|you) (?:say|do|ask)(?: (?:you|nova))?"
+         r"(?: (?:with|about|for|in|on) (?:the |my |this )?(?P<topic>apps|windows|web|browser|chrome|screen|system|computer))?"
+         r"|help(?: me)?|show (?:me )?(?:the |your )?commands|what are (?:the |your )?commands", _help),
+        # screenshots and the camera (a picture of the screen is a screenshot)
+        (r"(?:take|grab|capture|snap|get|make)(?: me)?(?: a| the)? (?:screenshot|screen shot|screen grab|screengrab"
+         r"|screen capture)(?: of (?:the |this |my )?(?P<what>window|screen|app))?"
+         r"|screenshot(?: (?:the |this |my )?(?P<what2>window|screen))?|take a (?:picture|photo) of (?:the |my )?screen",
+         _shot),
+        (r"(?:take|snap|grab)(?: me)?(?: a)? (?:photo|picture|pic|selfie)(?: of (?:me|myself|us))?|(?:take )?a selfie",
+         lambda m: step("camera", op="photo")),
         (r"redo(?: (?:that|it|this))?", lambda m: step("press", keys="ctrl+y")),
         (r"copy(?: (?:that|this|it|the text|everything))?", lambda m: step("press", keys="ctrl+c")),
         (r"paste(?: (?:that|this|it|the text))?", lambda m: step("press", keys="ctrl+v")),
@@ -334,9 +485,21 @@ _TEMPLATES: list[tuple[re.Pattern[str], Callable[[re.Match], Step]]] = [
         (r"save(?: (?:it|this|that|the file|my work|the document))?", lambda m: step("press", keys="ctrl+s")),
         (r"show (?:me )?(?:the |my )?desktop|(?:minimize|minimise|hide) (?:everything|all(?: (?:the )?windows)?)",
          lambda m: step("press", keys="win+d")),
-        (r"zoom in", lambda m: step("press", keys="ctrl+=")),
-        (r"zoom out", lambda m: step("press", keys="ctrl+-")),
-        (r"reset (?:the )?zoom", lambda m: step("press", keys="ctrl+0")),
+        (r"zoom in", lambda m: step("doc", op="zoom_in")),
+        (r"zoom out", lambda m: step("doc", op="zoom_out")),
+        (r"reset (?:the )?zoom", lambda m: step("doc", op="zoom_reset")),
+        # folders and files (prompt 07c §7)
+        (r"(?:go )?up (?:a |one )?(?:folder|level|directory)|(?:go to )?(?:the )?parent (?:folder|directory)",
+         lambda m: step("nav", op="up")),
+        (r"(?:open|show me|go to|take me to|pull up|bring up|switch to)(?: up)?(?: my| the)?"
+         r" (?P<f>downloads|download|documents|screenshots|camera roll)(?: folder)?"
+         r"|(?:open|show me|go to|take me to|pull up|bring up)(?: my| the)?"
+         r" (?P<g>desktop|pictures|photos|music|videos|docs|home) folder",
+         lambda m: step("open_path", name=m["f"] or m["g"])),
+        (r"(?:open|open up|pull up|bring up|show me|find)(?: (?:the|my|that))? (?P<x>[a-z0-9 ]+?) (?P<k>" + _KIND + r")"
+         + _IN_FOLDER, _file),
+        (r"(?:open|open up|pull up|bring up|show me|find)(?: (?:the|my|that))? (?P<x>[a-z0-9 ]+?)" + _FOLDER,
+         _file_in),
         # full screen, without a named window
         (r"(?:go |make (?:it |this |that )?|set to |switch to |turn on )?full ?screen(?: (?:it|this|that|mode|this window|the window))?",
          lambda m: step("window", op="fullscreen", target="active")),
@@ -349,7 +512,9 @@ def _template(words: tuple[str, ...]) -> Step | None:
     for pattern, make in _TEMPLATES:
         m = pattern.fullmatch(phrase)
         if m:
-            return make(m)
+            made = make(m)
+            if made is not None:
+                return made
     return None
 
 
@@ -601,7 +766,8 @@ class _State:
     running: frozenset[str] = frozenset()  # apps with a window open (from the context snapshot)
 
 
-def _target_items(family: str, rest: tuple[str, ...], st: _State) -> list[object] | Ask | None:
+def _target_items(family: str, rest: tuple[str, ...], st: _State,
+                  verb: tuple[str, ...] = ()) -> list[object] | Ask | None:
     catalog, strict, running = st.catalog, st.strict, st.running
     if family in ("open", "switch", "place"):
         for suffix in _FRONT:
@@ -622,6 +788,8 @@ def _target_items(family: str, rest: tuple[str, ...], st: _State) -> list[object
         if not rest:
             return None
         if _is_pointer(rest):
+            if verb[:1] == ("close",) and not {"window", "app"} & set(rest):  # "close this": its tab, if tabbed
+                return [step("window", op="close", target=ACTIVE, tab=True)]
             return [step("window", op="close", target=ACTIVE)]
         found = _find(rest, catalog, strict, apps_only=True, familiar=running)
         if isinstance(found, tuple) and running:  # only what's open can be closed
@@ -694,7 +862,7 @@ def _clause(words: tuple[str, ...], st: _State) -> list[object] | Ask | None:
             if fixed is not None:  # "I need a new tab", "give me full screen"
                 st.family = None
                 return [fixed]
-        made = _target_items(family, rest, st)
+        made = _target_items(family, rest, st, words[:n])
         if made is not None:
             st.family = family
             return made
@@ -804,7 +972,7 @@ def _page_step(words: tuple[str, ...], verb: tuple[str, int] | None, text: str, 
     made = None
     lead_word = rest[1] if rest[0] in ("the", "that", "my") and len(rest) > 1 else rest[0]
     if family == "press" and parse_keys(rest) is None and _ROLE_NOUNS & set(rest):
-        made = "page_click", "description"
+        made = "ui_click", "name"  # the page map when Chrome is in front, UI Automation otherwise
     elif family in ("open", "switch") and lead_word in _ORDINAL_WORDS and rest[-1] in _PAGE_THINGS:
         made = "page_click", "description"  # "open the second result", "go to the first link"
     elif family in ("open", "switch") and canvas_item(rest):
@@ -1023,6 +1191,13 @@ def parse(text: str, catalog: Catalog, *, strict: bool = False, running: Iterabl
                 st.family = None
                 i = len(clauses)
                 continue
+        if verb is not None and verb[0] == "click":
+            numbered = _template(words)  # "click 12", "double click 7": a number on the screen, not a name
+            if numbered is not None:
+                items.append(numbered)
+                st.family = None
+                i += 1
+                continue
         if verb is not None and verb[0] in ("type", "search", "click"):
             start_tok = clause.first + lead + verb[1]
             if start_tok > clause.last:
@@ -1033,6 +1208,8 @@ def parse(text: str, catalog: Catalog, *, strict: bool = False, running: Iterabl
             made = _payload_step(verb[0], text, toks, begin, end, st)
             if made is None:
                 return None
+            if made.action == "ui_click" and words[0] == "double":
+                made = Step("ui_click", {**made.args, "count": 2})
             if made.action in ("type_text", "page_fill") and i < len(clauses):
                 nxt = clauses[i]
                 nwords = _trail(nxt.words[_lead(nxt.words):])
@@ -1079,7 +1256,7 @@ def parse(text: str, catalog: Catalog, *, strict: bool = False, running: Iterabl
     plan = _plan(items, st.confidence)
     if plan is not None and guessed:
         said = describe(plan)
-        return Plan("clarify", question=f"{said}?", choices=(said,), options=(plan,), confidence=0.5)
+        return Plan("clarify", question=f"{said}?", choices=(said,), options=(plan,), confidence=0.5, guess=True)
     return plan
 
 
@@ -1181,6 +1358,39 @@ def describe(plan: Plan) -> str:
             said = {"paste": "Paste your last dictation", "stop": "Stop dictation"}.get(a.get("op"), "Start dictation")
         case "listening" if a.get("op") == "end_session":
             said = "End the talk session"
+        case "ui_click":
+            how = {"right": "Right-click", "middle": "Middle-click", "hover": "Hover over"}.get(
+                a.get("button"), "Double-click" if a.get("count") == 2 else "Click")
+            said = f"{how} “{a.get('label') or a['name']}”"
+        case "pick":
+            how = {"right": "Right-click", "double": "Double-click", "middle": "Middle-click", "hover": "Hover over"}.get(
+                a.get("verb"), "Click")
+            said = f"Drag {a.get('n')} to {a['to']}" if a.get("to") is not None else f"{how} {a.get('n')}"
+        case "open_path":
+            said = f"Open {a.get('label') or a.get('name')}"
+        case "autoscroll" if a.get("op") == "start":
+            said = f"Keep scrolling {a.get('dir') or 'down'}"
+        case "system":
+            said = "Put the computer to sleep" if a.get("op") == "sleep" else "Lock the computer"
+        case "autoscroll":
+            said = {"faster": "Scroll faster", "slower": "Scroll slower"}.get(a.get("op"), "Stop scrolling")
+        case "doc":
+            said = {"goto_page": f"Go to page {a.get('page')}", "next_page": "Next page", "prev_page": "Previous page",
+                    "zoom_in": "Zoom in", "zoom_out": "Zoom out", "zoom_reset": "Reset the zoom",
+                    "fit_width": "Fit to width"}.get(a.get("op"), "Document")
+        case "numbers":
+            said = {"hide": "Hide the numbers", "more": "More numbers"}.get(a.get("op"), "Show numbers")
+        case "grid":
+            said = "Show the grid"
+        case "screenshot":
+            said = "Screenshot this window" if a.get("target") == "window" else "Take a screenshot"
+        case "camera":
+            said = "Take a photo"
+        case "nav" if a.get("op") == "up":
+            said = "Go up a folder"
+        case "nova":
+            said = {"again": "Do that again", "undo": "Undo that", "help": "Show what you can say"}.get(
+                a.get("op"), "Nova")
         case _:
             said = s.action.replace("_", " ").capitalize()
     return said + (" …" if len(plan.steps) > 1 else "")
@@ -1210,7 +1420,10 @@ def _payload_step(kind: str, text: str, toks: Sequence[Tok], begin: int, end: in
         said = [t.word for t in toks if begin <= t.start and t.end <= end and t.word]
         if canvas_item(said):
             return step("canvas_open_item", item=payload)
-        return step("page_click", description=payload)
+        lead = said[1] if said[:1] in (["the"], ["that"], ["my"]) and len(said) > 1 else (said[0] if said else "")
+        if lead in _ORDINAL_WORDS and said[-1] in _PAGE_THINGS:
+            return step("page_click", description=payload)  # "click the first link": the page map's order
+        return step("ui_click", name=payload)  # the page map when Chrome is in front, UI Automation otherwise
     inner = [t for t in toks if begin <= t.start and t.end <= end and t.word]
     words = [t.word for t in inner]
     engine = "google"
@@ -1290,10 +1503,11 @@ def _engine_search(words: tuple[str, ...]) -> bool:
 # --- always-listening: the gate's resolver ------------------------------------------------------------------------
 
 _SAFE = frozenset({"open_app", "switch_app", "open_url", "layout", "nav", "scroll", "scroll_to", "media", "volume",
-                   "listening"})
+                   "listening", "autoscroll", "doc", "numbers", "grid"})  # never pick / ui_click: they click
 _FAMILIES = {"open_app": "open", "switch_app": "open", "open_url": "open", "close_app": "close", "window": "window",
              "layout": "window", "type_text": "type", "press": "press", "web_search": "search", "page_click": "click",
-             "page_fill": "type", "scroll_to": "scroll", "canvas_due": "canvas", "canvas_open_item": "click"}
+             "page_fill": "type", "scroll_to": "scroll", "canvas_due": "canvas", "canvas_open_item": "click",
+             "ui_click": "click", "pick": "pick"}
 
 
 # One word that means the player only while something is playing (the gate knows when), and what runs for it.

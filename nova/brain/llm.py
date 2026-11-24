@@ -27,7 +27,9 @@ DEFAULT_URL = "http://127.0.0.1:11434"
 CONNECT_S = 3.0
 # One set of load options for every caller (SPEC §7.4): Ollama reloads the model (10-27 s) whenever a request's
 # num_ctx / num_gpu differ from the loaded copy's, so the planner and dictation cleanup must send the same ones.
-NUM_CTX = 4096
+# 6144: Tier 1's static prefix is ~3,900 tokens with his short names (07c); a 40-row page + a talk session's
+# "before" + the answer need ~1,100 more. The hybrid model's KV cache grows only in its attention layers.
+NUM_CTX = 6144
 LOAD_TIMEOUT_S = 180.0  # a cold load (15-20 s on the RTX, longer on the CPU) + reading the prompt prefix
 _PS_TIMEOUT_S = 1.0
 # Greedy and unpenalized: some models ship presence/repeat penalties (Qwen 3.5: 1.5 / 1.1) that bend JSON at temp 0.

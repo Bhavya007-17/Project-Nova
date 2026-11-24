@@ -134,17 +134,60 @@ memories aren't shared, this file is.
   negative: p(act) 0.38 / p(ignore) 0.29 cached, 0.32 / 0.36 re-read). Don't chase single-case eval diffs
   between runtimes; compare totals.
 
+## Control anything (07c)
+- **Chromium builds its accessibility tree only when asked.** The first UIA snapshot of a Claude / Chrome / VS Code
+  window from a fresh process held only Minimize / Maximize / Close; the same window seconds later had 199 elements,
+  131 clickable. `uitree.warm_snapshot` (numbers, click by name, PDF fit width) re-asks every 150 ms for up to 1 s
+  while a `Chrome_WidgetWin_*` window shows ≤ 3 clickable elements.
+- **The subtree cache costs ~0.6 ms per node** (Chrome 202 nodes 142–168 ms, Claude 475 nodes 210–271 ms, Explorer
+  ~110 ms). Win32 controls reached through the MSAA proxy cost ~11 ms each: a window with 300 classic buttons takes
+  3–4 s by any method. OCR of a window: grab 50 + bitmap 20 + recognize 76 ms.
+- **This laptop has no S3 sleep, only Modern Standby** (`GetPwrCapabilities`: S3 false, AoAc true). There is no call
+  that enters Modern Standby, and `SetSuspendState` there hibernates — "go to sleep" turns the screen off
+  (`SC_MONITORPOWER`), which is how standby starts.
+- **`open_path` checks at the sink, not only in the planner:** the path must exist, sit under one of his known
+  folders (resolved through `SHGetKnownFolderPath`, so OneDrive moves follow) and not be something that runs
+  (`risky`: .exe/.bat/.ps1/.lnk… are refused, folders are fine).
+- **Tier 1's static prefix grew 3,313 → 3,743 tokens** with the 07c rules and examples (qwen3.5 tokenizer, before
+  his aliases), ~3,900 with them; `NUM_CTX` went 4096 → 6144 so a 40-row page map, a talk session's `before` and
+  the answer still fit. Every caller must send the same `num_ctx`, or Ollama reloads the model.
+- **Greedy number words in Tier 0 regexes:** "drag five over to nine" read "five over" as the first number. The
+  first number group is lazy (`??`) and "over" optional.
+- **Eval rows must not repeat a Tier 1 prompt example** (a test checks): the model has the answer in front of it,
+  so the row measures nothing.
+- `nova numbers --dump [--title T]` saves what "show numbers" would tag (JSON) and the window's pixels (PNG) to
+  `data/`, nothing clicked. A window that isn't in front shows whatever covers it in the picture.
+- **Chrome's PDF viewer (measured live, CfT 149):** `#page=N` on the URL is ignored once the PDF is open; the
+  viewer's UIA subtree arrives ~1 s after the page; the fit button is a toggle (a second "fit to width" undoes the
+  first, so read its state); with the omnibox focused its dropdown covers the toolbar (Esc first); UIA `SetFocus`
+  on the page box reports success while keyboard focus stays put — click it for real and check; Left / Right
+  scroll sideways when zoomed, so page turns go through the page box (its UIA value is the current page, ±1).
+- **Win11 Notepad restores unsaved tabs:** closing the window (WM_CLOSE) keeps them, no dialog, and they come back
+  next start (`LocalState\TabState`). Ctrl+W on a dirty tab is what asks to save — an in-app XAML dialog inside the
+  main window, which Tier 1 never sees. A bare button name ("don't save") is matched against the front window's
+  buttons before Tier 1 (`marks.button_named`, tier "screen").
+- **Tab keys follow the window in front:** "close the tab" with Notepad / Explorer / Terminal in front went to
+  Chrome (or failed "Chrome isn't open"). A front window with UIA tab items gets the keys; Windows Terminal needs
+  Ctrl+Shift+W / T (Ctrl+W deletes a word in the shell).
+- **Not every tab item is a document tab:** Word / Excel ribbons and property sheets are UIA tab items too, and
+  Ctrl+W in Word closes the document. Tabs count when one names what the title names (`marks.doc_tabs`: the title
+  before " - ", Explorer's "and 2 more tabs" dropped). Windows Terminal always counts: a program in the shell
+  (Claude Code) retitles the window but not the tab, so title and tab name can share no word. "close this" /
+  "close it" closes the tab in such an app (and in a browser); "close this window" / "quit this" close the window.
+
 ## Chrome extension
 - **Branded Chrome 137+ ignores `--load-extension`**: loading `extension/` unpacked is a one-time manual step.
   Chrome for Testing (Playwright's copy) still honours it (+ `--disable-features=DisableLoadExtensionCommandLineSwitch`,
   temp `--user-data-dir`).
 - CfT reads native hosts from `HKCU\Software\Google\Chrome for Testing\NativeMessagingHosts`:
   `nova chrome --install --browser testing`. `extension/test/selftest.py` does all of this; quit the tray app first
-  (it owns the pipe). Extend the self-test instead of asking a human to load things.
+  (it owns the pipe). Extend the self-test instead of asking a human to load things. CfT 149 also started the host
+  registered under `Google\Chrome`, so a test harness sets `NOVA_BRIDGE_FILE` to make whichever host starts read
+  its bridge.
 
 - **Chrome's built-in PDF viewer can't be scripted.** The content script finds nothing scrollable and reports
-  `ok: true, moved: false`, which Nova reads as "Already at the bottom" (from the code, 2026-11-11 — not yet reproduced
-  live). Send real keys or the wheel to the focused PDF instead.
+  `ok: true, moved: false`, which Nova reads as "Already at the bottom". Send real keys or the wheel to the focused
+  PDF instead (07c does; see "Chrome's PDF viewer" above).
 
 ## Dictation
 - A RichEdit (what Notepad is built on) silently ignores Ctrl+V when the clipboard holds only `"\r\n\r\n"`: hold

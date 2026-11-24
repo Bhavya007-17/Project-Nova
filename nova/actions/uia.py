@@ -17,7 +17,7 @@ from ctypes import POINTER, byref, c_void_p, wintypes
 from dataclasses import dataclass
 from typing import Any
 
-from . import native
+from . import native, uitree
 
 _log = logging.getLogger(__name__)
 
@@ -67,6 +67,8 @@ class FocusReader:
             queue.SimpleQueue()
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
+        self._held: list[c_void_p] = []  # element pointers of the last snapshot (UIA thread only)
+        self.generation = 0  # bumps with every snapshot: an index from an older one must not reach ``act``
 
     def _ask(self, fn: Callable[[c_void_p], Any], timeout: float) -> Any:
         with self._lock:
@@ -91,6 +93,40 @@ class FocusReader:
         answer in time."""
         value = self._ask(lambda automation: self._caret(automation, limit), timeout)
         return value if isinstance(value, Caret) else None
+
+    def snapshot(self, hwnd: int, *, skip_documents: bool = False, timeout: float = 1.5) -> list[uitree.Element]:
+        """Every usable element of the window (``uitree.snapshot``). Their pointers stay here until the next
+        snapshot so ``act`` can use them."""
+        def read(automation: c_void_p) -> list[uitree.Element]:
+            elements, pointers = uitree.snapshot(automation, hwnd, skip_documents=skip_documents)
+            for pointer in self._held:
+                native.com_release(pointer)
+            self._held = pointers
+            self.generation += 1
+            return elements
+
+        value = self._ask(read, timeout)
+        return value if isinstance(value, list) else []
+
+    def act(self, index: int, patterns: frozenset[str], timeout: float = 2.0) -> str | None:
+        """Invoke / toggle / select / expand element ``index`` of the last snapshot. The method that took, "" = it
+        needs a real click, None = it is still running (a dialog opened) or the element is gone."""
+        def run(_: c_void_p) -> str | None:
+            if not 0 <= index < len(self._held):
+                return ""
+            return uitree.activate_with_deadline(self._held[index], patterns)
+
+        return self._ask(run, timeout)
+
+    def scroll(self, direction: str, amount: str, x: int | None = None, y: int | None = None,
+               timeout: float = 0.6) -> uitree.ScrollReceipt | None:
+        """ScrollPattern on what's under (x, y) / the focus. None = nothing scrollable there (or no answer)."""
+        value = self._ask(lambda automation: uitree.scroll(automation, direction, amount, x, y), timeout)
+        return value if isinstance(value, uitree.ScrollReceipt) else None
+
+    def focus_at(self, x: int, y: int, timeout: float = 0.4) -> bool:
+        """UIA SetFocus on what's under (x, y): keys go there next, nothing gets clicked."""
+        return self._ask(lambda automation: uitree.focus_at(automation, x, y), timeout) is True
 
     def close(self) -> None:
         if self._thread is not None:

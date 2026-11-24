@@ -1,7 +1,7 @@
 # Stage 09 — Handoff to Claude / ChatGPT + done notifications
 
 **Read:** CLAUDE.md, SPEC §13, §5 (Passthrough, talk sessions), §7.6, §10, §14, §16; GOTCHAS "Windows input and focus". Needs 07c (the UIA bindings, receipts).
-**Goal:** "put my homework for today on Claude", "ask ChatGPT …", "have Claude research X and tell me when it's done" and "on Claude, turn on voice" all work through the desktop apps, and a notice arrives when they finish.
+**Goal:** "put my homework for today on Claude", "ask ChatGPT …", "have Claude research X and tell me when it's done" and "on Claude, turn on voice" all work through the desktop apps, and a notice arrives when they finish. Questions and jobs Nova can't do locally go to Claude without the user naming it, and "what's this error?" sends what is on screen and brings the answer back to the island (Build 9–10, added 2026-11-22).
 
 What is already there (read from the code on 2026-11-13, before 07b / 07c landed — find things by name):
 - Tier 1 already answers `handoff{to, mode, prompt}` and `validate._handoff` keeps `prompt` to his own words. Then nothing happens: `brain.handle` shows `describe_handoff(plan)` and `Executor.run` refuses plans that aren't `act`. The schema has no `attach`.
@@ -25,7 +25,7 @@ The answers set the driver order for each app: UIA → shortcuts → the website
 ## Build
 1. **One driver, three targets.** `open(new_chat)`, `compose(text)`, `send()`, `busy() -> True | False | None` (None = can't see), `last_message()`, `voice(on)`, `focus()`. The two desktop apps are one class + a table of control descriptors from the probe (with the date they were checked), not two code paths. The third is claude.ai / chatgpt.com through the extension: the page map and `fill` already handle contenteditable composers. When a control isn't found the error names it ("Can't find Claude's new-chat button — its window may have changed; using the website") and the next target is tried.
 2. **Schema and routing.**
-   - `handoff.attach: [canvas_today | page_text | selection]` in `prompt.SCHEMA`, `validate._handoff` (checked against the enum; `prompt` stays a span of his words), the Tier 1 rules + two examples, and the eval notation (`handoff claude +canvas_today`). Count the prompt's tokens before and after: 07a's budget holds.
+   - `handoff.attach: [canvas_today | page_text | selection | screen]` in `prompt.SCHEMA` (`screen`: Build 10), `validate._handoff` (checked against the enum; `prompt` stays a span of his words), the Tier 1 rules + two examples, and the eval notation (`handoff claude +canvas_today`). Count the prompt's tokens before and after: 07a's budget holds.
    - Tier 0 patterns for explicit handoff words (SPEC §7.6), no LLM: "ask / tell / have <Claude | ChatGPT> …", "on <Claude>, …", "put … on <Claude>", "<Claude> voice". The names go through the catalog's aliases and sound-alikes ("Claire", "cloud") and are asked, not guessed, the way Tier 0 treats app names today. "open Claude" stays `open_app`. Anything that needs judgement about what to attach goes to Tier 1.
 3. **Compose.** His words first, then each attachment under a plain heading (title, due date, the text). Cap attachment text at ~20,000 characters, cut at a paragraph, and say it was cut.
    - Attachments are fetched before any window moves: `canvas_today` → `canvas_items` + `canvas_text` (one item → use it; several → the island's numbered pick; none → say so and stop); `page_text` → the page read; `selection` → the selection in Chrome (say plainly if it only works in Chrome).
@@ -57,6 +57,34 @@ The answers set the driver order for each app: UIA → shortcuts → the website
    - In Passthrough the gate already wants the name or the key. Two things to add: a "Nova, …" command that runs there shows its result, and what he says to Claude isn't Nova's to keep — finals the gate ignores in Passthrough are logged without their text.
    - From a talk session: the session pauses, as it does for dictation, and resumes when voice ends.
 8. **Wire it.** `brain.handle`'s handoff branch → resolve attachments → Confirm → send → job. `nova say "…" --dry` prints the target and the composed prompt and sends nothing. While the workstation is locked nothing is sent.
+9. **Auto-route: big asks go to Claude unnamed** (added 2026-11-22 — Bhavya: "for cloud models I want it to automatically send the commands to Claude / ChatGPT").
+   - **What goes:** anything that isn't a local action — explain, write, research, solve, summarize, code, a factual question — becomes `handoff{to: default}`.
+     - Settings: `handoff.default: claude | chatgpt` and `handoff.auto_route: on | off`.
+     - SPEC §7.6 already sends big open-ended work to Claude. This widens it to every question Nova can't answer itself.
+   - **Only when Nova was clearly addressed:** the key, the name, or a talk session. Never from always-listening alone (a room is full of questions), and never over the speakers (SPEC §5: handoff needs the name or the key there).
+   - **Who decides:** Tier 1 decides between a local action and a question. Tier 0 catches the obvious starts ("what is", "why", "how does", "explain", "write me", "summarize") only when no app or action word follows. Small talk ("thanks", "nice one") goes nowhere.
+   - **Where the user ends up:**
+     - a question → the answer comes back to the island (10), and the user stays in their window;
+     - a job ("write me a cover letter for…") → the target app comes to the front, like a direct ask.
+   - **No Confirm** when only the user's own words go (SPEC §13). The chip says where it went, so a wrong route is one "cancel that" away (stop-generating, then the chip goes).
+   - **Eval:** ≥ 15 auto-route rows + ≥ 10 negatives: local actions phrased as questions ("can you open Spotify", "what's the volume", "where's my downloads folder") stay local.
+10. **Screen questions + the answer card.** "what's this error", "what does this mean", "explain this", "summarize this page".
+    - **`attach: screen`** gathers what the user is looking at, cheapest first. Same cap as 3.
+      1. the selection (07e's reader, if built);
+      2. Chrome: `page_read{page}`;
+      3. native: the text of the dialog in front, then the window (07c's snapshot names, and TextPattern documents);
+      4. OCR of the window (07c `ocr.lines`).
+    - **Never from a password field** or a window that has one focused.
+    - **It is content the user didn't speak** → Confirm with the preview: "Send the error dialog's text (42 words) to Claude with “what's this error”?". Screen text can hold anything, so this stays even when auto-routed. A "don't ask again for screen questions" setting is the user's call — not in this stage.
+    - **The send:** the target app comes forward to send (the paste needs the foreground), then the user's window comes back, as for a background job.
+      - The rule: if the user named the app, it stays in front. If they didn't, the answer comes to the island.
+    - **The answer card:**
+      - While the job is busy, the card shows the partial answer from `last_message()` at every watcher poll. On done it shows the final answer: ~600 characters, markdown flattened.
+      - Buttons: [Open] (the chat comes forward), [Copy].
+      - Budget (SPEC §16): the card shows the final answer ≤ 1 s after the done rule fires. Trace it.
+      - 09a speaks it if talk-back is on.
+      - "and how do I fix it?" said in the follow-up window or a talk session goes to the same chat.
+    - **Other stages use this path:** 07d's "Ask Claude how?" and 07e's "too long — send it to Claude?".
 
 ## Verify yourself
 Unit tests, written first: the jobs state machine (the done rule, "can't see", give-up), compose (order, cap, headings), `assess_handoff`, the Tier 0 patterns, attach validation, Passthrough in / out. A fake target for the send sequence: fail each check in turn → nothing is sent. `nova eval` ≥ 90 % with the new rows, negatives not higher. Focus-free: `uia-dump`, `--dry`. Then ask once and run real sends with a harmless prompt ("say hello") to both apps and one website target, and a 10-minute watcher CPU measurement.
@@ -66,8 +94,10 @@ Unit tests, written first: the jobs state machine (the done rule, "can't see", g
 2. "ask ChatGPT what a Carnot cycle is" → the same in ChatGPT, no Confirm.
 3. In a talk session: "have Claude research <something> and tell me when it's done" → he is back in his window at once and keeps talking; a second job goes to a browser tab; both chips finish.
 4. "on Claude, turn on voice" → talk to Claude, Nova ignores him; "Nova, volume down" still works; tap Copilot to end.
+5. Key held: "why does ice float" (no app named) → a chip, then the answer card in the island; Claude came forward only to send, and Bhavya's own window is back in front.
+6. An error dialog on screen (a throwaway one, e.g. opening a file that doesn't exist): "what's this error?" → the Confirm with the preview → the answer card.
 
 ## If usage runs short
-Stop after any of these with its demo line working: (1) the probe + text handoff to Claude; (2) attachments + Confirm; (3) jobs, watcher, chip, toast; (4) ChatGPT; (5) voice + Passthrough; (6) the website target + a second job.
+Stop after any of these with its demo line working: (1) the probe + text handoff to Claude; (2) attachments + Confirm; (3) jobs, watcher, chip, toast; (4) ChatGPT; (5) voice + Passthrough; (6) the website target + a second job; (7) auto-route + the answer card; (8) screen questions.
 
 Commit as you go; close with `stage 09: handoff`. Report (include the probe table).

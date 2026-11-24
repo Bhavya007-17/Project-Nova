@@ -26,9 +26,21 @@ AREAS = frozenset({
 })
 MONITORS = frozenset({"next", "prev", "left", "right", "primary", "other"})
 TAB_OPS = frozenset({"new", "close", "next", "prev", "reopen", "goto"})
-NAV_OPS = frozenset({"back", "forward", "reload"})
+NAV_OPS = frozenset({"back", "forward", "reload", "up"})  # up: a folder up in File Explorer
 SCROLL_DIRS = frozenset({"up", "down", "left", "right", "top", "bottom"})
-SCROLL_AMOUNTS = frozenset({"small", "page", "large"})
+SCROLL_AMOUNTS = frozenset({"bit", "small", "half", "page", "large"})
+AUTOSCROLL_OPS = frozenset({"start", "faster", "slower", "stop"})
+AUTOSCROLL_DIRS = frozenset({"up", "down", "left", "right"})
+SPEEDS = frozenset({"slow", "keep", "fast"})
+DOC_OPS = frozenset({"goto_page", "next_page", "prev_page", "zoom_in", "zoom_out", "zoom_reset", "fit_width"})
+BUTTONS = frozenset({"left", "right", "middle", "hover"})
+CLICK_VERBS = frozenset({"click", "right", "double", "middle", "hover"})
+NUMBERS_OPS = frozenset({"show", "hide", "more"})
+SCOPES = frozenset({"here", "everywhere"})  # the front window / its whole screen
+SHOT_TARGETS = frozenset({"screen", "window"})
+SYSTEM_OPS = frozenset({"lock", "sleep"})
+NOVA_OPS = frozenset({"help", "again", "undo"})
+HELP_TOPICS = frozenset({"apps", "web", "screen", "system"})
 VOLUME_OPS = frozenset({"up", "down", "mute", "unmute", "set"})
 MEDIA_OPS = frozenset({"play_pause", "play", "pause", "next", "prev", "stop"})
 DICTATION_OPS = frozenset({"start", "stop", "paste"})  # paste: his last dictation again
@@ -139,6 +151,14 @@ def _one_of(args: Mapping[str, Any], key: str, allowed: frozenset[str], *, requi
         raise PlanError(f"{key} {value!r} is not one of {sorted(allowed)}")
 
 
+def _number(args: Mapping[str, Any], key: str, low: int, high: int, *, required: bool = True) -> None:
+    value = args.get(key)
+    if value is None and not required:
+        return
+    if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+        raise PlanError(f"{key} must be a whole number {low}-{high}")
+
+
 def _url(value: str) -> None:
     parts = urlsplit(value)
     if parts.scheme not in ("http", "https") or not parts.hostname or any(c.isspace() for c in value):
@@ -164,6 +184,8 @@ def _check_step(s: Step) -> None:
             _one_of(a, "op", WINDOW_OPS)
             _text(a, "target", required=False)
             _one_of(a, "monitor", MONITORS, required=False)
+            if not isinstance(a.get("tab", False), bool):  # "close this": its tab, in a tabbed app
+                raise PlanError("tab must be true or false")
         case "layout":
             slots = a.get("slots")
             if not isinstance(slots, (list, tuple)) or not 1 <= len(slots) <= 4:
@@ -223,8 +245,51 @@ def _check_step(s: Step) -> None:
             pass
         case "listening":
             _one_of(a, "op", LISTENING_OPS)
+        case "autoscroll":
+            _one_of(a, "op", AUTOSCROLL_OPS)
+            _one_of(a, "dir", AUTOSCROLL_DIRS, required=False)
+            _one_of(a, "speed", SPEEDS, required=False)
+        case "doc":
+            _one_of(a, "op", DOC_OPS)
+            _number(a, "page", 1, 99999, required=a.get("op") == "goto_page")
+        case "ui_click":
+            _text(a, "name")
+            _one_of(a, "button", BUTTONS, required=False)
+            _number(a, "count", 1, 3, required=False)
+            _text(a, "role", required=False)
+            _text(a, "near", required=False)
+        case "numbers":
+            _one_of(a, "op", NUMBERS_OPS, required=False)
+            _one_of(a, "scope", SCOPES, required=False)
+        case "grid":
+            _one_of(a, "scope", SCOPES, required=False)
+        case "pick":
+            _number(a, "n", 1, 999)
+            _one_of(a, "verb", CLICK_VERBS, required=False)
+            _number(a, "to", 1, 999, required=False)
+        case "screenshot":
+            _one_of(a, "target", SHOT_TARGETS, required=False)
+        case "camera":
+            _one_of(a, "op", frozenset({"photo"}), required=False)
+        case "system":
+            _one_of(a, "op", SYSTEM_OPS)
+        case "open_path":
+            _text(a, "name", required=bool(not a.get("path")))
+            _text(a, "folder", required=False)
+            _text(a, "path", required=False)  # resolved: the file on disk (never from the model; see validate)
+        case "nova":
+            _one_of(a, "op", NOVA_OPS)
+            _one_of(a, "topic", HELP_TOPICS, required=False)
         case _:
             raise PlanError(f"unknown action {s.action!r}")
+
+
+ACTIONS = frozenset({
+    "open_app", "switch_app", "close_app", "window", "layout", "open_url", "web_search", "tab", "nav", "scroll",
+    "type_text", "page_click", "scroll_to", "page_fill", "page_read", "canvas_due", "canvas_open_item",
+    "canvas_item_text", "canvas_open", "press", "volume", "media", "dictation", "docs_new", "listening", "autoscroll",
+    "doc", "ui_click", "numbers", "grid", "pick", "screenshot", "camera", "system", "open_path", "nova",
+})  # every action _check_step knows (the help card is checked against it)
 
 
 def dictate_after_docs(steps: tuple[Step, ...]) -> tuple[Step, ...]:

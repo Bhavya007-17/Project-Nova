@@ -24,6 +24,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Protocol
 
+from .actions.marks import parse_number
+
 _TOKEN = re.compile(r"[^\W_]+(?:['’][^\W_]+)*")
 _SEPARATORS = " \t\r\n,.:;!?-–—…\"'“”"
 _GREETINGS = frozenset({"hey", "hi", "hello", "ok", "okay", "yo", "oh"})
@@ -124,7 +126,7 @@ _VERBS = frozenset({
     "fire", "boot", "focus", "navigate", "jump", "take", "get", "show", "minimize", "minimise", "maximize",
     "maximise", "restore", "snap", "move", "put", "make", "click", "press", "hit", "type", "write", "scroll",
     "search", "play", "pause", "resume", "unpause", "stop", "skip", "next", "previous", "mute", "unmute", "turn",
-    "volume", "new", "reload", "refresh", "reopen",
+    "volume", "new", "reload", "refresh", "reopen", "keep", "zoom", "hover", "drag", "numbers", "grid", "screenshot",
 })
 
 
@@ -225,6 +227,8 @@ class Env:
     resolver: Resolver
     mic_busy: str | None = None  # another app recording (a call): its name
     speakers: bool = False  # the speakers played audio while this was said
+    numbers: bool = False  # numbers / a grid are on screen: a bare number picks one
+    scrolling: bool = False  # steady scrolling runs: a bare "stop" stops it
 
 
 @dataclass(frozen=True)
@@ -243,6 +247,31 @@ class Decision:
     def wake_only(self) -> bool:
         """He only said the name: open a listening session for what comes next."""
         return self.accepted and not self.text
+
+
+def _steering(heard: str, env: Env) -> Decision | None:
+    """While numbers show or steady scrolling runs, a bare "seven" / "stop" / "click 12" / "faster" steers it without
+    the name (prompt 07c §2, §4). Not over the speakers: a video says numbers too."""
+    if env.speakers or not (env.numbers or env.scrolling):
+        return None
+    words = _words(heard)
+    while words and words[0] in _FILLERS and not (words[0] == "right" and words[1:2] == ["click"]):
+        words = words[1:]
+    said = " ".join(words)
+    if not said:
+        return None
+    if env.numbers and parse_number(said) is not None:
+        return Decision(True, "numbers", said, heard, "numbers are showing")
+    if env.scrolling and is_stop(heard, env.wake):
+        return Decision(True, "scrolling", heard, heard, "scrolling")
+    resolved = env.resolver.resolve(tuple(words))
+    if resolved is None:
+        return None
+    if env.numbers and resolved.action in ("pick", "numbers", "grid"):
+        return Decision(True, "numbers", said, heard, "numbers are showing")
+    if env.scrolling and resolved.action == "autoscroll":
+        return Decision(True, "scrolling", said, heard, "scrolling")
+    return None
 
 
 def decide(text: str, addressing: Addressing, env: Env) -> Decision:
@@ -271,6 +300,9 @@ def decide(text: str, addressing: Addressing, env: Env) -> Decision:
         return ignored("asleep", f"asleep: say {name} or use the key")
     if env.mic_busy:
         return ignored("mic-busy", f"{env.mic_busy} is using the mic: say {name} or use the key")
+    steered = _steering(heard, env)
+    if steered is not None:
+        return steered
     over_speakers = ignored("speakers", f"the speakers are playing: say {name} or use the key")
     words = command_words(heard)
     # While Nova works on his command he is still talking to it: the follow-up window is already open.

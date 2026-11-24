@@ -93,6 +93,39 @@ def playing(samples: int = 4, every: float = 0.03) -> bool:
         native.com_release(meter)
 
 
+_POWER_S3, _POWER_AOAC = 5, 20  # byte offsets in SYSTEM_POWER_CAPABILITIES (winnt.h)
+_HWND_BROADCAST, _WM_SYSCOMMAND, _SC_MONITORPOWER, _MONITOR_OFF = 0xFFFF, 0x0112, 0xF170, 2
+
+
+def lock() -> str:
+    """Win+L sent as keys does nothing (the secure attention sequence); LockWorkStation is the call."""
+    if not native.user32.LockWorkStation():
+        raise ActionError("Windows wouldn't lock.")
+    return "Locked"
+
+
+def power_caps() -> tuple[bool, bool]:
+    """(S3 sleep, Modern Standby) on this PC."""
+    caps = (ctypes.c_ubyte * 128)()
+    if not ctypes.WinDLL("powrprof").GetPwrCapabilities(byref(caps)):
+        return False, False
+    return bool(caps[_POWER_S3]), bool(caps[_POWER_AOAC])
+
+
+def sleep() -> str:
+    """S3 PCs suspend. Modern Standby PCs (most new laptops, S0 low-power idle) have no call to enter it — asking
+    for S3 there hibernates — so the screen goes off, the way that standby starts."""
+    s3, standby = power_caps()
+    if s3:
+        if not ctypes.WinDLL("powrprof").SetSuspendState(False, False, False):
+            raise ActionError("Windows wouldn't go to sleep.")
+        return "Sleeping"
+    if standby:
+        native.user32.PostMessageW(_HWND_BROADCAST, _WM_SYSCOMMAND, _SC_MONITORPOWER, _MONITOR_OFF)
+        return "Screen off"
+    raise ActionError("This PC can't sleep from here.")
+
+
 def media(op: str) -> str:
     if op == "pause" and not playing():
         return "Nothing's playing"

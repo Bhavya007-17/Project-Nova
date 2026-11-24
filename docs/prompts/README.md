@@ -23,8 +23,11 @@
 | 07a-fast-hearing.md | Fast + hearing | Reacts every time; loose requests in ~1 s, never "took too long" |
 | 07b-sessions.md | Talk sessions | Open the mic once, talk naturally, each clause acts |
 | 07c-control-anything.md | Control anything | Scroll PDFs, click by name or number, grid, camera, screenshot, folders |
+| 07d-guide-and-loop.md | Guide + loop | Click by meaning, "show me how" with a ring on each step, "do it for me" in a loop |
+| 07e-rewrite.md | Rewrite | Selected text rewritten in place ("make this more formal") |
 | 08-teach-learn.md | Teach + learn | "Show me?" and auto-learned shortcuts |
-| 09-handoff.md | Handoff | Claude/ChatGPT apps, voice mode, done notifications |
+| 09-handoff.md | Handoff | Claude/ChatGPT apps, voice mode, done notifications, questions auto-routed, "what's this error?" answered in the island |
+| 09a-talk-back.md | Talk back | Nova speaks answers out loud (off by default), stops the moment you say so |
 | 10-safety-polish.md | Safety + polish | Confirmations, settings, start with Windows |
 | 11-speed-soak.md | Speed + soak | Budgets met, stable all day |
 | 12-optional.md | Optional | Todoist/Notion/Calendar hooks, MCP server |
@@ -32,6 +35,8 @@
 First useful version: after 05. Hands-free: after 07c. Daily driver: after 09.
 
 07a–07c were added on 2026-11-11 after a week of real use (what the logs showed is at the top of each file). Each lands on its own branch and pull request, with its live demo done before the next one starts.
+
+07d, 07e and 09a were added on 2026-11-22 after a look at Nūs Companion (github.com/potlakai/nus-companion), a cloud voice assistant: the ideas worth having, rebuilt local-first. 08–11 gained the matching items, each marked "if 07d / 07e / 09a is built". 07d needs 07c, 07e needs only 07 (dictation), 09a needs 09 (the answer card).
 
 ## Stages 07b–12 on Opus 5.5
 08–12 were rewritten on 2026-11-13 (and 07b / 07c touched up) so that a model with less headroom than the one that designed them can build them. The design choices, the traps and the order of work are already in each file. The builder's job is to check them against the code as it is that day, and build — not to redesign.

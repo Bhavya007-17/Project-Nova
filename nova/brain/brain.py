@@ -37,6 +37,7 @@ from ..events import (
     BrainProgress,
     CommandFinished,
     ConfigChanged,
+    MarksHide,
     Gated,
     IslandAction,
     PreloadHint,
@@ -299,14 +300,17 @@ class Brain:
         browser = Chrome(bridge, catalogs.current) if bridge is not None else None
         chrome = ChromeHands(browser) if browser is not None else None
         self._snap: Callable[[Catalog], Context] = lambda catalog: snapshot(catalog, bridge)
-        self._hands = WindowsHands(catalogs.current, nova=NovaControls(self._dictation, self._listening), chrome=chrome)
+        self._hands = WindowsHands(catalogs.current, nova=NovaControls(self._dictation, self._listening), chrome=chrome,
+                                   publish=bus.publish)
         self._executor = Executor(self._hands, IslandAsker(bus, self._answers), progress=self._progress)
         client = connect(settings().ollama.url, lambda: settings().llm.runtime)
         self._governor = Governor(client, lambda: settings().llm)
         self._tier1 = Tier1(client, self._governor, self._llm, catalogs.current,
                             warming=lambda: bus.publish(BrainProgress("warming", WARMING)),
                             warmed=lambda: bus.publish(BrainProgress("thinking")))
-        self._router = Router(self._tier1, page=chrome.page_rows if chrome is not None else None)
+        self._router = Router(self._tier1, page=chrome.page_rows if chrome is not None else None,
+                              numbers=lambda: self._hands.pointer.showing or self._hands.pointer.grid_on,
+                              scrolling=lambda: self._hands.scroller.scrolling, buttons=self._hands.button_named)
         # Dictation (Stage 07): the same model as Tier 1 cleans it up, through the same governor and loader.
         self._cleaner = Cleaner(self._governor, self._llm, terms,
                                 client=client.sibling,
@@ -325,6 +329,7 @@ class Brain:
             bus.subscribe(PreloadHint, lambda event: self._tier1.preload(event.reason)),
             bus.subscribe(ConfigChanged, self._on_config),
             bus.subscribe(TalkChanged, self._on_talk),
+            bus.subscribe(MarksHide, lambda event: self._hands.pointer.hide(event.why)),
         ]
         self._thread = threading.Thread(target=self._run, name="nova-brain", daemon=True)
 
@@ -382,6 +387,7 @@ class Brain:
 
     def _on_cancelled(self, event: SessionCancelled) -> None:
         self._answers.put(event)
+        self._hands.scroller.stop()  # Esc / "stop" ends steady scrolling too (it runs on its own thread)
         if self._busy:  # Esc / superseded while thinking or acting: drop the LLM call, stop before the next step
             self._executor.cancel()
             self._router.abort()

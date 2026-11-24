@@ -58,6 +58,12 @@ The LLM runs outside the process: Ollama as its own service (already installed),
 - **Name biasing (optional, measured):** the same Parakeet model through a decoder with hotwords built from the aliases, the catalog and the vocab file, if it cuts app-name errors without costing latency (Stage 07a decides).
 - **No denoiser in front of STT** — published tests (2025–26) show speech enhancement raising Parakeet's and Whisper's error rates. Echo cancellation against what the speakers play is the later option for talking over media.
 - **Backend interface:** `transcribe(pcm) -> text`, so whisper-turbo or a newer model can be downloaded and swapped in.
+- **Speech out (talk back, Stage 09a):** off by default; `speech_out: off | answers | everything`, toggled by voice ("talk back on / off") or the tray.
+  - **Engine:** Windows' own WinRT voice into a playback stream Nova owns, so any stop is immediate. Short fixed lines are pre-rendered.
+  - **What it says:** answers (first ~2 sentences, the rest on screen), questions, errors, done notices and guide captions.
+  - **Stop:** a Copilot tap, a stop word, a click on the island's speaker glyph, or a new command.
+  - **Echo:** while Nova speaks it doesn't count as "the speakers are playing" (§5), but only the key, the name and stop words act, and finals that repeat its own words are dropped.
+  - **Silent during a call or in Passthrough.** The spoken text is not logged.
 - **Eval:** WER on Bhavya's existing recordings (`fixtures/voicebar-recordings/`, expected text in each session's `manifest.json`), normalized for case/punctuation/numbers. The one new recording is Stage 07a's 30-command set (`fixtures/command-set/`, git-ignored), read once, used to measure app-name and wake-name errors.
 
 ## 5. Triggers, listening modes, states
@@ -106,6 +112,9 @@ All triggers are on by default; each can be toggled in settings.
   - Confirm: the exact action ("Submit 'HW 5' on Canvas?") + [Yes] [No]; voice "yes / do it / confirm" or "no / cancel"; Enter/Esc; 15 s timeout = cancel.
   - Clarify: question + up to 4 numbered choices ("the second one" works).
   - Teaching: red dot + "Recording — do it, narrate if you like, say 'done'".
+  - Guide (§8.1): a ring around the control to click, drawn in the overlay window (or by the extension inside a page); the island shows the step ("2 / 4 · Click “Word wrap”") + [Do it] [Stop].
+  - Answer (§13): a card with the answer that came back from Claude / ChatGPT (~600 characters) + [Open] [Copy].
+  - Speaking (§4): a small speaker glyph beside whatever the island shows; clicking it stops the speech.
   - Dictating: orange ring + last sentence typed.
   - Passthrough: "Claude voice · tap Copilot to end".
   - Chips: "Claude · HW 5 · working…" → "done ✓"; click focuses that window.
@@ -135,7 +144,7 @@ Embedding similarity between the utterance and each skill's trigger examples (sm
 {
   "kind": "act | dictate | handoff | clarify | teach | ignore",
   "steps": [{ "action": "open_app", "app": "Google Chrome" }],
-  "handoff": { "to": "claude | chatgpt", "mode": "text | voice", "prompt": "...", "attach": ["canvas_today", "page_text", "selection"] },
+  "handoff": { "to": "claude | chatgpt", "mode": "text | voice", "prompt": "...", "attach": ["canvas_today", "page_text", "selection", "screen"] },
   "question": "...", "choices": ["..."],
   "confidence": 0.0,
   "say": "short island text"
@@ -145,6 +154,13 @@ Embedding similarity between the utterance and each skill's trigger examples (sm
 ### 7.6 Routing rules
 - Explicit handoff words ("on Claude", "ask Claude", "put … on Claude", "have ChatGPT…", "Claude voice") → handoff.
 - Big open-ended work (write / solve / research / analyze / summarize something long, multi-app jobs) → handoff to Claude by default; confirm the target only if confidence < 0.7.
+- **Auto-route (Stage 09):** any question or job that isn't a local action goes to the default target (`handoff.default`, Claude unless set) without the user naming it.
+  - Only with the key, the name or inside a talk session; never from always-listening alone.
+  - Questions bring their answer back to the island (§13); jobs bring the app to the front.
+  - Small talk goes nowhere.
+  - `handoff.auto_route: off` turns it off.
+- **Rewrite (Stage 07e):** "make this more formal / shorter / into bullets / in Spanish" with text selected → `rewrite{instruction}`, run locally on the planner model. "summarize / explain this" is a screen question, not a rewrite.
+- **Goals in an app (Stage 07d):** "turn on word wrap", "show me how to …" → `task{goal, mode}` (§8.1).
 - `act` with confidence < 0.6 → clarify. Execution failure or `teach` → "Show me?".
 
 ## 8. Hands (executor)
@@ -152,11 +168,12 @@ Embedding similarity between the utterance and each skill's trigger examples (sm
 - Apps/windows: `open_app{app}`, `switch_app{app}`, `close_app{app}`, `window{op, target, monitor}` (maximize | minimize | restore | close | fullscreen | snap_left | snap_right | snap_top | snap_bottom | center | move_monitor), `layout{slots:[{app, area}]}`.
 - Browser: `open_url{url, new_tab}`, `web_search{query, engine}`, `tab{op, match}` (new | close | next | prev | reopen | goto), `nav{op}` (back | forward | reload), `page_click{element|description}`, `page_fill{element|description, text, submit}`, `page_read{what}`, `pdf{op, page}` (goto | next | prev | fit).
 - Anywhere: `scroll{dir, amount, mode}` (amount: bit | page | half | end; mode: once | continuous | stop), `zoom{op}`.
-- Native UI: `ui_click{name, role, near, button, count}` (§8.1), `ui_read{what}`.
+- Native UI: `ui_click{name, role, near, button, count}` or `ui_click{element}` (a row number, §8.1), `ui_read{what}`.
+- Tasks and text (07d / 07e): `task{goal, mode}` (do | guide, §8.1), `rewrite{instruction}` (§7.6).
 - Pointer: `mouse{op, target, to}` (click | right | double | middle | hover | drag; target = a name, a number tag or a grid cell), `numbers{op, scope}` (show | hide; here | everywhere), `grid{op, cell}`.
 - Input: `type_text{text, submit}`, `press{keys}`.
 - System: `volume{op}`, `media{op}`, `screenshot{target}` (screen | window), `camera{op}` (photo), `system{op}` (lock | sleep — sleep confirms), `open_path{name}` (known folders, and files or folders inside them by name).
-- Nova: `dictation{op}`, `listening{op}` (sleep | wake | off | end_session), `help{}`, `repeat{}`, `run_skill{id, params}`, `wait_for{condition, timeout}`.
+- Nova: `dictation{op}`, `listening{op}` (sleep | wake | off | end_session), `speech{op}` (on | off | stop, §4), `help{}`, `repeat{}`, `run_skill{id, params}`, `wait_for{condition, timeout}`.
 
 **Implementation notes**
 - App catalog: Start-menu apps (AUMIDs via shell:AppsFolder) + `.lnk` targets + `config/aliases.yaml`. Launch via `IApplicationActivationManager` (or `explorer shell:AppsFolder\<AUMID>`); if already running, restore and bring to front (handle foreground-lock rules). "chrome" must resolve to Google Chrome, not "Web Server for Chrome". Ties → clarify.
@@ -171,11 +188,22 @@ Embedding similarity between the utterance and each skill's trigger examples (sm
 ### 8.1 Finding things on screen
 He can't point, so Nova has to find the thing. In order, stopping at the first that gives exactly one answer:
 1. **By name.** "click Save", "open the downloads button": the page map in Chrome, the UIA tree elsewhere. Rank exact > starts-with > whole word > contains (+ `near <label>`). One non-risky match → act. Several → number just those. The risk check runs on the resolved label; a plain "OK" is risky when the dialog's own text is.
+1b. **By meaning (Stage 07d).** Only when step 1 finds nothing or a tie.
+   - **What the model sees:** the window as numbered rows (≤ 60 named, visible, enabled controls; OCR lines when UIA gives few), sent to the planner model with the user's words — the native twin of the page rows Tier 1 already reads.
+   - **What it answers:** a row number, never a pixel.
+   - **Confident (≥ 0.7) and one row** → risk check → act. Otherwise → numbers on the rows it named.
 2. **Numbers.** "show numbers" — or automatically when step 1 is ambiguous or empty — tags everything clickable; he says the number. Sources, merged so one thing gets one tag: UIA elements (on screen, actionable, cap 300), DOM hints from the extension for the page, and on request Windows' built-in OCR for visible text that neither knows about. Scope: the window in front by default, "numbers everywhere" for the monitor.
 3. **Grid.** "show grid": 3 × 3 numbered cells, say a cell to zoom in (3 levels), then click / right-click / double-click / drag. Reaches any pixel when nothing else finds the target.
 Tags and grid live in their own click-through, capture-excluded window and disappear after the action, on "hide", Esc or 15 s. A bare number is a command only while tags are showing. At most 99 tags at once; more are paged ("more numbers").
 
 **One thing, one tag.** All boxes in physical virtual-desktop pixels. UIA / DOM boxes win. An OCR line whose centre falls inside a tagged box becomes that box's spoken name; a line that matches nothing gets its own tag (borderless links and text buttons). Drop boxes under 8 logical px or over 25 % of the screen. Number row by row, left to right, and keep a tag's number across refreshes when its box barely moved.
+
+**Goals: do it, or show me (Stage 07d).** One engine with two modes. A goal ("turn on word wrap") runs as a loop: look (rows) → the model picks one step → act → wait for the screen to settle → look again. It stops on done, on a step that changed nothing, or after 8 steps / 60 s. Each step is risk-checked like any plan.
+- **Do mode** is the default.
+- **Guide mode** ("show me how to …", "where is …") puts a ring around the control and waits for the user's own click (seen from what it changes, no mouse hook) before the next step.
+- "just do it" / "show me" switch modes mid-task.
+- In Windows Settings, Control Panel, UAC and credential dialogs only guide mode runs (§14).
+- When the loop gives up it asks "Show me?" (§12).
 
 **Not built yet — decided after Stage 07c's demo:** a small screenshot detector for icons that none of the above can see (candidate: OmniParser v2 `icon_detect`, 41 MB, CPU, on demand; its weights are AGPL-3.0, which is a licence decision for the team). It would fill gaps only, never replace steps 1–2. No vision-language model either way.
 
@@ -220,11 +248,17 @@ Tags and grid live in their own click-through, capture-excluded window and disap
 - **Voice ("on Claude, turn on voice"):** focus/launch → new chat → press the app's voice-mode button → Nova enters Passthrough. Passthrough ends when the voice UI closes or he taps the Copilot key (Nova presses end-voice).
 - **Watcher (no AI, ≤ 1 % CPU):** poll UIA every 1.5 s for the stop/streaming control; done when it's gone twice in a row and the last message text is stable → Windows toast ("Claude finished — <first line>", click focuses it) + chip ✓. Gives up after 30 min. A second concurrent job goes to the web target in its own tab so both can be watched.
 - **Driving the apps:** UIA first (Electron/WebView2 expose an accessibility tree — confirm control names with an inspector on this machine), keyboard shortcuts second, web target third.
+- **Auto-route (§7.6):** questions and jobs Nova can't do locally go to the default target without the user naming it.
+- **Screen questions:** "what's this error?", "explain this" → `attach: screen`.
+  - **What is gathered**, cheapest first: the selection, the page text (Chrome), the dialog's or window's UIA text, OCR of the window.
+  - **It is content the user didn't speak**, so it confirms with a preview, as any attachment does.
+  - **Where the answer goes:** if the user named the app, the app stays in front. If not, the user's window comes back, and the answer comes to the island as an answer card (§6) that fills in while Claude writes and is spoken if talk back is on (§4). A follow-up ("and how do I fix it?") goes to the same chat.
 
 ## 14. Safety
 - **Confirm in the island before:** sending messages/emails, submit/turn in (Canvas submissions), post/publish/comment, delete/remove/trash, buy/order/pay/checkout, closing a window with an unsaved-work prompt, and any handoff containing content he didn't speak. Detection = action type + target label/URL regex + app context. In doubt → confirm.
 - **A yes must be a real yes.** A Confirm is answered only by an utterance that began after it appeared and lasted ≥ 400 ms, by Enter, or by its button. This holds inside talk sessions too.
-- **Never:** type or paste into password fields (every input path: text, keys, dictation, page fill); enter card, bank or ID numbers; run shell commands; delete files; change system settings beyond volume/media; act while the workstation is locked; treat text read from pages, emails or the screen as instructions.
+- **Never:** type or paste into password fields (every input path: text, keys, dictation, page fill, rewrite); enter card, bank or ID numbers; run shell commands; delete files; change system settings beyond volume/media (so a do-mode task never acts in Settings, Control Panel, UAC or credential dialogs — guide mode points, the user clicks); act while the workstation is locked; treat text read from pages, emails or the screen as instructions (that includes a selection being rewritten and the rows a task reads).
+- **Nova's own voice is not a command** (§4): while it speaks, only the key, the name and stop words act.
 - Logs are local JSONL; transcripts in logs can be turned off.
 
 ## 15. Resource governor
@@ -247,6 +281,12 @@ Tags and grid live in their own click-through, capture-excluded window and disap
 | Number tags on screen after "show numbers" | ≤ 0.5 s from UIA / DOM; OCR tags may follow |
 | Dictation segment lands after a pause | ≤ 1.0 s |
 | Handoff prompt sent (app already open) | ≤ 3 s |
+| Click by meaning (07d: string match missed, model picks a row) | ≤ 1.5 s on GPU (≤ 3 s CPU) |
+| Task loop: one step, screen settled to next pick | ≤ 2 s on GPU |
+| Guide: user's click → next ring | ≤ 0.8 s |
+| Rewrite replaced (≤ ~300 words) | ≤ 3 s on GPU |
+| Talk back: time to first audio | ≤ 400 ms (pre-rendered lines ≤ 50 ms) |
+| Answer card updated after Claude finishes | ≤ 1 s after the done rule |
 
 App launch time itself is whatever the app takes (Chrome ≈ 1 s) — the benchmark is Bhavya doing it by hand.
 Every utterance logs `speech_end, stt_ms, tier, ctx_ms, llm_ms, exec_ms, verify_ms, total_ms`. `nova latency` prints p50/p95 per path.
@@ -270,7 +310,7 @@ docs/        SPEC.md · DEPS.md · eval/ · prompts/
 - **Every stage ends with a short live demo** Bhavya runs. That is the acceptance.
 
 ## 19. Out of scope for v1
-Fusion control (Claude handles Fusion; Nova only opens/arranges it), local vision-language models, answering questions about what is on screen, drawing on the screen to teach, spoken replies, meeting assistant, phone/remote use, paid APIs.
+Fusion control (Claude handles Fusion; Nova only opens/arranges it), local vision-language models, answering questions about the screen *locally* (Claude answers them through handoff, §13), free drawing or annotation on the screen (the guide ring of §8.1 is the one exception), reading documents or pages aloud (talk back says Nova's own lines and short answers, §4), reminders, a focus / distraction guard, searching notes or chat exports, meeting assistant, phone/remote use, paid APIs.
 
 ## 20. Verify early on this machine
 - Copilot key: real key-up on release? Copilot launch and Start menu suppressed?

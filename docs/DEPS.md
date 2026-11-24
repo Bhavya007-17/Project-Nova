@@ -13,6 +13,8 @@ One line each: what, version, why. Ask before adding anything over ~50 MB or a n
 - **rapidfuzz** 3.14 (~2 MB) — fuzzy spelling for the vocab fix-up; word-level Levenshtein for WER.
 - **jellyfish** 1.3 (~0.2 MB) — metaphone sound keys for the vocab fix-up ("crow labs" ≈ "CroLabs").
 - **sherpa-onnx** 2.0.1 (Apache-2.0; 2.2 MB wheel + sherpa-onnx-core 16.7 MB, which bundles its own `onnxruntime.dll`) — Stage 07a candidate only: the same Parakeet through a beam-search decoder with hotwords (`nova/stt/sherpa.py`, `nova bench-stt --backend sherpa`). Not on the live path.
+- **mss** 10.2 (~0.3 MB, pure Python, MIT) — screen pixels (BitBlt): scroll / click receipts, screenshots and the OCR input (07c). Imported lazily.
+- **winrt-windows-media-ocr** 10.0.28000 + its **graphics-imaging**, **storage-streams**, **globalization**, **foundation(+collections)** and **winrt-runtime** 4.2 (~1.1 MB together, MIT) — Windows' own on-device OCR (`Windows.Media.Ocr`, the language packs Windows already has) names what UI Automation can't see, for numbers and click by name (07c): grab 50 + bitmap 20 + recognize 76 ms for a window.
 
 ## Windows APIs (ctypes, no new packages)
 - **WH_KEYBOARD_LL + raw input** (user32) — Copilot key / chord / Esc (`nova/hook.py`); raw input (RIDEV_INPUTSINK) counts keys so a hook Windows silently dropped is reinstalled.
@@ -29,6 +31,9 @@ One line each: what, version, why. Ask before adding anything over ~50 MB or a n
 - **UI Automation** (COM `CUIAutomation`, on its own thread with a deadline) — the focused control's type and `IsPassword` before typing (SPEC §14). Chrome answers "pane" to its first question while it builds its tree, so Nova asks twice.
 - **IAudioEndpointVolume / IAudioMeterInformation** (COM) — exact volume (read back) and "is anything playing" before pause / play; media keys via SendInput.
 - **UI Automation TextPattern** (same COM object; `IUIAutomationTextPattern` / `TextRange` vtables in `nova/actions/uia.py`) — dictation reads the text just before the caret (spacing / capitals at joins, "did the paste land", "scratch that" only takes back its own text). Checked on RichEdit (`RICHEDIT50W`, what Notepad is built on): ~9 ms warm.
+- **UI Automation tree** (same hand-written vtables; `nova/actions/uitree.py`) — a window's elements in one subtree cache request (`ElementFromHandleBuildCache` + cached children, ~0.6 ms per node; `FindAllBuildCache` is 3x slower), then Invoke / Toggle / SelectionItem / ExpandCollapse / LegacyIAccessible / Scroll patterns: click by name, numbers, the scroll cascade (07c).
+- **SendInput absolute mouse** (`MOUSEEVENTF_VIRTUALDESK`) — clicks, drags and wheel at a point, when no pattern can do it (07c).
+- **LockWorkStation**, **GetPwrCapabilities / SetSuspendState** (powrprof), **SHGetKnownFolderPath** (shell32) — lock, sleep, his own folders (07c).
 
 ## Chrome (Stage 06; no new Python packages)
 - **Nova's Chrome extension** (`extension/`, MV3, plain JS, no libraries) — worker keeps a native-messaging port to Nova, content script in every frame maps / clicks / fills / scrolls; permissions tabs, scripting, nativeMessaging, storage, alarms (retry every 30 s while Nova is down), host `<all_urls>`. Stable id `dnhapjgbmkmjofkmgpjoaidnhadgnkhf` from the manifest `key`; its private key (`extension/key.pem`, git-ignored) was made once with Node 24's `crypto`.

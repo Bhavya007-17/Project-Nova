@@ -73,6 +73,17 @@ class RunResult:
     hold: float = 0.0  # the result is an answer to read: keep it on screen this long
 
 
+def repeats(plan: Plan) -> bool:
+    """ "Do that again": a plan that is only that."""
+    return (plan.kind == "act" and len(plan.steps) == 1 and plan.steps[0].action == "nova"
+            and plan.steps[0].get("op") == "again")
+
+
+def _about_nova(plan: Plan) -> bool:
+    """Help and "again" are never what "again" repeats."""
+    return all(s.action == "nova" and s.get("op") in ("help", "again") for s in plan.steps)
+
+
 class _Stop(Exception):
     """The step can't go on: cancelled (no / Esc / no answer), refused or failed. Carries the run's outcome."""
 
@@ -97,6 +108,7 @@ class Executor:
         self._progress = progress
         self._clock = clock
         self._cancel = threading.Event()
+        self._last: Plan | None = None  # what "do that again" runs
 
     @property
     def asker(self) -> Asker:
@@ -108,6 +120,16 @@ class Executor:
 
     def run(self, plan: Plan, ctx: Any) -> RunResult:
         self._cancel.clear()
+        if repeats(plan):
+            if self._last is None:
+                return RunResult(False, "Nothing to repeat yet.", plan=plan)
+            plan = self._last  # asks again whatever it asked the first time (risk is checked afresh)
+        result = self._run_plan(plan, ctx)
+        if result.ok and result.plan is not None and result.plan.kind == "act" and not _about_nova(result.plan):
+            self._last = result.plan
+        return result
+
+    def _run_plan(self, plan: Plan, ctx: Any) -> RunResult:
         if plan.kind == "clarify":
             if len(plan.choices) == 1:  # "Close Notepad?": a yes / no question (Enter = yes)
                 index = 0 if self._asker.confirm(plan.question) else None

@@ -5,6 +5,7 @@ description = "Local voice layer for Windows: Dynamic-Island bar, hand-speed com
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "jellyfish>=1.3",
+    "mss>=10.2",
     "numpy>=2.5",
     "nvidia-ml-py>=13.615",
     "onnx-asr>=0.12,<0.13",
@@ -14,6 +15,13 @@ dependencies = [
     "rapidfuzz>=3.14",
     "sherpa-onnx>=2.0.1,<2.1",
     "sounddevice>=0.5.6",
+    "winrt-runtime>=4.2.0",
+    "winrt-windows-foundation>=4!10.0.28000.2957",
+    "winrt-windows-foundation-collections>=4!10.0.28000.2957",
+    "winrt-windows-globalization>=4!10.0.28000.2957",
+    "winrt-windows-graphics-imaging>=4!10.0.28000.2957",
+    "winrt-windows-media-ocr>=4!10.0.28000.2957",
+    "winrt-windows-storage-streams>=4!10.0.28000.2957",
 ]
 
 [project.scripts]

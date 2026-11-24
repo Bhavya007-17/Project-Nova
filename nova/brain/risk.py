@@ -15,6 +15,7 @@ fills refuse password / card fields and ask before submitting anything but a sea
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 
@@ -54,6 +55,12 @@ _SSN = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
 _DIGIT_RUN = re.compile(r"\d[\d -]{11,}\d")
 _BANKING = re.compile(r"\b(routing|account|iban|swift|acct)\b", re.IGNORECASE)
 _LONG_NUMBER = re.compile(r"\b\d{8,17}\b")
+_FILE_DELETE = re.compile(r"\b(delete|recycle\s*bin|trash|permanently|remove)\b", re.IGNORECASE)
+_AFFIRM = re.compile(r"^(ok|okay|yes|y|continue|confirm|apply|proceed|do\s+it)$", re.IGNORECASE)
+RUNNABLE = frozenset({  # opening one of these runs something: never from voice
+    ".exe", ".bat", ".cmd", ".com", ".ps1", ".psm1", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".wsh", ".msi", ".msp",
+    ".scr", ".pif", ".hta", ".cpl", ".reg", ".lnk", ".url", ".appref-ms", ".jar", ".py", ".pyw",
+})
 
 
 @dataclass(frozen=True)
@@ -92,6 +99,11 @@ def _confirm(question: str) -> Risk:
 
 def _refuse(reason: str) -> Risk:
     return Risk("refuse", reason=reason)
+
+
+def runs_program(path: str) -> bool:
+    """A program, a script, or a shortcut to one."""
+    return os.path.splitext(path)[1].lower() in RUNNABLE
 
 
 def risky_label(label: str) -> bool:
@@ -226,13 +238,21 @@ def assess(s: Step, scene: Scene) -> Risk | None:
         if scene.windows > 1:
             return _confirm(f"Close all {scene.windows} {s.get('app')} windows?")
         return None
-    if action in ("page_click", "ui_click"):
-        # once the page map has resolved it, the element's own name is what gets clicked ("the blue button" may be
-        # "Submit Assignment")
-        label = str(s.get("label") or s.get("description") or s.get("element") or "")
+    if action in ("page_click", "ui_click", "pick"):
+        # once resolved, the element's own name is what gets clicked ("the blue button" may be "Submit Assignment",
+        # "click 7" may be "Delete"); "OK" / "Yes" is judged by the dialog it answers
+        label = str(s.get("label") or s.get("name") or s.get("description") or s.get("element") or "")
+        dialog = " ".join(str(s.get("dialog") or "").split())
+        affirms = bool(_AFFIRM.match(" ".join(label.split()).rstrip("!.")))
+        if _FILE_MANAGERS.match(scene.exe) and (_FILE_DELETE.search(label) or affirms and _FILE_DELETE.search(dialog)):
+            return _refuse("I don't delete files.")
         where = " on Canvas" if scene.url and _CANVAS_URL.search(scene.url) else ""
         if risky_label(label):
             return _confirm(f"Click {_quote(label)}{where}?")
+        if affirms and _RISKY.search(dialog):
+            return _confirm(f"Click {_quote(label)}? It says {_quote(dialog)}")
+        if action == "pick" and s.get("to") is not None and _FILE_MANAGERS.match(scene.exe):
+            return _confirm(f"Drag {_quote(label) if label else s.get('n')} to {s.get('to')}?")  # moves his files
         if s.get("submits") and scene.url and (_CHECKOUT_URL.search(scene.url) or messaging(scene)):
             return _confirm(f"Click {_quote(label)}{where}?")  # a form's submit button while paying / messaging
         return None
@@ -245,4 +265,8 @@ def assess(s: Step, scene: Scene) -> Risk | None:
         if s.get("submit") and not s.get("search"):
             return _confirm(f"Send {_quote(text)}?" if messaging(scene) else f"Submit {_quote(text)}?")
         return None
+    if action == "system" and s.get("op") == "sleep":
+        return _confirm("Go to sleep now?")
+    if action == "open_path" and s.get("path") and not s.get("dir") and runs_program(str(s.get("path"))):
+        return _refuse("I don't open programs or scripts from voice.")
     return None
