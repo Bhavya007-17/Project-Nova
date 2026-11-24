@@ -254,6 +254,11 @@ memories aren't shared, this file is.
   rewrites the segment just typed through the same in-place swap as cleanup's fixes; an odd-length answer is saved,
   never typed. A dictated sentence like "make it better." is taken as a rewrite, not words.
 - Live test harness: Windows 11 Notepad restores its tabs — paste into an empty raw RichEdit, not Notepad.
+- **Erase-then-paste in a Win32 Edit / RichEdit** (cleanup fixes, "make that more formal", a joined period, scratch):
+  the landing check is "the length grew by the pasted text" from the length read before the backspaces, so it never
+  passed — every swap waited the full 3 s and said it didn't land (live: 4.6 s for a 1.4 s rewrite). `Target.erase`
+  now waits for the backspaces to land and hands back the spot with the new length (1.7 s). Never make the check
+  true before Ctrl+V lands: his clipboard goes back the moment it passes, and the app pastes his text instead.
 - **Where a prompt example sits moves the planner on conversation.** Two rewrite examples placed just before the
   "ignore" examples raised false actions on the eval's negatives from 11.3 % to 17.1 % (past the follow-up gate 1 → 3,
   none of them rewrites: "stop it, that tickles" ended the session). One example placed with the typing examples:

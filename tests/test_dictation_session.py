@@ -47,6 +47,7 @@ class FakeTarget:
         if count > len(self.doc):
             raise ActionError("nothing to erase")
         self.doc = self.doc[:-count]
+        return spot
 
     waited = 0
 

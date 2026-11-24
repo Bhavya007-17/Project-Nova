@@ -387,7 +387,7 @@ class Dictation:
         joined = join(before, text, fix_period=ours)
         try:
             if joined.erase:
-                self._target.erase(spot, joined.erase)
+                spot = self._target.erase(spot, joined.erase)
             result = self._target.insert(spot, joined.insert)
         except ActionError as error:
             self._lost(seg.utterance, text, str(error), record, seg, job)
@@ -472,7 +472,7 @@ class Dictation:
             why = "can't read the field" if spot.before is None else "the text changed"
             return f"no: {why}", None
         try:
-            self._target.erase(spot, len(old) - keep)
+            spot = self._target.erase(spot, len(old) - keep)
             outcome = self._target.insert(spot, new[keep:])
         except ActionError as error:
             return f"no: {error}", None
@@ -565,7 +565,7 @@ class Dictation:
                 self._publish(DictationTyped(None, "", False, "Couldn't scratch that — the text changed"))
                 break
             try:
-                self._target.erase(spot, len(_flat(last.text)))
+                spot = self._target.erase(spot, len(_flat(last.text)))
                 if last.erased:
                     self._target.insert(spot, ".")  # the period it had taken back
             except ActionError as error:
