@@ -184,6 +184,55 @@ memories aren't shared, this file is.
   resolved row's real name for the risk check (`label`), never the words he said.
 - **The `auto` / `llama-server` runtime still needs Ollama running:** the GGUF path comes from `ollama show`. With
   Ollama down every call fails after ~2 s with "Ollama isn't answering" even though llama-server would serve it.
+- **The task loop's pick rule lives in the request (`prompt.pick_request`'s `next`), not the system prompt:** the
+  system prompt stays the planner's, so plans and picks share one cached prefix. A task step adds ~90 prompt tokens.
+- **Tier 0 looks for a task before it splits clauses** ("turn on word wrap and zoom in" is one goal, not two plans).
+  "how do I …" with no app named goes to Tier 1; "where's … on maps" stays a search, not a point. Tier 1 turns
+  some chatter into a task goal: watch `nova eval`'s misses for it.
+- **Guide mode can't hook the user's click:** a step counts as done when the rows or the focus change *and* the
+  cursor is inside the ring's box. Hover alone never counts (menus open on hover). Enter / Space don't move the
+  cursor: ask UIA for the focused control instead. A key press while Nova is ACTING supersedes the step (he took over).
+- **The ring is its own overlay layer, not the island's window:** it never takes focus and the island's hit-test
+  region stays the pill. "Where is X" leaves it up `POINT_S` (5 s); the next task takes it down first.
+- **Steering a running task by voice** ("just do it", "let me do it", "next", "where?") goes through `gate.steers` with
+  `Env.task` set. Check Ignored before Steered, or stray speech steers. Heard over the speakers, a steer needs the
+  name ("Nova, next"). The Narrator publishes `TaskRunning` on every step, since the mode can change mid-task.
+- **`nova eval --tasks` rows are hand-built** (`docs/eval/tasks.yaml`, `source: hand-built`) from Windows 11 /
+  Chrome layouts in the row format, until someone records them with `nova rows --dump --title …` (takes focus).
+  Each step is scored on its own, with the wanted steps before it as history. First full run (qwen3.5:4b, RTX,
+  2026-11-23): 50 / 103 steps (48.5 %), 5 / 30 whole tasks, pick p50 655 / p95 888 ms. Most misses are "done" a
+  step or two early and Settings paths (System → Display → Night light) the model doesn't know.
+- **The JSON-schema grammar makes the model write every string the schema offers.** A required `ask` won every
+  pick (5.8 % of eval steps right); an optional free `text` on a click echoed the instructions back. The pick schema
+  is one of three exclusive shapes — `{step}`, `{done, say}`, `{ask}` — and text exists only on type / scroll. The
+  first pick (nothing in "did") has no `done` shape: the model said done on 21 of 30 first steps (35.9 → 45.6 %).
+- **Pick wording moves the 4B model a lot, in odd ways** (same 103 steps, 2026-11-23): "a verb (type: …" made it
+  type everywhere; "right" alone read as "correct" (spell out "right-click"); naming `"step": null` in the rule made
+  it say done early (32 %). Measure every wording change with `nova eval --tasks`; don't reason about it.
+- **qwen3.5:4b repeats the last step in "did" and misses "done"** at the last step of a task (clicks Bluetooth
+  again, which flips it back). The loop asks “X” again? before repeating its last click; "no" ends the task as done.
+- **Prefetch saves the first look's snapshot, not more** (2026-11-23, warm trees): `rows()` took 27 ms (Terminal),
+  98 ms (Claude), 208 ms (Chrome); after a prefetch 0–2 ms. A cold Chromium tree saves up to `COLD_WAIT_S` more.
+  It fires only on "show me / how do I / click / where's / turn on…" partials, idle only (no command, no dictation),
+  and is reused once, within 3 s, same window, same frame, no snapshot in between: a prefetch that replaced a running
+  command's snapshot would make its Invoke refs stale.
+- **Live Notepad demo (2026-11-24, typed commands, no mic) — the model says "done" after a wrong click** ("What's new",
+  "Right-click Close Tab" for word wrap; "Word wrap" for the status bar). The loop now doubts a done when no step's
+  label shares a word with the goal (`task.proven`): one more pick with no done shape; still no step → exit `unsure`
+  ("Not sure that did it — last step: …"), nothing kept for "do that again". Cost: a right task whose clicks never name
+  the goal ("Zoom in" for "make the text bigger") ends unsure too. The fix lives in code: rewording the pick (a
+  menu-bar hint, a "none" answer) dropped `nova eval --tasks` from 50 to 46–47 / 103 and doubled its asks.
+- **qwen3.5:4b never opens a menu to find a setting** (View → Word wrap / Status bar): it picks a visible row that
+  sounds close, or text in an open panel (Notepad 11's Settings page and What's new panel stay open between commands,
+  and their rows outnumber the menu bar's). Biggest remaining wrong-pick source; needs learned skills (08) or a menu walk.
+- **Click by meaning has to vouch for its row:** its confidence is the few-shot number, so a wrong row came back sure.
+  Now a row that shares no word with what he said *or* the model's step name drops to 0 → numbers. Live: "System" for
+  "Settings" and "Back" for "a new file" became numbers, not clicks. Fooled if the step name copies the wrong row.
+- **The planner turns outcomes into blind clicks** ("turn off word wrap" → ui_click "Word wrap", a row it never saw).
+  `validate` keeps a ui_click only when he said a click word (click, tap, press, select, open, …); else it's a task.
+- **First pick after a cold start took 11.7 s** (warming 4.4 → 12.4 s, ring at 13.2 s after the command); a warm
+  click → settle → next step took 1.3 s. A demo harness that publishes typed commands needs one blank `SendInput` mouse event (no move, no
+  button) before it brings a window forward — the Copilot key press gives the real app that right.
 
 ## Chrome extension
 - **Branded Chrome 137+ ignores `--load-extension`**: loading `extension/` unpacked is a one-time manual step.

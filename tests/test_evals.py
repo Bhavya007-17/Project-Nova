@@ -107,3 +107,9 @@ def test_active_is_the_window_in_front():
 def test_the_app_just_opened_is_in_front():
     plan = act(step("open_app", app="Notepad"), step("window", op="snap_left", target="active"))
     assert score(plan, parse_want("open Notepad ; window snap_left Notepad", CATALOG), CATALOG, front="Google Chrome")
+
+
+def test_tasks_score_by_mode():
+    guide = act(step("task", goal="turn on word wrap", mode="guide"))
+    assert ok(guide, "task guide") and ok(guide, "task") and not ok(guide, "task do")
+    assert ok(act(step("open_app", app="Notepad"), step("task", goal="x", mode="guide")), "open notepad; task guide")

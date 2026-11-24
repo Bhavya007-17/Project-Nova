@@ -1,0 +1,1105 @@
+# Task eval (Stage 07d): `nova eval --tasks` scores the task loop's pick, one step at a time (nova/task_eval.py).
+#
+# Each step is one look at the window in front: its rows exactly as `rows.lines` writes them for the model, minus the
+# numbers (the loader numbers them in order, so an open menu's rows go in front of a screen kept under `screens:`),
+# and what a right next step is. The model sees the goal, the rows and the labels of the wanted steps before it.
+#
+#   want: {click|right|double: <row name>, area: <its area, when two rows share the name>}
+#         {type: <text>, into: <row name>}   {press: <keys>}   {scroll: up|down}   done   ask
+#         or a list of these: any one is right.
+#
+# source: these rows are hand-built from Windows 11 / Chrome layouts, in the row format, not yet recorded. To record
+# one: open a throwaway window in that state, `nova rows --dump --title "<its title>"`, paste the dump's `lines` here
+# (numbers and all: they are renumbered) and set `source: recorded` on the task. Recording takes focus: ask first.
+source: hand-built
+
+screens:
+  notepad: &notepad
+    - menu item "File"
+    - menu item "Edit"
+    - menu item "View"
+    - button "Settings"
+    - tab item "Untitled"
+    - button "Close Tab"
+    - button "Add New Tab"
+    - button "Minimize"
+    - button "Maximize"
+    - button "Close"
+    - edit "Text editor"
+  notepad_view_menu: &notepad_view_menu
+    - menu item "Zoom" closed (View menu)
+    - menu item "Status bar" on (View menu)
+    - menu item "Word wrap" off (View menu)
+  notepad_edit_menu: &notepad_edit_menu
+    - menu item "Undo" (Edit menu)
+    - menu item "Cut" (Edit menu)
+    - menu item "Copy" (Edit menu)
+    - menu item "Paste" (Edit menu)
+    - menu item "Delete" (Edit menu)
+    - menu item "Search with Bing" (Edit menu)
+    - menu item "Find" (Edit menu)
+    - menu item "Find next" (Edit menu)
+    - menu item "Find previous" (Edit menu)
+    - menu item "Replace" (Edit menu)
+    - menu item "Go to" (Edit menu)
+    - menu item "Select all" (Edit menu)
+    - menu item "Time/Date" (Edit menu)
+    - menu item "Font" (Edit menu)
+  notepad_file_menu: &notepad_file_menu
+    - menu item "New tab" (File menu)
+    - menu item "New window" (File menu)
+    - menu item "Open" (File menu)
+    - menu item "Recent" closed (File menu)
+    - menu item "Save" (File menu)
+    - menu item "Save as" (File menu)
+    - menu item "Save all" (File menu)
+    - menu item "Page setup" (File menu)
+    - menu item "Print" (File menu)
+    - menu item "Close window" (File menu)
+    - menu item "Exit" (File menu)
+  notepad_settings: &notepad_settings
+    - button "Back"
+    - button "App theme" closed (Appearance group)
+    - button "Font" closed (Text formatting group)
+    - button "Word wrap" off (Text formatting group)
+    - button "Formatting" on (Text formatting group)
+    - button "Spelling" closed (Spelling group)
+    - button "Autocorrect" on (Spelling group)
+    - combo box "Opening Notepad" (Opening Notepad group)
+    - hyperlink "Privacy statement"
+    - menu item "File"
+    - menu item "Edit"
+    - menu item "View"
+    - tab item "Settings"
+    - button "Add New Tab"
+    - button "Minimize"
+    - button "Maximize"
+    - button "Close"
+
+  calculator: &calculator
+    - button "Open Navigation"
+    - button "Keep on top"
+    - button "Open history flyout"
+    - button "Memory Add"
+    - button "Memory Subtract"
+    - button "Memory Store"
+    - button "Percent"
+    - button "Clear entry"
+    - button "Clear"
+    - button "Backspace"
+    - button "Reciprocal"
+    - button "Square"
+    - button "Square root"
+    - button "Divide by"
+    - button "Seven"
+    - button "Eight"
+    - button "Nine"
+    - button "Multiply by"
+    - button "Four"
+    - button "Five"
+    - button "Six"
+    - button "Minus"
+    - button "One"
+    - button "Two"
+    - button "Three"
+    - button "Plus"
+    - button "Positive negative"
+    - button "Zero"
+    - button "Decimal separator"
+    - button "Equals"
+    - button "Minimize"
+    - button "Maximize"
+    - button "Close"
+  calculator_nav: &calculator_nav
+    - list item "Standard Calculator" (Calculator list)
+    - list item "Scientific Calculator" (Calculator list)
+    - list item "Graphing Calculator" (Calculator list)
+    - list item "Programmer Calculator" (Calculator list)
+    - list item "Date Calculation Calculator" (Calculator list)
+    - list item "Currency Converter" (Converter list)
+    - list item "Volume Converter" (Converter list)
+    - list item "Length Converter" (Converter list)
+    - list item "Weight and Mass Converter" (Converter list)
+    - list item "Temperature Converter" (Converter list)
+    - list item "Energy Converter" (Converter list)
+    - list item "Area Converter" (Converter list)
+    - list item "Speed Converter" (Converter list)
+    - list item "Time Converter" (Converter list)
+    - button "Settings"
+    - button "Close Navigation"
+
+  explorer_top: &explorer_top
+    - tab item "Documents"
+    - button "Add a new tab"
+    - button "Back"
+    - button "Up"
+    - button "Refresh"
+    - edit "Search Documents"
+    - button "New" (Command Bar toolbar)
+    - button "Sort" (Command Bar toolbar)
+    - button "View" (Command Bar toolbar)
+    - button "See more" (Command Bar toolbar)
+    - button "Details"
+  explorer_top_selected: &explorer_top_selected
+    - tab item "Documents"
+    - button "Add a new tab"
+    - button "Back"
+    - button "Up"
+    - button "Refresh"
+    - edit "Search Documents"
+    - button "New" (Command Bar toolbar)
+    - button "Cut" (Command Bar toolbar)
+    - button "Copy" (Command Bar toolbar)
+    - button "Rename" (Command Bar toolbar)
+    - button "Share" (Command Bar toolbar)
+    - button "Delete" (Command Bar toolbar)
+    - button "Sort" (Command Bar toolbar)
+    - button "View" (Command Bar toolbar)
+    - button "See more" (Command Bar toolbar)
+    - button "Details"
+  explorer_tree: &explorer_tree
+    - tree item "Home" (Navigation Pane tree)
+    - tree item "Gallery" (Navigation Pane tree)
+    - tree item "Desktop" (Navigation Pane tree)
+    - tree item "Downloads" (Navigation Pane tree)
+    - tree item "Documents" (Navigation Pane tree)
+    - tree item "Pictures" (Navigation Pane tree)
+    - tree item "Music" (Navigation Pane tree)
+    - tree item "Videos" (Navigation Pane tree)
+    - tree item "This PC" closed (Navigation Pane tree)
+    - tree item "Network" closed (Navigation Pane tree)
+  explorer_headers: &explorer_headers
+    - header item "Name"
+    - header item "Date modified"
+    - header item "Type"
+    - header item "Size"
+  documents: &documents
+    - list item "Budget 2026.xlsx" (Items View list)
+    - list item "Class notes" (Items View list)
+    - list item "Lab report draft.docx" (Items View list)
+    - list item "notes.txt" (Items View list)
+    - list item "report.docx" (Items View list)
+    - list item "Resume.pdf" (Items View list)
+    - list item "Scans" (Items View list)
+  window_buttons: &window_buttons
+    - button "Minimize"
+    - button "Maximize"
+    - button "Close"
+
+  paint: &paint
+    - menu item "File"
+    - menu item "View"
+    - button "Undo"
+    - button "Select" (Image group)
+    - button "Resize and skew" (Image group)
+    - button "Rotate" (Image group)
+    - button "Pencil" (Tools group)
+    - button "Fill" (Tools group)
+    - button "Text" (Tools group)
+    - button "Eraser" (Tools group)
+    - button "Color picker" (Tools group)
+    - button "Magnifier" (Tools group)
+    - button "Brushes" (Brushes group)
+    - button "Line" (Shapes group)
+    - button "Oval" (Shapes group)
+    - button "Rectangle" (Shapes group)
+    - combo box "Size" (Size group)
+    - button "Black" (Colors group)
+    - button "Gray" (Colors group)
+    - button "Dark red" (Colors group)
+    - button "Red" (Colors group)
+    - button "Orange" (Colors group)
+    - button "Yellow" (Colors group)
+    - button "Green" (Colors group)
+    - button "Turquoise" (Colors group)
+    - button "Indigo" (Colors group)
+    - button "Purple" (Colors group)
+    - button "White" (Colors group)
+    - button "Edit colors" (Colors group)
+    - button "Layers"
+    - button "Zoom in"
+    - button "Zoom out"
+    - button "Minimize"
+    - button "Maximize"
+    - button "Close"
+
+  settings_nav: &settings_nav
+    - button "Back"
+    - edit "Find a setting"
+    - list item "Home"
+    - list item "System"
+    - list item "Bluetooth & devices"
+    - list item "Network & internet"
+    - list item "Personalization"
+    - list item "Apps"
+    - list item "Accounts"
+    - list item "Time & language"
+    - list item "Gaming"
+    - list item "Accessibility"
+    - list item "Privacy & security"
+    - list item "Windows Update"
+    - button "Minimize"
+    - button "Maximize"
+    - button "Close"
+  settings_home: &settings_home
+    - button "Rename"
+    - button "Recommended settings" closed
+    - button "Bluetooth devices" closed
+    - button "Personalize your device" closed
+    - *settings_nav
+  settings_system: &settings_system
+    - button "Display"
+    - button "Sound"
+    - button "Notifications"
+    - button "Focus"
+    - button "Power & battery"
+    - button "Storage"
+    - button "Nearby sharing"
+    - button "Multitasking"
+    - button "Activation"
+    - button "Troubleshoot"
+    - button "Recovery"
+    - button "Clipboard"
+    - button "About"
+    - *settings_nav
+  settings_personalization: &settings_personalization
+    - button "Background"
+    - button "Colors"
+    - button "Themes"
+    - button "Dynamic Lighting"
+    - button "Lock screen"
+    - button "Text input"
+    - button "Start"
+    - button "Taskbar"
+    - button "Fonts"
+    - button "Device usage"
+    - *settings_nav
+
+  chrome: &chrome
+    - tab item "Wikipedia"
+    - tab item "Weather forecast"
+    - button "New Tab"
+    - button "Back"
+    - button "Reload"
+    - edit "Address and search bar"
+    - button "View site information"
+    - button "Bookmark this tab"
+    - button "Extensions"
+    - button "Chrome"
+    - button "Minimize"
+    - button "Restore"
+    - button "Close"
+    - hyperlink "Main page"
+    - hyperlink "Contents"
+    - hyperlink "Current events"
+    - edit "Search Wikipedia"
+    - button "Search"
+    - hyperlink "Log in"
+  chrome_menu: &chrome_menu
+    - menu item "New tab" (Chrome menu)
+    - menu item "New window" (Chrome menu)
+    - menu item "New Incognito window" (Chrome menu)
+    - menu item "Passwords and autofill" closed (Chrome menu)
+    - menu item "History" closed (Chrome menu)
+    - menu item "Downloads" (Chrome menu)
+    - menu item "Bookmarks and lists" closed (Chrome menu)
+    - menu item "Tab groups" closed (Chrome menu)
+    - menu item "Extensions" closed (Chrome menu)
+    - menu item "Delete browsing data…" (Chrome menu)
+    - button "Make Text Smaller" (Chrome menu)
+    - button "Make Text Larger" (Chrome menu)
+    - button "Full screen" (Chrome menu)
+    - menu item "Print…" (Chrome menu)
+    - menu item "Search with Google Lens" (Chrome menu)
+    - menu item "Translate…" (Chrome menu)
+    - menu item "Find and edit" closed (Chrome menu)
+    - menu item "Cast, save, and share" closed (Chrome menu)
+    - menu item "More tools" closed (Chrome menu)
+    - menu item "Help" closed (Chrome menu)
+    - menu item "Settings" (Chrome menu)
+    - menu item "Exit" (Chrome menu)
+
+  taskman_nav: &taskman_nav
+    - button "Open Navigation"
+    - list item "Processes"
+    - list item "Performance"
+    - list item "App history"
+    - list item "Startup apps"
+    - list item "Users"
+    - list item "Details"
+    - list item "Services"
+    - list item "Settings"
+    - edit "Type a name, publisher, or PID to search"
+    - button "Minimize"
+    - button "Maximize"
+    - button "Close"
+  processes: &processes
+    - header item "Name"
+    - header item "Status"
+    - header item "CPU"
+    - header item "Memory"
+    - header item "Disk"
+    - header item "Network"
+    - data item "Google Chrome (24)" closed
+    - data item "Microsoft Teams (6)" closed
+    - data item "Notepad"
+    - data item "Spotify (5)" closed
+    - data item "Task Manager"
+    - data item "Windows Explorer"
+    - data item "Antimalware Service Executable"
+    - data item "Desktop Window Manager"
+  startup_apps: &startup_apps
+    - header item "Name"
+    - header item "Publisher"
+    - header item "Status"
+    - header item "Startup impact"
+    - data item "Microsoft Teams"
+    - data item "OneDrive"
+    - data item "Spotify"
+    - data item "Steam"
+    - data item "Windows Security notification icon"
+
+tasks:
+  # --- Notepad ---------------------------------------------------------------------------------------------------
+  - goal: turn on word wrap
+    app: Notepad
+    title: Untitled - Notepad
+    steps:
+      - ui: [*notepad]
+        want: {click: View}
+      - ui: [*notepad_view_menu, *notepad]
+        want: {click: Word wrap}
+      - ui: [*notepad]
+        want: done
+
+  - goal: make sure the status bar is showing
+    app: Notepad
+    title: Untitled - Notepad
+    steps:
+      - ui: [*notepad]
+        want: {click: View}
+      - ui: [*notepad_view_menu, *notepad]
+        want: [done, {press: escape}]
+
+  - goal: zoom in
+    app: Notepad
+    title: Untitled - Notepad
+    steps:
+      - ui: [*notepad]
+        want: [{click: View}, {press: ctrl+plus}, {press: ctrl+=}]
+      - ui: [*notepad_view_menu, *notepad]
+        want: {click: Zoom}
+      - ui:
+          - menu item "Zoom in" (Zoom menu)
+          - menu item "Zoom out" (Zoom menu)
+          - menu item "Restore default zoom" (Zoom menu)
+          - menu item "Zoom" open (View menu)
+          - menu item "Status bar" on (View menu)
+          - menu item "Word wrap" off (View menu)
+          - *notepad
+        want: {click: Zoom in}
+      - ui: [*notepad]
+        want: done
+
+  - goal: find the word budget in this file
+    app: Notepad
+    title: Expenses - Notepad
+    steps:
+      - ui: [*notepad]
+        want: [{click: Edit}, {press: ctrl+f}]
+      - ui: [*notepad_edit_menu, *notepad]
+        want: {click: Find}
+      - ui:
+          - edit "Find" (Find pane)
+          - button "Find previous" (Find pane)
+          - button "Find next" (Find pane)
+          - button "Toggle replace" (Find pane)
+          - button "Options" (Find pane)
+          - button "Close" (Find pane)
+          - *notepad
+        want: {type: budget, into: Find}
+      - ui:
+          - edit "Find" (Find pane)
+          - button "Find previous" (Find pane)
+          - button "Find next" (Find pane)
+          - button "Toggle replace" (Find pane)
+          - button "Options" (Find pane)
+          - button "Close" (Find pane)
+          - *notepad
+        want: [done, {press: enter}, {click: Find next}]
+
+  - goal: save this as notes
+    app: Notepad
+    title: '*Untitled - Notepad'
+    steps:
+      - ui: [*notepad]
+        want: [{click: File}, {press: ctrl+shift+s}]
+      - ui: [*notepad_file_menu, *notepad]
+        want: {click: Save as}
+      - title: Save as
+        ui: &save_as
+          - edit "File name:"
+          - combo box "Save as type:"
+          - combo box "Encoding:"
+          - button "Save"
+          - button "Cancel"
+          - button "Back"
+          - button "Up"
+          - edit "Search Documents"
+          - button "New folder"
+          - tree item "Home" (Navigation Pane tree)
+          - tree item "Desktop" (Navigation Pane tree)
+          - tree item "Downloads" (Navigation Pane tree)
+          - tree item "Documents" (Navigation Pane tree)
+          - tree item "Pictures" (Navigation Pane tree)
+          - list item "Expenses.txt" (Items View list)
+          - list item "todo.txt" (Items View list)
+          - button "Hide Folders"
+          - button "Close"
+        want: [{type: notes, into: "File name:"}, {type: notes.txt, into: "File name:"}]
+      - title: Save as
+        ui: *save_as
+        want: [{click: Save}, {press: enter}]
+      - ui: [*notepad]
+        want: done
+
+  - goal: switch notepad to dark mode
+    app: Notepad
+    title: Untitled - Notepad
+    steps:
+      - ui: [*notepad]
+        want: {click: Settings}
+      - title: Settings - Notepad
+        ui: [*notepad_settings]
+        want: {click: App theme}
+      - title: Settings - Notepad
+        ui:
+          - radio button "Light" off (App theme group)
+          - radio button "Dark" off (App theme group)
+          - radio button "Use system setting" on (App theme group)
+          - *notepad_settings
+        want: {click: Dark}
+      - title: Settings - Notepad
+        ui:
+          - radio button "Light" off (App theme group)
+          - radio button "Dark" on (App theme group)
+          - radio button "Use system setting" off (App theme group)
+          - *notepad_settings
+        want: done
+
+  - goal: change the font to consolas
+    app: Notepad
+    title: Untitled - Notepad
+    steps:
+      - ui: [*notepad]
+        want: [{click: Edit}, {click: Settings}]
+      - ui: [*notepad_edit_menu, *notepad]
+        want: {click: Font}
+      - title: Settings - Notepad
+        ui: &notepad_font
+          - combo box "Family" (Font group)
+          - combo box "Style" (Font group)
+          - combo box "Size" (Font group)
+          - *notepad_settings
+        want: [{click: Family}, {type: Consolas, into: Family}]
+      - title: Settings - Notepad
+        ui:
+          - list item "Arial" (Family list)
+          - list item "Calibri" (Family list)
+          - list item "Cambria" (Family list)
+          - list item "Comic Sans MS" (Family list)
+          - list item "Consolas" (Family list)
+          - list item "Courier New" (Family list)
+          - list item "Georgia" (Family list)
+          - list item "Lucida Console" (Family list)
+          - list item "Segoe UI" (Family list)
+          - list item "Times New Roman" (Family list)
+          - list item "Verdana" (Family list)
+          - *notepad_font
+        want: {click: Consolas}
+      - title: Settings - Notepad
+        ui: *notepad_font
+        want: done
+
+  - goal: email this to my professor
+    app: Notepad
+    title: Essay draft - Notepad
+    steps:
+      - ui: [*notepad]
+        want: ask
+
+  # --- Calculator ------------------------------------------------------------------------------------------------
+  - goal: switch to the scientific calculator
+    app: Calculator
+    title: Calculator
+    steps:
+      - ui: [*calculator]
+        want: {click: Open Navigation}
+      - ui: [*calculator_nav, *calculator]
+        want: {click: Scientific Calculator}
+      - ui: [*calculator]
+        want: done
+
+  - goal: work out 7 times 8
+    app: Calculator
+    title: Calculator
+    steps:
+      - ui: [*calculator]
+        want: [{click: Seven}, {type: 7*8=}, {type: 7*8}]
+      - ui: [*calculator]
+        want: {click: Multiply by}
+      - ui: [*calculator]
+        want: {click: Eight}
+      - ui: [*calculator]
+        want: [{click: Equals}, {press: enter}]
+      - ui: [*calculator]
+        want: done
+
+  - goal: print this
+    app: Calculator
+    title: Calculator
+    steps:
+      - ui: [*calculator]
+        want: ask
+
+  # --- File Explorer ---------------------------------------------------------------------------------------------
+  - goal: make a new folder called receipts
+    app: File Explorer
+    title: Documents - File Explorer
+    steps:
+      - ui: [*explorer_top, *explorer_tree, *explorer_headers, *documents, *window_buttons]
+        want: [{click: New}, {press: ctrl+shift+n}]
+      - ui:
+          - menu item "Folder" (New menu)
+          - menu item "Shortcut" (New menu)
+          - menu item "Bitmap image" (New menu)
+          - menu item "Compressed (zipped) Folder" (New menu)
+          - menu item "Rich Text Document" (New menu)
+          - menu item "Text Document" (New menu)
+          - *explorer_top
+          - *explorer_tree
+          - *explorer_headers
+          - *documents
+          - *window_buttons
+        want: {click: Folder}
+      - ui:
+          - edit "New folder" (Items View list)
+          - *explorer_top_selected
+          - *explorer_tree
+          - *explorer_headers
+          - *documents
+          - *window_buttons
+        want: {type: receipts}
+      - ui:
+          - edit "New folder" (Items View list)
+          - *explorer_top_selected
+          - *explorer_tree
+          - *explorer_headers
+          - *documents
+          - *window_buttons
+        want: {press: enter}
+      - ui:
+          - *explorer_top_selected
+          - *explorer_tree
+          - *explorer_headers
+          - list item "receipts" (Items View list)
+          - *documents
+          - *window_buttons
+        want: done
+
+  - goal: show hidden files
+    app: File Explorer
+    title: Documents - File Explorer
+    steps:
+      - ui: [*explorer_top, *explorer_tree, *explorer_headers, *documents, *window_buttons]
+        want: {click: View, area: Command Bar toolbar}
+      - ui: &explorer_view_menu
+          - menu item "Extra large icons" (View menu)
+          - menu item "Large icons" (View menu)
+          - menu item "Medium icons" (View menu)
+          - menu item "Small icons" (View menu)
+          - menu item "List" (View menu)
+          - menu item "Details" (View menu)
+          - menu item "Tiles" (View menu)
+          - menu item "Content" (View menu)
+          - menu item "Compact view" off (View menu)
+          - menu item "Show" closed (View menu)
+          - *explorer_top
+          - *explorer_tree
+          - *explorer_headers
+          - *documents
+          - *window_buttons
+        want: {click: Show}
+      - ui:
+          - menu item "Navigation pane" on (Show menu)
+          - menu item "Details pane" off (Show menu)
+          - menu item "Preview pane" off (Show menu)
+          - menu item "Item check boxes" off (Show menu)
+          - menu item "File name extensions" on (Show menu)
+          - menu item "Hidden items" off (Show menu)
+          - *explorer_view_menu
+        want: {click: Hidden items}
+      - ui: [*explorer_top, *explorer_tree, *explorer_headers, *documents, *window_buttons]
+        want: done
+
+  - goal: sort these by date
+    app: File Explorer
+    title: Documents - File Explorer
+    steps:
+      - ui: [*explorer_top, *explorer_tree, *explorer_headers, *documents, *window_buttons]
+        want: [{click: Sort}, {click: Date modified}]
+      - ui:
+          - menu item "Name" (Sort menu)
+          - menu item "Date modified" (Sort menu)
+          - menu item "Type" (Sort menu)
+          - menu item "Size" (Sort menu)
+          - menu item "Ascending" on (Sort menu)
+          - menu item "Descending" off (Sort menu)
+          - menu item "Group by" closed (Sort menu)
+          - *explorer_top
+          - *explorer_tree
+          - *explorer_headers
+          - *documents
+          - *window_buttons
+        want: {click: Date modified, area: Sort menu}
+      - ui: [*explorer_top, *explorer_tree, *explorer_headers, *documents, *window_buttons]
+        want: done
+
+  - goal: go to my downloads
+    app: File Explorer
+    title: Documents - File Explorer
+    steps:
+      - ui: [*explorer_top, *explorer_tree, *explorer_headers, *documents, *window_buttons]
+        want: {click: Downloads}
+      - title: Downloads - File Explorer
+        ui:
+          - tab item "Downloads"
+          - button "Add a new tab"
+          - button "Back"
+          - button "Up"
+          - button "Refresh"
+          - edit "Search Downloads"
+          - button "New" (Command Bar toolbar)
+          - button "Sort" (Command Bar toolbar)
+          - button "View" (Command Bar toolbar)
+          - button "See more" (Command Bar toolbar)
+          - button "Details"
+          - *explorer_tree
+          - *explorer_headers
+          - list item "setup.exe" (Items View list)
+          - list item "syllabus.pdf" (Items View list)
+          - list item "photo.jpg" (Items View list)
+          - *window_buttons
+        want: done
+
+  - goal: rename report.docx to final report
+    app: File Explorer
+    title: Documents - File Explorer
+    steps:
+      - ui: [*explorer_top, *explorer_tree, *explorer_headers, *documents, *window_buttons]
+        want: [{right: report.docx}, {click: report.docx}]
+      - ui:
+          - button "Cut" (Context menu)
+          - button "Copy" (Context menu)
+          - button "Rename" (Context menu)
+          - button "Share" (Context menu)
+          - button "Delete" (Context menu)
+          - menu item "Open" (Context menu)
+          - menu item "Open with" closed (Context menu)
+          - menu item "Compress to ZIP file" (Context menu)
+          - menu item "Copy as path" (Context menu)
+          - menu item "Properties" (Context menu)
+          - menu item "Show more options" (Context menu)
+          - *explorer_top_selected
+          - *explorer_tree
+          - *explorer_headers
+          - *documents
+          - *window_buttons
+        want: [{click: Rename, area: Context menu}, {click: Rename, area: Command Bar toolbar}, {press: f2}]
+      - ui:
+          - edit "report.docx" (Items View list)
+          - *explorer_top_selected
+          - *explorer_tree
+          - *explorer_headers
+          - *documents
+          - *window_buttons
+        want: [{type: final report}, {type: final report.docx}]
+      - ui:
+          - edit "report.docx" (Items View list)
+          - *explorer_top_selected
+          - *explorer_tree
+          - *explorer_headers
+          - *documents
+          - *window_buttons
+        want: {press: enter}
+      - ui:
+          - *explorer_top_selected
+          - *explorer_tree
+          - *explorer_headers
+          - list item "Budget 2026.xlsx" (Items View list)
+          - list item "Class notes" (Items View list)
+          - list item "final report.docx" (Items View list)
+          - list item "Lab report draft.docx" (Items View list)
+          - list item "notes.txt" (Items View list)
+          - list item "Resume.pdf" (Items View list)
+          - list item "Scans" (Items View list)
+          - *window_buttons
+        want: done
+
+  - goal: open the budget spreadsheet
+    app: File Explorer
+    title: Documents - File Explorer
+    steps:
+      - ui: [*explorer_top, *explorer_tree, *explorer_headers, *documents, *window_buttons]
+        want: {double: Budget 2026.xlsx}
+      - title: Budget 2026.xlsx - Excel
+        ui:
+          - button "File Tab"
+          - tab item "Home" (Ribbon tab)
+          - tab item "Insert" (Ribbon tab)
+          - tab item "Page Layout" (Ribbon tab)
+          - tab item "Formulas" (Ribbon tab)
+          - tab item "Data" (Ribbon tab)
+          - tab item "Review" (Ribbon tab)
+          - tab item "View" (Ribbon tab)
+          - edit "Name Box"
+          - edit "Formula Bar"
+          - tab item "Sheet1"
+          - button "New sheet"
+          - *window_buttons
+        want: done
+
+  - goal: open the taxes folder
+    app: File Explorer
+    title: School - File Explorer
+    steps:
+      - ui:
+          - *explorer_top
+          - *explorer_tree
+          - *explorer_headers
+          - list item "Algebra" (Items View list)
+          - list item "Biology" (Items View list)
+          - list item "Chemistry lab" (Items View list)
+          - list item "Club flyers" (Items View list)
+          - list item "Design project" (Items View list)
+          - list item "English essays" (Items View list)
+          - list item "Financial aid" (Items View list)
+          - list item "History" (Items View list)
+          - list item "Internship" (Items View list)
+          - list item "Physics" (Items View list)
+          - list item "Rent receipts" (Items View list)
+          - list item "Scholarships" (Items View list)
+          - *window_buttons
+        want: [{scroll: down}, {type: taxes, into: Search Documents}]
+      - ui:
+          - *explorer_top
+          - *explorer_tree
+          - *explorer_headers
+          - list item "Scholarships" (Items View list)
+          - list item "Statistics" (Items View list)
+          - list item "Study abroad" (Items View list)
+          - list item "Taxes" (Items View list)
+          - list item "Thermodynamics" (Items View list)
+          - list item "Transcripts" (Items View list)
+          - list item "Travel" (Items View list)
+          - list item "Volunteering" (Items View list)
+          - *window_buttons
+        want: {double: Taxes}
+      - title: Taxes - File Explorer
+        ui:
+          - *explorer_top
+          - *explorer_tree
+          - *explorer_headers
+          - list item "2025 W-2.pdf" (Items View list)
+          - list item "2025 return.pdf" (Items View list)
+          - *window_buttons
+        want: done
+
+  # --- Paint -----------------------------------------------------------------------------------------------------
+  - goal: draw with a red pencil
+    app: Paint
+    title: Untitled - Paint
+    steps:
+      - ui: [*paint]
+        want: [{click: Pencil}, {click: Red}]
+      - ui: [*paint]
+        want: {click: Red}
+      - ui: [*paint]
+        want: done
+
+  - goal: shrink the picture to half its size
+    app: Paint
+    title: photo.png - Paint
+    steps:
+      - ui: [*paint]
+        want: {click: Resize and skew}
+      - title: Resize and Skew
+        ui: &paint_resize
+          - radio button "Percentage" on (Resize group)
+          - radio button "Pixels" off (Resize group)
+          - edit "Horizontal" (Resize group)
+          - edit "Vertical" (Resize group)
+          - checkbox "Maintain aspect ratio" on (Resize group)
+          - edit "Horizontal" (Skew group)
+          - edit "Vertical" (Skew group)
+          - button "OK"
+          - button "Cancel"
+          - *paint
+        want: [{type: "50", into: Horizontal, area: Resize group}]
+      - title: Resize and Skew
+        ui: *paint_resize
+        want: [{click: OK}, {press: enter}]
+      - ui: [*paint]
+        want: done
+
+  # --- Settings (guide only) -------------------------------------------------------------------------------------
+  - goal: turn on night light
+    app: Settings
+    title: Settings
+    steps:
+      - ui: [*settings_home]
+        want: {click: System}
+      - ui: [*settings_system]
+        want: {click: Display}
+      - ui: &settings_display
+          - slider "Brightness"
+          - button "Night light" off
+          - button "Night light settings"
+          - button "HDR"
+          - combo box "Scale"
+          - combo box "Display resolution"
+          - combo box "Display orientation"
+          - button "Multiple displays" closed
+          - button "Advanced display"
+          - button "Graphics"
+          - *settings_nav
+        want: {click: Night light}
+      - ui:
+          - slider "Brightness"
+          - button "Night light" on
+          - button "Night light settings"
+          - button "HDR"
+          - combo box "Scale"
+          - combo box "Display resolution"
+          - combo box "Display orientation"
+          - button "Multiple displays" closed
+          - button "Advanced display"
+          - button "Graphics"
+          - *settings_nav
+        want: done
+
+  - goal: turn bluetooth off
+    app: Settings
+    title: Settings
+    steps:
+      - ui: [*settings_home]
+        want: {click: Bluetooth & devices}
+      - ui:
+          - button "Bluetooth" on
+          - button "Add device"
+          - button "View more devices"
+          - button "Printers & scanners"
+          - button "Phone Link"
+          - button "Cameras"
+          - button "Mouse"
+          - button "Touchpad"
+          - button "Pen & Windows Ink"
+          - button "AutoPlay"
+          - button "USB"
+          - *settings_nav
+        want: {click: Bluetooth}
+      - ui:
+          - button "Bluetooth" off
+          - button "Add device"
+          - button "View more devices"
+          - button "Printers & scanners"
+          - button "Phone Link"
+          - button "Cameras"
+          - button "Mouse"
+          - button "Touchpad"
+          - button "Pen & Windows Ink"
+          - button "AutoPlay"
+          - button "USB"
+          - *settings_nav
+        want: done
+
+  - goal: make the taskbar hide itself
+    app: Settings
+    title: Settings
+    steps:
+      - ui: [*settings_home]
+        want: {click: Personalization}
+      - ui: [*settings_personalization]
+        want: {click: Taskbar}
+      - ui:
+          - &taskbar_top
+            - button "Taskbar items" open
+            - combo box "Search"
+            - button "Task view" on (Taskbar items group)
+            - button "Widgets" on (Taskbar items group)
+            - button "System tray icons" closed
+            - button "Other system tray icons" closed
+          - button "Taskbar behaviors" closed
+          - *settings_nav
+        want: {click: Taskbar behaviors}
+      - ui:
+          - *taskbar_top
+          - button "Taskbar behaviors" open
+          - checkbox "Automatically hide the taskbar" off (Taskbar behaviors group)
+          - combo box "Taskbar alignment" (Taskbar behaviors group)
+          - checkbox "Show badges on taskbar apps" on (Taskbar behaviors group)
+          - checkbox "Show flashing on taskbar apps" on (Taskbar behaviors group)
+          - checkbox "Show my taskbar on all displays" off (Taskbar behaviors group)
+          - checkbox "Share any window from my taskbar" off (Taskbar behaviors group)
+          - checkbox "Select the far corner of the taskbar to show th…" on (Taskbar behaviors group)
+          - *settings_nav
+        want: {click: Automatically hide the taskbar}
+      - ui:
+          - *taskbar_top
+          - button "Taskbar behaviors" open
+          - checkbox "Automatically hide the taskbar" on (Taskbar behaviors group)
+          - combo box "Taskbar alignment" (Taskbar behaviors group)
+          - checkbox "Show badges on taskbar apps" on (Taskbar behaviors group)
+          - checkbox "Show flashing on taskbar apps" on (Taskbar behaviors group)
+          - checkbox "Show my taskbar on all displays" off (Taskbar behaviors group)
+          - checkbox "Share any window from my taskbar" off (Taskbar behaviors group)
+          - checkbox "Select the far corner of the taskbar to show th…" on (Taskbar behaviors group)
+          - *settings_nav
+        want: done
+
+  - goal: check for windows updates
+    app: Settings
+    title: Settings
+    steps:
+      - ui: [*settings_home]
+        want: {click: Windows Update}
+      - ui:
+          - button "Check for updates"
+          - combo box "Pause updates"
+          - button "Update history"
+          - button "Advanced options"
+          - button "Windows Insider Program"
+          - button "Get the latest updates as soon as they're avail…" off
+          - *settings_nav
+        want: {click: Check for updates}
+      - ui:
+          - combo box "Pause updates"
+          - button "Update history"
+          - button "Advanced options"
+          - button "Windows Insider Program"
+          - button "Get the latest updates as soon as they're avail…" off
+          - *settings_nav
+        want: done
+
+  - goal: switch windows to dark mode
+    app: Settings
+    title: Settings
+    steps:
+      - ui: [*settings_home]
+        want: {click: Personalization}
+      - ui: [*settings_personalization]
+        want: {click: Colors}
+      - ui: &settings_colors
+          - combo box "Choose your mode"
+          - button "Transparency effects" on
+          - combo box "Accent color"
+          - button "Show accent color on Start and taskbar" off
+          - button "Show accent color on title bars and window bord…" off
+          - *settings_nav
+        want: {click: Choose your mode}
+      - ui:
+          - list item "Light" (Choose your mode list)
+          - list item "Dark" (Choose your mode list)
+          - list item "Custom" (Choose your mode list)
+          - *settings_colors
+        want: {click: Dark}
+      - ui: *settings_colors
+        want: done
+
+  # --- Chrome (the browser's own controls) -----------------------------------------------------------------------
+  - goal: open an incognito window
+    app: Google Chrome
+    title: Wikipedia - Google Chrome
+    steps:
+      - ui: [*chrome]
+        want: [{click: Chrome}, {press: ctrl+shift+n}]
+      - ui: [*chrome_menu, *chrome]
+        want: {click: New Incognito window}
+      - title: New Incognito tab - Google Chrome
+        ui:
+          - tab item "New Incognito tab"
+          - button "New Tab"
+          - button "Back"
+          - button "Reload"
+          - edit "Address and search bar"
+          - button "Chrome"
+          - button "Minimize"
+          - button "Restore"
+          - button "Close"
+        want: done
+
+  - goal: bookmark this page
+    app: Google Chrome
+    title: Wikipedia - Google Chrome
+    steps:
+      - ui: [*chrome]
+        want: [{click: Bookmark this tab}, {press: ctrl+d}]
+      - ui:
+          - edit "Bookmark name" (Bookmark added group)
+          - combo box "Folder" (Bookmark added group)
+          - button "Done" (Bookmark added group)
+          - button "Remove" (Bookmark added group)
+          - *chrome
+        want: [done, {click: Done}]
+
+  - goal: make the text bigger
+    app: Google Chrome
+    title: Wikipedia - Google Chrome
+    steps:
+      - ui: [*chrome]
+        want: [{click: Chrome}, {press: ctrl+plus}, {press: ctrl+=}]
+      - ui: [*chrome_menu, *chrome]
+        want: {click: Make Text Larger}
+      - ui: [*chrome_menu, *chrome]
+        want: [done, {press: escape}, {click: Make Text Larger}]
+
+  # --- Task Manager ----------------------------------------------------------------------------------------------
+  - goal: end notepad
+    app: Task Manager
+    title: Task Manager
+    steps:
+      - ui: [button "Run new task", button "Efficiency mode", *processes, *taskman_nav]
+        want: [{click: Notepad}, {right: Notepad}]  # right-click: its menu has "End task"
+      - ui: [button "Run new task", button "End task", button "Efficiency mode", *processes, *taskman_nav]
+        want: [{click: End task}, {press: delete}]
+      - ui:
+          - button "Run new task"
+          - button "Efficiency mode"
+          - header item "Name"
+          - header item "Status"
+          - header item "CPU"
+          - header item "Memory"
+          - header item "Disk"
+          - header item "Network"
+          - data item "Google Chrome (24)" closed
+          - data item "Microsoft Teams (6)" closed
+          - data item "Spotify (5)" closed
+          - data item "Task Manager"
+          - data item "Windows Explorer"
+          - data item "Antimalware Service Executable"
+          - data item "Desktop Window Manager"
+          - *taskman_nav
+        want: done
+
+  - goal: stop spotify from starting with windows
+    app: Task Manager
+    title: Task Manager
+    steps:
+      - ui: [button "Run new task", button "Efficiency mode", *processes, *taskman_nav]
+        want: {click: Startup apps}
+      - ui: [button "Run new task", *startup_apps, *taskman_nav]
+        want: [{click: Spotify}, {right: Spotify}]  # right-click: its menu has "Disable"
+      - ui: [button "Run new task", button "Disable", button "Properties", *startup_apps, *taskman_nav]
+        want: {click: Disable}
+      - ui: [button "Run new task", button "Enable", button "Properties", *startup_apps, *taskman_nav]
+        want: done

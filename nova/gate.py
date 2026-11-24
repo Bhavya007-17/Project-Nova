@@ -168,6 +168,41 @@ def is_stop(text: str, wake: WakeName) -> bool:
     return tuple(words) in _STOPS
 
 
+# --- steering a running task (Stage 07d) -----------------------------------------------------------------------------
+
+DO_IT = frozenset({("just", "do", "it"), ("do", "it"), ("you", "do", "it"), ("go", "ahead", "and", "do", "it"),
+                   ("do", "it", "yourself"), ("just", "do", "it", "yourself"), ("you", "do", "it", "then"),
+                   ("just", "finish", "it"), ("you", "finish", "it")})
+LET_ME = frozenset({("let", "me", "do", "it"), ("ill", "do", "it"), ("ill", "do", "it", "myself"),
+                    ("let", "me", "do", "it", "myself"), ("let", "me", "try"), ("show", "me"), ("show", "me", "how"),
+                    ("show", "me", "again"), ("show", "me", "how", "again"), ("walk", "me", "through", "it")})
+_NEXT = frozenset({("next",), ("next", "step"), ("next", "one"), ("what", "next"), ("what", "now"), ("then", "what"),
+                   ("now", "what"), ("i", "did", "it"), ("did", "it"), ("i", "clicked", "it"), ("i", "clicked", "that"),
+                   ("continue",), ("keep", "going"), ("go", "on"), ("got", "it"), ("i", "got", "it")})
+_WHERE = frozenset({("where",), ("where", "is", "it"), ("where", "it"), ("where", "is", "that"), ("where", "that"),
+                    ("where", "again"), ("i", "cant", "find", "it"), ("cant", "find", "it"), ("i", "dont", "see", "it"),
+                    ("which", "one"), ("show", "me", "where"), ("where", "do", "i", "click")})
+_STEERS = ((DO_IT, "do"), (LET_ME, "guide"), (_NEXT, "next"), (_WHERE, "where"))
+
+
+def steers(text: str, wake: WakeName) -> str | None:
+    """While a task runs (SPEC §8.4), is this only a steer for it? "just do it" -> do, "let me do it" / "show me"
+    -> guide, "next" / "I did it" -> next, "where?" / "which one?" -> where; None for anything else. The name and
+    fillers in front, "please" / "now" behind, don't count."""
+    rest = strip_wake(text, wake) if wake.enabled else None
+    words = _words(text if rest is None else rest)
+    while words and words[-1] in ("please", "now"):
+        words = words[:-1]
+    for start in range(len(words)):  # "ok, now what": try "ok now what", "now what", "what"
+        said = tuple(words[start:])
+        for phrases, word in _STEERS:
+            if said in phrases:
+                return word
+        if words[start] not in _FILLERS:
+            break
+    return None
+
+
 # --- the always-listening resolver ---------------------------------------------------------------------------------
 #
 # What un-addressed speech may do is decided by strict Tier 0 (``nova.brain.tier0.Tier0Resolver``): the same parser
@@ -229,6 +264,7 @@ class Env:
     speakers: bool = False  # the speakers played audio while this was said
     numbers: bool = False  # numbers / a grid are on screen: a bare number picks one
     scrolling: bool = False  # steady scrolling runs: a bare "stop" stops it
+    task: str = ""  # a task runs in this mode (do | guide): "just do it" / "next" / "where?" steer it (gate.steers)
 
 
 @dataclass(frozen=True)

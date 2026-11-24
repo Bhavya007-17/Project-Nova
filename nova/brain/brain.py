@@ -37,7 +37,9 @@ from ..events import (
     BrainProgress,
     CommandFinished,
     ConfigChanged,
+    DictationChanged,
     MarksHide,
+    PartialTranscript,
     Gated,
     IslandAction,
     PreloadHint,
@@ -47,15 +49,17 @@ from ..events import (
     StepsChanged,
     TalkChanged,
     TalkEndRequested,
+    TaskSteered,
 )
 from ..governor import Governor
 from ..log import TraceLog
 from ..state import CLARIFY_S, CONFIRM_S
-from . import meaning
+from . import meaning, task
 from .answers import pick, yes_no
-from .executor import Executor, RunResult
+from .executor import Executor, RunResult, StepResult
 from .llama_server import connect
 from .plan import Plan
+from .prefetch import Prefetcher
 from .router import Router, Settled, describe_handoff, running_apps
 from .tier1 import Tier1
 
@@ -205,6 +209,12 @@ def command_type(plan: Plan | None) -> str:
     return f"{first.action}:{op}" if op and first.action in ("window", "tab", "nav", "media") else first.action
 
 
+def _hops(step: StepResult) -> dict[str, list[float]]:
+    """A task's per-step times (pick, acted → next pick, his click → next ring) for `nova latency`; none otherwise."""
+    hops = {"pick_ms": step.pick_ms, "step_ms": step.step_ms, "ring_ms": step.ring_ms}
+    return {key: [round(ms, 1) for ms in values] for key, values in hops.items() if values}
+
+
 def handle(
     command: Command,
     catalog: Catalog,
@@ -278,8 +288,8 @@ def handle(
         "start_ms": round((result.started_at - origin) * 1000, 1) if result and result.started_at else None,
         "exec_ms": round(sum(s.ms for s in result.steps), 1) if result else None,
         "total_ms": round((done - origin) * 1000, 1),
-        "steps": [{"action": s.action, "ok": s.ok, "ms": round(s.ms, 1), "method": s.method, "detail": s.detail}
-                  for s in (result.steps if result else ())],
+        "steps": [{"action": s.action, "ok": s.ok, "ms": round(s.ms, 1), "method": s.method, "detail": s.detail,
+                   **_hops(s)} for s in (result.steps if result else ())],
     }
     if trace is not None:
         trace.write(**record)
@@ -310,6 +320,7 @@ class Brain:
                             warming=lambda: bus.publish(BrainProgress("warming", WARMING)),
                             warmed=lambda: bus.publish(BrainProgress("thinking")))
         self._hands.pointer.meaning = meaning.asker(self._tier1)  # click by meaning (Stage 07d)
+        self._hands.picker = task.model_picker(self._tier1)  # a task's next step (Stage 07d)
         self._router = Router(self._tier1, page=chrome.page_rows if chrome is not None else None,
                               numbers=lambda: self._hands.pointer.showing or self._hands.pointer.grid_on,
                               scrolling=lambda: self._hands.scroller.scrolling, buttons=self._hands.button_named)
@@ -322,10 +333,17 @@ class Brain:
         self._prepared = False  # a plan opened dictation before running (its "start" step releases it)
         self._opened = False  # ...and the plan opened an app first
         self._busy = False
+        self._dictating = False
+        # Prefetch (07d): the front window's snapshot while he says "show me / click / where's ...", never otherwise
+        self._prefetcher = Prefetcher(self._prefetch, self._idle)
         self._unsubscribe = [
+            bus.subscribe(PartialTranscript, lambda event: self._prefetcher.heard(event.utterance, event.text)),
+            bus.subscribe(DictationChanged, self._on_dictation),
             bus.subscribe(Gated, self._on_gated),
             bus.subscribe(SpeechEnded, self._on_speech_end),
             bus.subscribe(IslandAction, self._answers.put),
+            bus.subscribe(IslandAction, self._on_steered),
+            bus.subscribe(TaskSteered, self._on_steered),
             bus.subscribe(AnswerHeard, self._answers.put),
             bus.subscribe(SessionCancelled, self._on_cancelled),
             bus.subscribe(PreloadHint, lambda event: self._tier1.preload(event.reason)),
@@ -383,9 +401,35 @@ class Brain:
             while len(self._ends) > _KEEP:
                 self._ends.pop(next(iter(self._ends)))
 
+    def _on_dictation(self, event: DictationChanged) -> None:
+        self._dictating = event.on
+
+    def _idle(self) -> bool:
+        return not self._busy and not self._dictating
+
+    def _prefetch(self) -> None:
+        """Prefetch thread: the front window's UIA snapshot while he is still talking (the command reuses it)."""
+        try:
+            win = native.describe(native.foreground())
+            if win is None:
+                return
+            started = time.perf_counter()
+            if self._hands.pointer.prefetch(win, idle=self._idle):
+                _log.info("prefetch: %s snapshot in %.0f ms", win.exe, (time.perf_counter() - started) * 1000)
+        except Exception:  # noqa: BLE001 - an early look is only a head start
+            _log.exception("prefetch failed")
+
     def _on_config(self, event: ConfigChanged) -> None:
         self._governor.forget()
         self._cleaner.forget()
+
+    def _on_steered(self, event: TaskSteered | IslandAction) -> None:
+        """"just do it" / "show me" / "next" / "where?", or the guide's Do it button: the running task (bus thread;
+        the task reads it at its next poll), never the command queue."""
+        if isinstance(event, TaskSteered):
+            self._hands.steer_to(event.what)
+        elif event.what == "do-it":
+            self._hands.steer_to("do")
 
     def _on_cancelled(self, event: SessionCancelled) -> None:
         self._answers.put(event)

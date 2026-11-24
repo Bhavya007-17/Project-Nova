@@ -6,7 +6,7 @@ from catalog_fixture import CATALOG, ROWS
 
 from nova.actions.catalog import DEFAULT_ALIASES, Catalog, apps_from_rows, parse_aliases
 from nova.brain.tier0 import Tier0Resolver
-from nova.gate import Addressing, Env, NoResolver, WakeName, command_words, decide, is_stop, strip_wake
+from nova.gate import Addressing, Env, NoResolver, WakeName, command_words, decide, is_stop, steers, strip_wake
 
 # Always-listening resolves through strict Tier 0 + a catalog like this laptop's.
 RESOLVER = Tier0Resolver(CATALOG)
@@ -363,6 +363,27 @@ def test_stop_words(heard):
 )
 def test_not_stop_words(heard):
     assert not is_stop(heard, WAKE)
+
+
+@pytest.mark.parametrize(
+    ("heard", "word"),
+    [("just do it", "do"), ("Nova, do it.", "do"), ("okay you do it", "do"), ("do it yourself please", "do"),
+     ("let me do it", "guide"), ("I'll do it", "guide"), ("show me", "guide"), ("show me again", "guide"),
+     ("next", "next"), ("Next step.", "next"), ("what's next?", "next"), ("then what", "next"), ("ok, now what?", "next"),
+     ("I did it", "next"), ("continue", "next"), ("keep going", "next"),
+     ("where?", "where"), ("where is it", "where"), ("where's that", "where"), ("I can't find it", "where"),
+     ("which one?", "where"), ("Nova, show me where", "where")],
+)
+def test_words_that_steer_a_running_task(heard, word):
+    assert steers(heard, WAKE) == word
+
+
+@pytest.mark.parametrize(
+    "heard", ["", "stop", "do it later", "next track", "where is the nearest coffee shop", "show me the weather",
+              "open notepad", "Nova", "I did it yesterday"]
+)
+def test_words_that_do_not_steer(heard):
+    assert steers(heard, WAKE) is None
 
 
 def test_an_app_in_the_catalog_resolves_and_one_that_is_not_does_not():

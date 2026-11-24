@@ -42,6 +42,9 @@ _GETTERS: dict[str, Callable[[View], object]] = {
     "beneath": lambda v: v.beneath,
     "skipped": lambda v: v.skipped,
     "warming": lambda v: v.warming,
+    # guide mode (Stage 07d)
+    "guide": lambda v: v.guide,
+    "hint": lambda v: v.hint,
 }
 
 
@@ -72,6 +75,8 @@ class IslandBridge(QObject):
     beneathChanged = Signal()
     skippedChanged = Signal()
     warmingChanged = Signal()
+    guideChanged = Signal()
+    hintChanged = Signal()
     levelChanged = Signal()
 
     def __init__(
@@ -112,7 +117,7 @@ class IslandBridge(QObject):
 
     @Slot(str, int, str)
     def act(self, what: str, index: int, chip: str) -> None:
-        """A click: yes | no | choice (index) | retry | show-me | chip (chip id) | stop-session."""
+        """A click: yes | no | choice (index) | retry | show-me | chip (chip id) | stop-session | stop | do-it."""
         self._on_act(what, index, chip)
 
     @Slot()
@@ -163,4 +168,6 @@ class IslandBridge(QObject):
     beneath = Property(str, lambda self: self._view.beneath, notify=beneathChanged)
     skipped = Property(str, lambda self: self._view.skipped, notify=skippedChanged)
     warming = Property(bool, lambda self: self._view.warming, notify=warmingChanged)
+    guide = Property(str, lambda self: self._view.guide, notify=guideChanged)
+    hint = Property(str, lambda self: self._view.hint, notify=hintChanged)
     level = Property(float, lambda self: self._level, notify=levelChanged)

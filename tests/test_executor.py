@@ -242,3 +242,113 @@ def test_again_after_a_clarify_repeats_the_chosen_option():
     executor.run(Plan("clarify", question="Which?", choices=("Notepad", "Notion"), options=options), ctx=None)
     executor.run(act(step("nova", op="again")), ctx=None)
     assert [s.get("app") for s in hands.ran] == ["Notion", "Notion"]
+
+
+# --- Stage 07d: a task is one step; the hands run the look → pick → act loop -----------------------------------------
+
+from nova.brain.task import Result as TaskResult  # noqa: E402
+
+
+class TaskHands(FakeHands):
+    def __init__(self, result, asks=()):
+        super().__init__()
+        self.tasks = []
+        self._result = result
+        self._asks = asks
+
+    def task(self, goal, mode, *, kept=(), point=False, confirm, stopped, progress, ctx=None):
+        self.tasks.append((goal, mode, kept, point))
+        progress("Click “View”", 1)
+        for question in self._asks:
+            if not confirm(question):
+                return TaskResult("declined", "Cancelled")
+        return self._result
+
+
+WRAPPED = TaskResult("done", "Done — Word wrap is on", ("Click “View”", "Click “Word wrap”"),
+                     (step("ui_click", name="View", role="menu item"), step("ui_click", name="Word wrap", role="menu item")))
+
+
+def test_a_task_runs_through_the_hands():
+    seen = []
+    result, hands, _ = run(act(step("task", goal="turn on word wrap", mode="do")), hands=TaskHands(WRAPPED), progress=seen)
+    assert result.ok and result.detail == "Done — Word wrap is on"
+    assert hands.tasks == [("turn on word wrap", "do", (), False)]
+    assert seen[-1] == (("Click “View”",), 0)
+
+
+def test_a_task_keeps_its_hop_times_for_the_trace():
+    timed = TaskResult("done", "Done", pick_ms=(600.0, 700.0), step_ms=(1500.0,), ring_ms=(400.0,))
+    result, _, _ = run(act(step("task", goal="turn on word wrap")), hands=TaskHands(timed))
+    last = result.steps[-1]
+    assert (last.pick_ms, last.step_ms, last.ring_ms) == ((600.0, 700.0), (1500.0,), (400.0,))
+    stuck = TaskResult("stuck", "Stuck", pick_ms=(900.0,))
+    result, _, _ = run(act(step("task", goal="turn on word wrap")), hands=TaskHands(stuck))
+    assert result.steps[-1].pick_ms == (900.0,)  # a failed task's picks count too
+
+
+def test_a_task_that_gets_stuck_fails_and_says_why():
+    stuck = TaskResult("stuck", "I couldn't find how to do that — say 'show me' and I'll learn.")
+    result, _, _ = run(act(step("task", goal="turn on word wrap")), hands=TaskHands(stuck))
+    assert not result.ok and not result.cancelled and "couldn't find" in result.detail
+    assert result.steps[-1].action == "task" and result.steps[-1].method == "stuck"
+
+
+def test_a_task_asks_through_the_same_asker():
+    result, _, asker = run(act(step("task", goal="empty the bin")), hands=TaskHands(WRAPPED, asks=("Click “Empty”?",)),
+                           asker=FakeAsker(confirm=False))
+    assert not result.ok and result.cancelled and asker.questions == ["Click “Empty”?"]
+
+
+def test_no_task_hands_and_no_last_task():
+    result, _, _ = run(act(step("task", goal="turn on word wrap")))
+    assert not result.ok and "can't do tasks" in result.detail
+    result, _, _ = run(act(step("task", mode="do")), hands=TaskHands(WRAPPED))
+    assert not result.ok and "No task yet" in result.detail
+
+
+def test_just_do_it_reruns_the_last_task_with_what_it_kept():
+    hands = TaskHands(WRAPPED)
+    executor = Executor(hands, FakeAsker())
+    executor.run(act(step("task", goal="turn on word wrap", mode="guide")), ctx=None)
+    executor.run(act(step("task", mode="do")), ctx=None)
+    assert hands.tasks[1][:2] == ("turn on word wrap", "do") and len(hands.tasks[1][2]) == 2
+
+
+def test_just_do_it_after_a_failed_task_starts_fresh():
+    # the steps a failed task kept are the wrong ones ("What's new" for word wrap): rerun the goal, not them
+    wrong = TaskResult("failed", "I couldn't finish — show me?", ("Click “What's new”",),
+                       (step("ui_click", name="What's new", role="button"),))
+    hands = TaskHands(wrong)
+    executor = Executor(hands, FakeAsker())
+    executor.run(act(step("task", goal="turn on word wrap", mode="do")), ctx=None)
+    executor.run(act(step("task", mode="do")), ctx=None)
+    assert hands.tasks[1][:3] == ("turn on word wrap", "do", ())
+
+
+def test_an_unsure_task_reports_its_doubt_and_keeps_no_steps():
+    # the demo: "Close Tab" right-clicked for "turn off word wrap", then done — say so, and never replay it
+    unsure = TaskResult("unsure", "Not sure that did it — last step: Right-click “Close Tab”",
+                        ("Right-click “Close Tab”",), (step("ui_click", name="Close Tab", role="button", button="right"),))
+    hands = TaskHands(unsure)
+    executor = Executor(hands, FakeAsker())
+    result = executor.run(act(step("task", goal="turn off word wrap", mode="do")), ctx=None)
+    assert result.ok and result.detail == "Not sure that did it — last step: Right-click “Close Tab”"
+    executor.run(act(step("nova", op="again")), ctx=None)
+    assert len(hands.tasks) == 2 and hands.ran == []
+
+
+def test_do_that_again_replays_a_tasks_clicks():
+    hands = TaskHands(WRAPPED)
+    executor = Executor(hands, FakeAsker())
+    executor.run(act(step("task", goal="turn on word wrap")), ctx=None)
+    result = executor.run(act(step("nova", op="again")), ctx=None)
+    assert result.ok and [s.get("name") for s in hands.ran] == ["View", "Word wrap"] and len(hands.tasks) == 1
+
+
+def test_do_that_again_asks_again_when_the_task_kept_nothing():
+    hands = TaskHands(TaskResult("done", "Done", (), ()))
+    executor = Executor(hands, FakeAsker())
+    executor.run(act(step("task", goal="turn on word wrap")), ctx=None)
+    executor.run(act(step("nova", op="again")), ctx=None)
+    assert len(hands.tasks) == 2 and hands.ran == []

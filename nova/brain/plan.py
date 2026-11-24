@@ -40,6 +40,7 @@ SCOPES = frozenset({"here", "everywhere"})  # the front window / its whole scree
 SHOT_TARGETS = frozenset({"screen", "window"})
 SYSTEM_OPS = frozenset({"lock", "sleep"})
 NOVA_OPS = frozenset({"help", "again", "undo"})
+TASK_MODES = frozenset({"do", "guide"})  # do: Nova clicks; guide: Nova points, he clicks
 HELP_TOPICS = frozenset({"apps", "web", "screen", "system"})
 VOLUME_OPS = frozenset({"up", "down", "mute", "unmute", "set"})
 MEDIA_OPS = frozenset({"play_pause", "play", "pause", "next", "prev", "stop"})
@@ -281,6 +282,11 @@ def _check_step(s: Step) -> None:
         case "nova":
             _one_of(a, "op", NOVA_OPS)
             _one_of(a, "topic", HELP_TOPICS, required=False)
+        case "task":  # no goal = the last task ("just do it", "let me do it", "show me again")
+            _text(a, "goal", required=False)
+            _one_of(a, "mode", TASK_MODES, required=False)
+            if "point" in a and not isinstance(a["point"], bool):
+                raise PlanError("point must be true or false")
         case _:
             raise PlanError(f"unknown action {s.action!r}")
 
@@ -289,7 +295,7 @@ ACTIONS = frozenset({
     "open_app", "switch_app", "close_app", "window", "layout", "open_url", "web_search", "tab", "nav", "scroll",
     "type_text", "page_click", "scroll_to", "page_fill", "page_read", "canvas_due", "canvas_open_item",
     "canvas_item_text", "canvas_open", "press", "volume", "media", "dictation", "docs_new", "listening", "autoscroll",
-    "doc", "ui_click", "numbers", "grid", "pick", "screenshot", "camera", "system", "open_path", "nova",
+    "doc", "ui_click", "numbers", "grid", "pick", "screenshot", "camera", "system", "open_path", "nova", "task",
 })  # every action _check_step knows (the help card is checked against it)
 
 

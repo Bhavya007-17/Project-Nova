@@ -18,7 +18,7 @@ from .actions import native
 from .actions.catalog import CatalogStore
 from .actions.context import snapshot
 from .actions.hands import NovaControls, WindowsHands
-from .brain import meaning
+from .brain import meaning, task
 from .brain.brain import Command, handle
 from .brain.executor import Executor
 from .brain.llama_server import connect
@@ -179,6 +179,7 @@ def main(text: str, *, dry: bool = False, chrome_wait: float = 0.0) -> int:
     hands = WindowsHands(store.current, nova=NovaControls(
         dictation=dictate, listening=lambda op: "Sleep runs in the tray app"), chrome=chrome)
     hands.pointer.meaning = meaning.asker(_tier1)  # click by meaning (Stage 07d)
+    hands.picker = task.model_picker(_tier1)  # a task's next step (Stage 07d)
     router = Router(_tier1, page=chrome.page_rows if chrome is not None else None, buttons=hands.button_named)
     executor = Executor(hands, asker, progress=lambda labels, i: print(f"  … {' → '.join(labels)}  [{labels[i]}]"))
     shown: list[str] = []

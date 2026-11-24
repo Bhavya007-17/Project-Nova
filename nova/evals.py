@@ -201,6 +201,8 @@ def _want_step(text: str, catalog: Catalog) -> tuple:
         return ("open_path", _norm_path(rest))
     if head == "canvas_due" and rest in CANVAS_RANGES:
         return ("canvas_due", rest)
+    if head == "task" and rest in ("", "do", "guide"):
+        return ("task", rest or None)
     raise ValueError(f"can't read want step {text!r}")
 
 
@@ -274,6 +276,8 @@ def _canon(s: Step) -> tuple:
             return ("pick", a.get("n"), a.get("verb") or "click", a.get("to"))
         case "open_path":
             return ("open_path", _norm_path(str(a.get("name", ""))))
+        case "task":
+            return ("task", a.get("mode") or "do")
     return (s.action, a.get("op"))
 
 
@@ -289,7 +293,7 @@ def _matches(pattern: tuple, got: tuple) -> bool:
         return got[1] in pattern[1] and (pattern[2] is None or pattern[2] == got[2])
     if kind in ("volume", "doc"):
         return got[1] in pattern[1] and (pattern[2] is None or pattern[2] == got[2])
-    if kind == "screenshot":
+    if kind in ("screenshot", "task"):
         return pattern[1] is None or pattern[1] == got[1]
     return pattern == got
 

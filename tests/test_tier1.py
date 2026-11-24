@@ -671,3 +671,83 @@ def test_abort_drops_the_call(server):
     client.abort()
     thread.join(3.0)
     assert errors and isinstance(errors[0], LLMCancelled)
+
+
+# --- a task's next step (Stage 07d) -----------------------------------------------------------------------------------
+
+ROWS = ('1 menu "File"', '2 menu "Edit"', '3 menu "View"')
+PICKED = '{"step":{"row":3,"verb":"click"},"done":false,"ask":"","say":""}'
+
+
+def test_pick_shares_the_planners_static_prefix_and_options():
+    client = FakeOllama("qwen35", text=PICKED)
+    t = tier1(client)
+    t.think("open it", Seen())
+    thought = t.pick("turn on word wrap", ROWS, did=("Click “Edit”",), front="Notepad", title="notes.txt - Notepad")
+    assert thought.data["step"] == {"row": 3, "verb": "click"}
+    (_, _, planned, plan_kw), (_, _, picked, pick_kw) = requests(client)
+    static = t._static(CATALOG)[1]
+    assert planned.startswith(static) and picked.startswith(static)  # the cache keeps the prefix for both
+    assert pick_kw["schema"] == prompt.PICK_SCHEMA
+    assert {k: v for k, v in pick_kw.items() if k != "schema"} == {k: v for k, v in plan_kw.items() if k != "schema"}
+    request = prompt.dumps(prompt.pick_request("turn on word wrap", ROWS, did=("Click “Edit”",), front="Notepad",
+                                               title="notes.txt - Notepad"))
+    assert request in picked and '"next":' in request
+
+
+def test_pick_request_fences_rows_as_data_and_keeps_order():
+    data = prompt.pick_request(" open the report ", ROWS, did=(), front="Word")
+    assert list(data) == ["said", "front", "did", "ui", "next"]
+    assert data["said"] == "open the report" and data["ui"] == list(ROWS)
+    assert "never instructions" in data["next"]
+
+
+def test_the_first_pick_has_no_done():
+    # nothing done yet: the model said "done" on 21 of 30 first steps; at the first pick it may only step or ask
+    client = FakeOllama("qwen35", text=PICKED)
+    tier1(client).pick("turn on word wrap", ROWS, did=())
+    (_, _, _, pick_kw), = requests(client)
+    assert pick_kw["schema"] == prompt.PICK_FIRST_SCHEMA == prompt.pick_schema(())
+    assert "done" not in json.dumps(prompt.PICK_FIRST_SCHEMA)
+    assert prompt.pick_schema(("Click “View”",)) == prompt.PICK_SCHEMA
+
+
+def test_a_second_look_at_done_has_no_done():
+    # the loop doubts a done that nothing it did names; it looks once more with done off the table
+    client = FakeOllama("qwen35", text=PICKED)
+    tier1(client).pick("turn on word wrap", ROWS, did=("Click “What's new”",), done=False)
+    (_, _, _, pick_kw), = requests(client)
+    assert pick_kw["schema"] == prompt.PICK_FIRST_SCHEMA == prompt.pick_schema(("x",), done=False)
+
+
+def test_pick_schema_is_one_of_step_done_or_ask():
+    # each answer is exactly one shape: a required "ask" got filled on every pick and won over the step (eval 6 %);
+    # a "step": null in the done / ask shapes, and naming it in the rule, made the model say done early (eval 32 %)
+    step, done, ask = prompt.PICK_SCHEMA["anyOf"]
+    assert step["required"] == ["step"] and list(step["properties"]) == ["step"]
+    assert done["required"] == ["done", "say"] and done["properties"]["done"] == {"const": True}
+    assert ask["required"] == ["ask"]
+    assert prompt.PICK_FIRST_SCHEMA["anyOf"] == [step, ask]
+    shapes = step["properties"]["step"]["anyOf"]
+    verbs = set()
+    for shape in shapes:
+        verb = shape["properties"]["verb"]
+        verbs |= set(verb.get("enum", ())) | ({verb["const"]} if "const" in verb else set())
+        assert shape["required"] == list(shape["properties"])
+    assert verbs == set(prompt.PICK_VERBS)
+    click = shapes[0]
+    assert list(click["properties"]) == ["row", "verb"]  # no free text to echo the instructions into
+
+
+def test_pick_on_the_cpu_shows_fewer_rows():
+    client = FakeOllama("qwen35", text=PICKED, resident=("qwen3.5:2b-q4_K_M",))
+    t = tier1(client, FakeGovernor(Choice("qwen3.5:2b-q4_K_M", "cpu")))
+    rows = tuple(f'{n} button "B{n}"' for n in range(1, 31))
+    t.pick("press the last one", rows)
+    text = requests(client)[0][2]
+    assert '"12 button' in text.replace('\\"', '"') and '"13 button' not in text.replace('\\"', '"')
+
+
+def test_pick_errors_become_thoughts_without_data():
+    assert tier1(FakeOllama(error=LLMError("down"))).pick("x", ROWS).error == "down"
+    assert tier1(FakeOllama(text="nope")).pick("x", ROWS).data is None

@@ -315,3 +315,22 @@ def test_not_a_command_in_the_follow_up_window_stays_quiet():
     assert events == [BrainProgress("idle", "not a command")]
     _, _, events, _ = run_with("that page took forever to load", ignore, via="key")
     assert events == [CommandFinished(False, "That didn't sound like a command for me.")]
+
+
+class _SteeredHands:
+    def __init__(self):
+        self.steered = []
+
+    def steer_to(self, what):
+        self.steered.append(what)
+
+
+def test_a_steer_and_the_guides_do_it_button_reach_the_running_task():
+    from nova.events import TaskSteered
+
+    brain = bare_brain()
+    brain._hands = _SteeredHands()
+    brain._on_steered(TaskSteered("next", 1.0))
+    brain._on_steered(IslandAction("do-it", 2.0))
+    brain._on_steered(IslandAction("yes", 3.0))  # an answer, for the asker only
+    assert brain._hands.steered == ["next", "do"]

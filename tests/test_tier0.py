@@ -549,3 +549,87 @@ def test_acknowledgements_are_never_guessed_into_commands(text):
 ])
 def test_google_search_drops_the_word_search(text, query):
     assert one(text) == step("web_search", query=query, engine="google")
+
+
+# --- tasks (Stage 07d): show me how / walk me through / where is / just do it ------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("show me how to turn on word wrap", [step("task", goal="turn on word wrap", mode="guide")]),
+        ("can you show me how to turn on word wrap?", [step("task", goal="turn on word wrap", mode="guide")]),
+        ("Walk me through exporting this as a PDF", [step("task", goal="exporting this as a PDF", mode="guide")]),
+        ("teach me how to add a page number", [step("task", goal="add a page number", mode="guide")]),
+        ("show me how I change the font size", [step("task", goal="change the font size", mode="guide")]),
+        ("how do I turn on word wrap in notepad",
+         [step("open_app", app="Notepad"), step("task", goal="turn on word wrap", mode="guide")]),
+        ("where's the export button", [step("task", goal="the export button", mode="guide", point=True)]),
+        ("where is the status bar setting?", [step("task", goal="the status bar setting", mode="guide", point=True)]),
+        ("where do I find the zoom controls", [step("task", goal="the zoom controls", mode="guide", point=True)]),
+        ("just do it", [step("task", mode="do")]),
+        ("you do it", [step("task", mode="do")]),
+        ("do it for me please", [step("task", mode="do")]),
+        ("go ahead and do it", [step("task", mode="do")]),
+        ("let me do it", [step("task", mode="guide")]),
+        ("I'll do it myself", [step("task", mode="guide")]),
+        ("show me again", [step("task", mode="guide")]),
+        ("walk me through it", [step("task", mode="guide")]),
+    ],
+)
+def test_task_requests(text, expected):
+    assert steps(text) == expected
+
+
+def test_a_task_in_an_open_app_switches_to_it():
+    plan = parse("how do I turn on word wrap in notepad", CATALOG, running=["Notepad"])
+    assert plan.steps == (step("switch_app", app="Notepad"), step("task", goal="turn on word wrap", mode="guide"))
+
+
+def test_a_task_is_one_job_even_with_and_in_it():
+    assert steps("show me how to cut and paste a picture") == [
+        step("task", goal="cut and paste a picture", mode="guide")]
+
+
+@pytest.mark.parametrize("text", ["how do I make pancakes", "how do I get to the airport",
+                                  "how to tie a tie", "how do I get to the airport from here",
+                                  "how do I get out of here", "how do I find a good cafe near here"])
+def test_how_questions_without_an_app_are_left_to_tier_1(text):
+    assert parse(text, CATALOG) is None
+
+
+@pytest.mark.parametrize(
+    ("text", "goal"),
+    [("how do I change the font size here", "change the font size"),
+     ("how can I turn on word wrap in this app?", "turn on word wrap"),
+     ("how do I add a page number in here", "add a page number"),
+     ("how do I zoom out on this page", "zoom out"),
+     ("show me how to turn on dark mode here", "turn on dark mode")],
+)
+def test_how_questions_about_the_window_in_front_are_guides(text, goal):
+    assert steps(text) == [step("task", goal=goal, mode="guide")]
+
+
+def test_task_words_dont_take_other_commands():
+    maps = parse("where's the nearest coffee shop on maps", CATALOG)  # a search (Tier 1 words it)
+    assert maps is None or all(s.action != "task" for s in maps.steps)
+    assert one("show me the desktop") == step("press", keys="win+d")
+    assert one("do that again") == step("nova", op="again")
+
+
+def test_tasks_never_run_from_chatter():
+    from nova.brain.tier0 import safe_plan
+
+    for text in ("where's my phone", "just do it", "show me how to turn on word wrap"):
+        plan = parse(text, CATALOG)
+        assert plan is not None and not safe_plan(plan, text), text
+
+
+def test_task_descriptions():
+    from nova.brain.plan import act
+
+    assert describe(act(step("task", goal="turn on word wrap", mode="guide"))) == "Show you how to “turn on word wrap”"
+    assert describe(act(step("task", goal="turn on word wrap", mode="do"))) == "Do “turn on word wrap”"
+    assert describe(act(step("task", goal="the export button", mode="guide", point=True))) == (
+        "Show you where “the export button” is")
+    assert describe(act(step("task", mode="do"))) == "Do it for you"

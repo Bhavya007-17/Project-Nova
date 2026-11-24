@@ -445,7 +445,7 @@ def test_warming_moves_the_thinking_deadline_and_thinking_brings_it_back(rig, ca
 # --- talk sessions (Stage 07b) ---------------------------------------------------------------------------------
 
 from nova.config import SessionSettings  # noqa: E402
-from nova.events import ClausesSkipped, TalkChanged, TalkEndRequested  # noqa: E402
+from nova.events import ClausesSkipped, TalkChanged, TalkEndRequested, TaskRunning, TaskSteered  # noqa: E402
 
 
 def tap(r):
@@ -499,6 +499,30 @@ def test_stop_button_closes_the_session(rig):
     tap(r)
     r.bus.publish(IslandAction("stop-session", time.perf_counter()))
     assert r.next(TalkChanged, where=lambda e: e.what == "closed").why == "stop button"
+
+
+def test_the_guides_stop_button_cancels_the_command(rig):
+    r = rig()
+    assert r.say("Nova, show me how to turn on word wrap").accepted
+    r.bus.publish(BrainProgress("acting"))
+    r.next(StateChanged, where=lambda e: e.new == "acting")
+    r.bus.publish(IslandAction("stop", time.perf_counter()))
+    assert r.next(StateChanged, where=lambda e: e.new == "idle")
+    assert r.next(SessionCancelled).why == "Stop"
+
+
+def test_a_steer_reaches_the_running_task_and_the_command_keeps_going(rig):
+    r = rig()
+    assert r.say("Nova, show me how to turn on word wrap").accepted
+    r.bus.publish(BrainProgress("acting"))
+    r.next(StateChanged, where=lambda e: e.new == "acting")
+    r.bus.publish(TaskRunning("guide"))
+    steer = r.say("Nova, next")
+    assert not steer.accepted and steer.via == "steer"
+    assert r.next(TaskSteered).what == "next"
+    assert r.triggers.machine.state.value == "acting"
+    r.bus.publish(TaskRunning(""))
+    assert r.say("Nova, where is it").via != "steer"  # the task ended: no steering
 
 
 def test_session_idle_s_follows_settings(rig):

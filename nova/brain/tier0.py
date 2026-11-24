@@ -25,7 +25,7 @@ from ..actions.catalog import Catalog, Match, Target, sounds_like
 from ..actions.marks import parse_number
 from ..chrome import canvas
 from ..clauses import is_acknowledgement
-from ..gate import Resolved
+from ..gate import DO_IT, LET_ME, Resolved
 from .plan import Plan, PlanError, Step, check, dictate_after_docs, step
 
 _log = logging.getLogger(__name__)
@@ -1007,6 +1007,89 @@ def _canvas_question(text: str, toks: Sequence[Tok]) -> Step | None:
     return step("canvas_due", range=_due_range(words))
 
 
+# --- tasks (Stage 07d): "show me how to …", "where's …", "just do it" -------------------------------------------
+
+_GUIDE_STARTS = sorted(
+    [("show", "me", "how", "to"), ("show", "me", "how", "i"), ("show", "me", "how", "do", "i"),
+     ("show", "me", "how", "can", "i"), ("show", "me", "how", "would", "i"), ("show", "me", "how", "you"),
+     ("teach", "me", "how", "to"), ("teach", "me", "to"), ("walk", "me", "through", "how", "to"),
+     ("walk", "me", "through"), ("guide", "me", "through", "how", "to"), ("guide", "me", "through")],
+    key=len, reverse=True,
+)
+_HOW_STARTS = sorted(
+    [("how", "do", "i"), ("how", "can", "i"), ("how", "would", "i"), ("how", "should", "i"), ("how", "do", "you"),
+     ("how", "do", "we"), ("how", "to")],
+    key=len, reverse=True,
+)
+_WHERE_STARTS = sorted(
+    [("where", "is"), ("wheres",), ("where", "are"), ("where", "do", "i", "find"), ("where", "can", "i", "find"),
+     ("where", "would", "i", "find")],
+    key=len, reverse=True,
+)
+_DO_IT, _LET_ME = DO_IT, LET_ME  # also steer a running task (gate.steers)
+_POINTS_BACK = frozenset({("it",), ("that",), ("this",), ("it", "again"), ("that", "again")})
+# "… here" / "… in this app": the job is in the window in front, so "how do I …" is a guide, not a question for Claude
+_HERE_ENDS = sorted(
+    [("here",), ("in", "here"), ("right", "here"), *((p, "this", w) for p in ("in", "on")
+                                                     for w in ("app", "window", "program", "page", "one", "site"))],
+    key=len, reverse=True,
+)
+_PLACE_WORDS = frozenset({"from", "near", "around", "of", "to", "over", "out", "get", "go", "come", "there"})
+
+
+def _task_request(text: str, toks: Sequence[Tok], catalog: Catalog, strict: bool,
+                  running: frozenset[str]) -> list[Step] | None:
+    """A job in the app in front, asked as a whole utterance (before clauses split: "turn on X and Y" is one job).
+
+    "show me how to …" / "walk me through …" / "where's …" -> guide; "how do I … in <app>" -> guide in that app
+    (without an app it may be a question for Claude: Tier 1 decides); "just do it" / "let me do it" switch modes."""
+    said = [t for t in toks if t.word]
+    lead = _lead([t.word for t in said])
+    said = said[lead:]
+    words = _trail(tuple(t.word for t in said))
+    said = said[: len(words)]
+    if not words:
+        return None
+    if words in _DO_IT:
+        return [step("task", mode="do")]
+    if words in _LET_ME:
+        return [step("task", mode="guide")]
+    if _engine_at(words, at_end=True) is not None:  # "where's the nearest coffee shop on maps": a search
+        return None
+    for starts, kind in ((_GUIDE_STARTS, "guide"), (_HOW_STARTS, "how"), (_WHERE_STARTS, "where")):
+        for start in starts:
+            if words[: len(start)] == start and len(words) > len(start):
+                return _task_steps(text, said, words, len(start), kind, catalog, strict, running)
+    return None
+
+
+def _task_steps(text: str, said: Sequence[Tok], words: tuple[str, ...], begin: int, kind: str, catalog: Catalog,
+                strict: bool, running: frozenset[str]) -> list[Step] | None:
+    end = len(words)
+    app: Step | None = None
+    last_in = max((k for k in range(begin + 1, len(words) - 1) if words[k] == "in"), default=None)
+    if last_in is not None:  # "… in notepad": go there first, then the job
+        found = _find(words[last_in + 1 :], catalog, strict, apps_only=True, bare=True)
+        if isinstance(found, Found):
+            name = found.target.name
+            app = step("switch_app" if name in running else "open_app", app=name)
+            end = last_in
+    here = next((e for e in _HERE_ENDS if end - begin > len(e) and words[end - len(e) : end] == e), None)
+    if here == ("here",) and words[end - 2] in _PLACE_WORDS:  # "from here", "near here": a place, not the screen
+        here = None
+    if here is not None and app is None:
+        end -= len(here)
+    if kind == "how" and app is None and here is None:
+        return None
+    if words[begin:end] in _POINTS_BACK:
+        return [*([app] if app else []), step("task", mode="guide")]
+    goal = _clean_payload(text[said[begin].start : said[end - 1].end]).rstrip("?!").strip()
+    if not goal:
+        return None
+    point = {"point": True} if kind == "where" else {}
+    return [*([app] if app else []), step("task", goal=goal, mode="guide", **point)]
+
+
 # --- payloads: type ... / search ... ----------------------------------------------------------------------------
 
 _SUBMIT = re.compile(r"(?:(?:press|hit|tap|push)(?: the)? )?(?:enter|return)(?: key)?|submit(?: it)?|send(?: it)?")
@@ -1152,6 +1235,9 @@ def parse(text: str, catalog: Catalog, *, strict: bool = False, running: Iterabl
     question = _canvas_question(text, toks)
     if question is not None:
         return _plan([question], 1.0)
+    job = _task_request(text, toks, catalog, strict, frozenset(running))
+    if job is not None:
+        return _plan(list(job), 1.0)
     clauses = split_clauses(toks)
     st = _State(catalog, strict, running=frozenset(running))
     guessed: set[int] = set()  # clauses whose first word was a misheard verb
@@ -1391,6 +1477,12 @@ def describe(plan: Plan) -> str:
         case "nova":
             said = {"again": "Do that again", "undo": "Undo that", "help": "Show what you can say"}.get(
                 a.get("op"), "Nova")
+        case "task" if a.get("goal") and a.get("point"):
+            said = f"Show you where “{a['goal']}” is"
+        case "task" if a.get("goal"):
+            said = f"{'Show you how to' if a.get('mode') == 'guide' else 'Do'} “{a['goal']}”"
+        case "task":
+            said = "Show you how" if a.get("mode") == "guide" else "Do it for you"
         case _:
             said = s.action.replace("_", " ").capitalize()
     return said + (" …" if len(plan.steps) > 1 else "")
