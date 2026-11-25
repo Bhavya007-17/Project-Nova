@@ -47,6 +47,7 @@ class FakeTarget:
         if count > len(self.doc):
             raise ActionError("nothing to erase")
         self.doc = self.doc[:-count]
+        return spot
 
     waited = 0
 
@@ -99,14 +100,14 @@ class FakeCleaner:
 def rig(tmp_path):
     made = []
 
-    def make(target=None, cleaner=None):
+    def make(target=None, cleaner=None, rewriter=None):
         bus = Bus()
         events = []
         bus.subscribe(object, events.append)
         target = target or FakeTarget()
         cleaner = cleaner or FakeCleaner(ready=False)
         history = History(tmp_path / "history.jsonl")
-        dictation = Dictation(bus, cleaner, target, history)
+        dictation = Dictation(bus, cleaner, target, history, rewriter=rewriter)
         dictation.start()
         made.append(dictation)
 
@@ -386,3 +387,143 @@ def test_new_paragraph_then_scratch_that_drops_the_break_only(rig):
     r.on()
     r.say("Keep this.", "New paragraph.", "Scratch that.", "Same paragraph.")
     assert r.target.doc == "Keep this. Same paragraph."
+
+
+# --- "make that more formal" right after a segment (Stage 07e) ------------------------------------------------------
+
+
+@dataclass
+class FakeChoice:
+    device: str = "gpu"
+    model: str = "fake"
+
+
+class FakeRewriteJob:
+    def __init__(self, result, gate=None):
+        self.result, self.gate = result, gate
+        self.cancelled = False
+        self.timeout, self.device, self.cold, self.error = 5.0, "gpu", False, ""
+
+    @property
+    def done(self):
+        return self.cancelled or self.gate is None or self.gate.is_set()
+
+    def wait(self, timeout):
+        if self.gate is not None and not self.gate.wait(max(0.0, timeout or 0)):
+            return None
+        return None if self.cancelled else self.result
+
+    def cancel(self):
+        self.cancelled = True
+
+
+class FakeRewriter:
+    def __init__(self, answers=None, limit=150, gate=None):
+        self.answers, self.max, self.gate = answers or {}, limit, gate
+        self.started = []
+        self.jobs = []
+
+    def choice(self):
+        return FakeChoice()
+
+    def limit(self, instruction, choice=None):
+        return self.max
+
+    def start(self, instruction, text, choice=None):
+        self.started.append((instruction, text))
+        job = FakeRewriteJob(self.answers.get(text), self.gate)
+        self.jobs.append(job)
+        return job
+
+
+def test_make_that_more_formal_rewrites_the_segment_just_typed(rig):
+    rewriter = FakeRewriter({"We need to talk about the budget.": "We should discuss the budget."})
+    r = rig(rewriter=rewriter)
+    r.on()
+    r.say("Hi Sam.", "We need to talk about the budget.", "Make that more formal.")
+    assert rewriter.started == [("more formal", "We need to talk about the budget.")]
+    assert r.target.doc == "Hi Sam. We should discuss the budget."
+    assert r.history.last().text == "Hi Sam. We should discuss the budget."
+    assert r.typed()[-1].ok and r.typed()[-1].note == "Rewrote 7 words"
+    r.say("Thanks.", start=4)  # dictation goes on after the rewritten text
+    assert r.target.doc == "Hi Sam. We should discuss the budget. Thanks."
+
+
+def test_a_rewrite_that_looks_off_keeps_his_words_and_saves_it(rig):
+    rewriter = FakeRewriter({"Meet at noon.": "Meet at noon. " + "Also bring snacks and drinks for everyone. " * 8})
+    r = rig(rewriter=rewriter)
+    r.on()
+    r.say("Meet at noon.", "Make it shorter.")
+    assert r.target.doc == "Meet at noon."
+    assert not r.typed()[-1].ok and "kept yours" in r.typed()[-1].note
+    assert r.history.last().text.startswith("Meet at noon. Also bring snacks") and not r.history.last().landed
+
+
+def test_a_rewrite_that_changes_nothing_types_nothing(rig):
+    rewriter = FakeRewriter({"Thank you for your time.": "Thank you for your time."})
+    r = rig(rewriter=rewriter)
+    r.on()
+    r.say("Thank you for your time.", "Make that more formal.")
+    assert r.target.pastes == ["Thank you for your time."]
+    assert "nothing changed" in r.typed()[-1].note
+
+
+def test_ending_dictation_stops_a_rewrite_in_flight(rig):
+    gate = threading.Event()
+    rewriter = FakeRewriter({"Send the file.": "Please send the file."}, gate=gate)
+    r = rig(rewriter=rewriter)
+    r.on()
+    r.say("Send the file.")
+    r.bus.publish(DictatedText(2, "Make that more formal.", 0.0))
+    for _ in range(100):
+        if rewriter.jobs:
+            break
+        threading.Event().wait(0.01)
+    r.off()
+    assert rewriter.jobs and rewriter.jobs[0].cancelled
+    gate.set()
+    assert r.target.doc == "Send the file."
+
+
+def test_a_rewrite_never_touches_text_he_changed(rig):
+    gate = threading.Event()
+    rewriter = FakeRewriter({"Call me back.": "Please call me back."}, gate=gate)
+    r = rig(rewriter=rewriter)
+    r.on()
+    r.say("Call me back.")
+    r.bus.publish(DictatedText(2, "Make that more polite.", 0.0))
+    for _ in range(100):
+        if rewriter.jobs:
+            break
+        threading.Event().wait(0.01)
+    r.target.doc += " Thanks"  # he typed meanwhile
+    gate.set()
+    assert r.dictation.drain(5)
+    assert r.target.doc == "Call me back. Thanks"
+    assert "text changed" in r.typed()[-1].note
+
+
+def test_too_long_to_rewrite_says_so(rig):
+    rewriter = FakeRewriter(limit=3)
+    r = rig(rewriter=rewriter)
+    r.on()
+    r.say("This segment has more than three words.", "Make that shorter.")
+    assert rewriter.started == []
+    assert r.target.doc == "This segment has more than three words."
+    assert "too long" in r.typed()[-1].note
+
+
+def test_without_a_rewriter_the_words_are_typed(rig):
+    r = rig()
+    r.on()
+    r.say("Send the file.", "Make that more formal.")
+    assert r.target.doc == "Send the file. Make that more formal."
+
+
+def test_a_long_sentence_with_make_it_is_dictated_not_a_rewrite(rig):
+    rewriter = FakeRewriter()
+    r = rig(rewriter=rewriter)
+    r.on()
+    r.say("Hello.", "We should make it more formal for the client meeting tomorrow afternoon.")
+    assert rewriter.started == []
+    assert r.target.doc.endswith("tomorrow afternoon.")

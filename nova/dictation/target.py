@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from ..actions import input as keyboard
@@ -32,6 +32,7 @@ _TEXT_FIELDS = frozenset({50004, 50030})  # UIA edit / document
 # Usually ~40-60 ms; Notepad sometimes stalls (seen live: two sentences landed after the old 0.6 s limit). His own
 # clipboard only goes back once the text is there, so a late Ctrl+V still pastes the dictated words, never his.
 LANDED_WAIT_S = 3.0
+ERASED_WAIT_S = 0.5  # backspaces land in ~10-30 ms; past this, the insert falls back to the caret check
 READY_S = 3.0  # an app the plan just opened: wait this long for a text field to have focus
 
 
@@ -148,8 +149,20 @@ class Target:
         ok, at = keyboard.paste(clip, spot.win, self._check(spot, text), LANDED_WAIT_S)
         return Landed(ok, at, (time.perf_counter() - began) * 1000)
 
-    def erase(self, spot: Spot, count: int) -> None:
+    def erase(self, spot: Spot, count: int) -> Spot:
+        """Backspace ``count`` characters; returns the spot as it is now, for the insert that follows. A Win32
+        field's landing check counts from its length: this waits (≤ ``ERASED_WAIT_S``) for the backspaces to land and
+        takes the new one — with the old length the check could never pass (the paste waited the full 3 s and said
+        the text didn't show up)."""
         keyboard.erase(count, spot.win)
+        if count <= 0:
+            return spot
+        if spot.kind == "docs":
+            return replace(spot, cursor=None)  # it just moved: "the cursor moved" would pass before the paste lands
+        if spot.length is None or not spot.edit_hwnd:
+            return spot
+        hwnd = spot.edit_hwnd
+        return replace(spot, length=_settled(lambda: keyboard._text_length(hwnd), spot.length - count, ERASED_WAIT_S))
 
     def ready(self, timeout: float = READY_S) -> bool:
         """An app the plan just opened ("open Word and type this"): wait until a text field has focus — a paste
@@ -168,3 +181,19 @@ class Target:
                         return True
             time.sleep(0.15)
         return False
+
+
+def _settled(read: Callable[[], int | None], at_most: int, timeout: float) -> int | None:
+    """Poll ``read()`` until it is at most ``at_most`` and the same twice in a row — a plain Edit drops two
+    characters for a line break, so the count gets there while the last backspaces are still landing. None if not
+    in time."""
+    deadline = time.perf_counter() + timeout
+    last = None
+    while True:
+        now = read()
+        if now is not None and now <= at_most and now == last:
+            return now
+        last = now
+        if time.perf_counter() >= deadline:
+            return None
+        time.sleep(0.01)

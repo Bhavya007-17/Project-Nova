@@ -181,7 +181,7 @@ ACTIVATES = frozenset({"enter", "space"})  # on a focused button these press it,
 def needs_focus(s: Step) -> bool:
     """Must the hands look at the focused control (UI Automation) before this step: is it about to get text, or
     about to press a focused button?"""
-    if s.action == "type_text":
+    if s.action in ("type_text", "rewrite"):
         return True
     keys = str(s.get("keys", "")).lower()
     return s.action == "press" and (enters_text(keys) or keys in ACTIVATES)
@@ -274,6 +274,12 @@ def assess(s: Step, scene: Scene) -> Risk | None:
             return _refuse("I don't enter card, bank or ID numbers.")
         if s.get("submit") and not s.get("search"):
             return _confirm(f"Send {_quote(text)}?" if messaging(scene) else f"Submit {_quote(text)}?")
+        return None
+    if action == "rewrite":  # it reads the selection (Ctrl+C) and pastes over it: same input path as typing
+        if scene.password:
+            return _refuse("That's a password field — I never read or type there.")
+        if terminal(scene):
+            return _refuse("I don't rewrite in terminals — no shell commands from voice.")
         return None
     if action == "system" and s.get("op") == "sleep":
         return _confirm("Go to sleep now?")

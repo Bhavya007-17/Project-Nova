@@ -8,10 +8,10 @@
 //   wait({selector, text, timeout}) until something shows up
 //   scroll(dir, amount) / scrollTo(n)
 //   canvasItems()                   Canvas DOM fallback: To Do / planner links with their row text
-//   caret(limit)                    dictation: the focused field and the text just before its caret
+//   caret(limit, opts)              dictation: the focused field and the text before its caret (+ selection: rewrite)
 //   docsReady({focus, timeout})     Google Docs: wait until the editor is up (and focus it)
 (() => {
-  if (globalThis.__nova && globalThis.__nova.version >= 2) return;
+  if (globalThis.__nova && globalThis.__nova.version >= 3) return;
 
   const ACTIONABLE = [
     "a[href]", "button", "input:not([type=hidden])", "select", "textarea", "summary", "label[for]",
@@ -568,15 +568,33 @@
     return { focused, editable: true, before: pre.toString().slice(-limit), secret: secret(root) };
   }
 
-  function caret(limit = 300) {
+  // Rewrite: the selected text inside root (the whole page when root is null), "" = nothing selected.
+  function selectedIn(root, cap) {
+    const sel = getSelection();
+    if (!sel || !sel.rangeCount || sel.isCollapsed) return "";
+    const r = sel.getRangeAt(0);
+    if (root && !(root.contains(r.startContainer) && root.contains(r.endContainer))) return "";
+    return sel.toString().slice(0, cap + 1);
+  }
+
+  function withText(out, root, opts) {
+    if (out.secret) return out;
+    if (opts.selected) out.selected = selectedIn(root, opts.selected);
+    if (opts.whole && root) out.whole = (root.innerText || "").slice(0, Math.min(opts.whole, 20000));
+    return out;
+  }
+
+  // opts.selected: also the selected text (up to that many characters + 1); opts.whole: the field's whole text too
+  // (the undo read-back). A password field shares neither.
+  function caret(limit = 300, opts = {}) {
     const focused = document.hasFocus();
     if (docsEditor()) {
       return { focused, docs: true, editable: true, before: null, cursor: docsCursor(), ready: !!document.querySelector(".kix-appview-editor") };
     }
     const el = deepActive();
     if (!el || el === document.body || el === document.documentElement) {
-      if (document.designMode === "on" || (document.body && document.body.isContentEditable)) return editableBefore(document.body, limit, focused);
-      return { focused, editable: false };
+      if (document.designMode === "on" || (document.body && document.body.isContentEditable)) return withText(editableBefore(document.body, limit, focused), document.body, opts);
+      return withText({ focused, editable: false }, null, opts);
     }
     if (el.tagName === "IFRAME" || el.tagName === "FRAME") return { focused, frame: true };
     const tag = el.tagName;
@@ -585,16 +603,22 @@
       if (secret(el)) return { focused, editable: true, secret: true };
       const value = el.value || "";
       let at = null;
+      let end = null;
       try {
         at = el.selectionStart;
+        end = el.selectionEnd;
       } catch (e) {
         at = null;
       }
       if (at === null || at === undefined) at = value.length;
-      return { focused, editable: true, before: value.slice(Math.max(0, at - limit), at), single: tag === "INPUT" };
+      const out = { focused, editable: true, before: value.slice(Math.max(0, at - limit), at), single: tag === "INPUT" };
+      if (el.readOnly || el.disabled) out.readonly = true;
+      if (opts.selected) out.selected = end === null || end === undefined ? null : value.substring(at, end).slice(0, opts.selected + 1);
+      if (opts.whole) out.whole = value.slice(0, Math.min(opts.whole, 20000));
+      return out;
     }
-    if (el.isContentEditable) return editableBefore(el, limit, focused);
-    return { focused, editable: false };
+    if (el.isContentEditable) return withText(editableBefore(el, limit, focused), el, opts);
+    return withText({ focused, editable: false }, null, opts);
   }
 
   // Google Docs: until the editor is up a paste goes nowhere. Known parts: the editor (.kix-appview-editor) and the
@@ -624,5 +648,5 @@
     return { ok: false, ms: Math.round(performance.now() - started) };
   }
 
-  globalThis.__nova = { version: 2, map, click, fill, read, highlight, wait, scroll, scrollTo, kind, describe, canvasItems, caret, docsReady };
+  globalThis.__nova = { version: 3, map, click, fill, read, highlight, wait, scroll, scrollTo, kind, describe, canvasItems, caret, docsReady };
 })();

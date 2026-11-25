@@ -55,6 +55,7 @@ from ..governor import Governor
 from ..log import TraceLog
 from ..state import CLARIFY_S, CONFIRM_S
 from . import meaning, task
+from .rewrite import Rewriter
 from .answers import pick, yes_no
 from .executor import Executor, RunResult, StepResult
 from .llama_server import connect
@@ -328,8 +329,12 @@ class Brain:
         self._cleaner = Cleaner(self._governor, self._llm, terms,
                                 client=client.sibling,
                                 enabled=lambda: settings().dictation.cleanup, loader=self._tier1.loader)
+        # Rewrite (Stage 07e): the same model again, its own prefix, a fresh client per job so Esc aborts only it.
+        # Dictation uses it too: "make that more formal" rewrites the segment just typed.
+        rewriter = Rewriter(self._governor, self._llm, client=client.sibling, loader=self._tier1.loader)
+        self._hands.rewriter = rewriter
         self.dictation = Dictation(bus, self._cleaner, Target(catalogs.current, browser),
-                                   History(paths.DICTATION_HISTORY), trace=trace)
+                                   History(paths.DICTATION_HISTORY), trace=trace, rewriter=rewriter)
         self._prepared = False  # a plan opened dictation before running (its "start" step releases it)
         self._opened = False  # ...and the plan opened an app first
         self._busy = False

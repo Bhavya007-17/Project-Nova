@@ -234,6 +234,41 @@ memories aren't shared, this file is.
   click → settle → next step took 1.3 s. A demo harness that publishes typed commands needs one blank `SendInput` mouse event (no move, no
   button) before it brings a window forward — the Copilot key press gives the real app that right.
 
+## Rewrite (07e)
+- **The rewrite runs on Tier 1's model with its own prefix** (`rewrite.static()`), read into the cache once per model
+  (`Rewriter.prime`, fired as soon as a rewrite is on its way). The planner's next request after a rewrite measured
+  ~+150 ms. Don't give the rewrite a second model (one model on the 8 GB GPU).
+- **How long a selection fits the ~3 s budget** (`limit_words`): RTX qwen3.5:4b writes ~80 tok/s → ~156 words of a
+  tone change; CPU qwen3.5:2b ~32 tok/s → ~53 words. Longer: "That's too long to rewrite here" — the spec's
+  "~300 words" doesn't fit on this laptop. The 2B CPU model sometimes hands "shorter" back barely shorter.
+- **Ollama's default `num_ctx` (4096) truncates without an error.** Count prompt tokens with `num_ctx` 16384. The
+  Tier 1 prefix is now 4266 tokens of `NUM_CTX` 6144.
+- **Reading the selection:** UIA TextPattern's empty selection is trusted as "nothing selected"; Ctrl+C is only the
+  fallback where the field can't say (WinForms, some Electron). That copy lands in Windows clipboard history (Win+V)
+  even though Nova puts the clipboard back.
+- **Chrome:** the selection comes from the content script's `caret(limit, {selected, whole})` (script version 3 adds
+  `selected`, `whole`, `readonly`): after pulling, reload the unpacked extension or the old script answers without them. Inside an iframe the
+  editability is unknown and treated as editable (the paste read-back still checks it landed).
+- **Where the paste can't be read back** (Google Docs' canvas), the rewrite reports success unchecked.
+- **Dictation's "make that more formal"** (`tier0.rewrite_that`, ≤ 12 words, must point at "that / this / it")
+  rewrites the segment just typed through the same in-place swap as cleanup's fixes; an odd-length answer is saved,
+  never typed. A dictated sentence like "make it better." is taken as a rewrite, not words.
+- Live test harness: Windows 11 Notepad restores its tabs — paste into an empty raw RichEdit, not Notepad.
+- **Erase-then-paste in a Win32 Edit / RichEdit** (cleanup fixes, "make that more formal", a joined period, scratch):
+  the landing check is "the length grew by the pasted text" from the length read before the backspaces, so it never
+  passed — every swap waited the full 3 s and said it didn't land (live: 4.6 s for a 1.4 s rewrite). `Target.erase`
+  now waits for the backspaces to land and hands back the spot with the new length (1.7 s). Never make the check
+  true before Ctrl+V lands: his clipboard goes back the moment it passes, and the app pastes his text instead.
+- **Where a prompt example sits moves the planner on conversation.** Two rewrite examples placed just before the
+  "ignore" examples raised false actions on the eval's negatives from 11.3 % to 17.1 % (past the follow-up gate 1 → 3,
+  none of them rewrites: "stop it, that tickles" ended the session). One example placed with the typing examples:
+  9.0 % raw, 0.9 % past the gate. A/B a prompt change on the negatives against `main` (a `git worktree` with `models/`
+  and `data/` as junctions — remove the junctions with `rmdir` before `git worktree remove`). "put that in French"
+  moved to Tier 0 (a language after "in / into" only) when its example went.
+- Measured (RTX, qwen3.5:4b, llama-server, model time only): tone 38 words 0.6–0.9 s, grammar 21 words 0.4–0.5 s,
+  translate 38 words 0.7–0.8 s, shorter 89 → 34 words 0.7–0.9 s, bullets 89 words 1.2–1.4 s. Cold load + prefix
+  6.4–7.3 s.
+
 ## Chrome extension
 - **Branded Chrome 137+ ignores `--load-extension`**: loading `extension/` unpacked is a one-time manual step.
   Chrome for Testing (Playwright's copy) still honours it (+ `--disable-features=DisableLoadExtensionCommandLineSwitch`,

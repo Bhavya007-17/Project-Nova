@@ -127,6 +127,7 @@ _VERBS = frozenset({
     "maximise", "restore", "snap", "move", "put", "make", "click", "press", "hit", "type", "write", "scroll",
     "search", "play", "pause", "resume", "unpause", "stop", "skip", "next", "previous", "mute", "unmute", "turn",
     "volume", "new", "reload", "refresh", "reopen", "keep", "zoom", "hover", "drag", "numbers", "grid", "screenshot",
+    "rewrite", "rephrase", "reword", "translate", "shorten", "simplify", "proofread", "fix", "expand",
 })
 
 

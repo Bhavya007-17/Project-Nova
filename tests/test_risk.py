@@ -256,3 +256,12 @@ def test_programs_and_scripts_never_open_from_voice():
     assert assess(step("open_path", name="run", path=r"C:\Users\b\Desktop\run.LNK"), NOTEPAD).refuse
     assert assess(step("open_path", name="tools.py", path=r"C:\Users\b\Downloads\tools.py", dir=True), NOTEPAD) is None
     assert assess(step("open_path", name="budget", path=r"C:\Users\b\Documents\budget.xlsx"), NOTEPAD) is None
+
+
+def test_rewrite_refuses_password_fields_and_terminals():
+    assert assess(step("rewrite", instruction="shorter"), Scene(app="Notepad", exe="notepad.exe")) is None
+    risk = assess(step("rewrite", instruction="shorter"), PASSWORD_BOX)
+    assert risk.refuse and "password" in risk.reason
+    risk = assess(step("rewrite", instruction="shorter"), Scene(exe="WindowsTerminal.exe"))
+    assert risk.refuse and "terminal" in risk.reason
+    assert needs_focus(step("rewrite", instruction="shorter"))

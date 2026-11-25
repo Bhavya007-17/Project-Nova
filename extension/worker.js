@@ -326,7 +326,7 @@ const COMMANDS = {
   "page.caret": async (args) => {
     // dictation: the field with focus (in whichever frame has it) and the text before its caret
     const tab = await tabFor(args);
-    const results = (await inFrames(tab.id, null, "caret", [args.limit || 300])).filter((r) => r.result && !r.result.__missing);
+    const results = (await inFrames(tab.id, null, "caret", [args.limit || 300, args.opts || {}])).filter((r) => r.result && !r.result.__missing);
     const docs = results.find((r) => r.result.docs);
     const inside = results.filter((r) => r.result.focused && !r.result.frame);
     const best = docs || inside.find((r) => r.result.editable) || inside[0] || results.find((r) => r.frameId === 0);

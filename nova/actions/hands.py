@@ -9,15 +9,18 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from urllib.parse import quote_plus, urlsplit
 
 from ..brain import abilities
+from ..brain import rewrite as rewrite_
 from ..brain import task as task_
 from ..brain.executor import Pick
+from ..brain.llm import LOAD_TIMEOUT_S
 from ..brain.plan import Step
 from ..brain.risk import Scene, needs_focus
+from ..dictation.rules import landed
 from ..events import SteadyScroll
 from . import apps, capture, native, places, system, windows
 from .scrolling import Scroller
@@ -54,7 +57,7 @@ _NAV_KEYS = {"back": "alt+left", "forward": "alt+right", "reload": "f5", "up": "
 _NAV_TEXT = {"back": "Back", "forward": "Forward", "reload": "Reloaded", "up": "Up a folder"}
 _EXPLORER = "CabinetWClass"
 # what "undo that" undoes: the last of these, with Ctrl+Z in the window it happened in
-_UNDOABLE = frozenset({"type_text", "press", "ui_click", "pick", "page_fill"})
+_UNDOABLE = frozenset({"type_text", "press", "ui_click", "pick", "page_fill", "rewrite"})
 _OP_LABEL = {"maximize": "Maximize", "minimize": "Minimize", "restore": "Restore", "close": "Close",
              "fullscreen": "Full screen", "snap_left": "← left", "snap_right": "→ right", "snap_top": "↑ top",
              "snap_bottom": "↓ bottom", "center": "Center", "move_monitor": "Other monitor"}
@@ -62,7 +65,32 @@ _VERB_LABEL = {"click": "Click", "right": "Right-click", "double": "Double-click
                "hover": "Point at"}
 _NOT_WINDOWS = frozenset({"Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd"})
 _CONTAINERS = frozenset({50033, 50032})  # UIA pane / window: not a field, so the app didn't say what has focus
+_TEXT_FIELDS = frozenset({50004, 50030})  # UIA edit / document
 LAYOUT_WAIT_S = 20.0
+CHARS_PER_WORD = 15  # a selection longer than limit words * this is too long, whatever its word count
+UNDO_READ = 20000  # characters of the field read back after "undo that" to see whether his text is there again
+
+
+@dataclass(frozen=True)
+class _Selection:
+    """The text he selected for a rewrite, and where it was read (``rewrite`` only; never logged)."""
+
+    text: str
+    editable: bool
+    win: Win
+    where: str  # "chrome" (the page told us) | "uia" | "copy" (Ctrl+C)
+    focus: tuple[int, int, int] | None = None  # UI Automation (control type, hwnd, pid) of the field
+    checkable: bool = False  # can the paste be checked by reading the text before the caret
+
+
+@dataclass(frozen=True)
+class _Rewritten:
+    """The last rewrite, for "undo that" to read back: in memory only."""
+
+    original: str
+    rewritten: str
+    hwnd: int
+    chrome: bool
 
 
 @dataclass(frozen=True)
@@ -92,6 +120,8 @@ class WindowsHands:
         self.picker: task_.Picker | None = None  # the planner model choosing a task's next step (Stage 07d)
         self._steer: task_.Steer | None = None  # the running task's, flipped from the bus thread (``steer_to``)
         self._pointed: threading.Timer | None = None  # takes a "where is X" ring down
+        self.rewriter: rewrite_.Rewriter | None = None  # the local model rewriting a selection (Stage 07e)
+        self._rewritten: _Rewritten | None = None  # the last rewrite, until another edit (brain thread only)
 
     @property
     def chrome(self) -> ChromeHands | None:
@@ -224,6 +254,182 @@ class WindowsHands:
             timer.cancel()
             timer.function()
 
+    # --- rewrite the selected text in place (Stage 07e) -----------------------------------------------------------
+
+    def rewrite(self, instruction: str, *, choose: Callable[[str, Sequence[str]], int | None],
+                stopped: Callable[[], bool], ctx: object = None) -> Outcome | None:
+        """Read the selection (Chrome's page, UI Automation, Ctrl+C last), have the local model rewrite it, check
+        the answer, check he is still in the same field, paste over the selection. None = cancelled (Esc / a tap /
+        Cancel on the card). Never logs his text: counts, the kind of rewrite and timings only."""
+        rewriter = self.rewriter
+        if rewriter is None:
+            raise ActionError("Rewriting needs the local model.")
+        native.com_init()
+        choice = rewriter.choice()
+        rewriter.prime(choice)  # the rewrite prompt goes into the model's cache while the selection is read
+        limit = rewriter.limit(instruction, choice)
+        began = time.perf_counter()
+        sel = self._selection(limit * CHARS_PER_WORD)
+        read_ms = (time.perf_counter() - began) * 1000
+        words = rewrite_.word_count(sel.text)
+        _log.info("rewrite: %d words read (%s, %.0f ms, %s), limit %d on the %s", words, sel.where, read_ms,
+                  "editable" if sel.editable else "read-only", limit, choice.device)
+        if words > limit or len(sel.text) > limit * CHARS_PER_WORD:
+            raise ActionError("That's too long to rewrite here.")
+        job = rewriter.start(instruction, sel.text, choice)
+        out = self._await(job, stopped)
+        if out is None:
+            return None
+        verdict = rewrite_.guard(sel.text, out, job.kind)
+        if verdict != "replace":
+            _log.info("rewrite: %s", verdict)
+        if verdict == "fail":
+            raise ActionError("The rewrite came back empty — try again.")
+        if verdict == "same":
+            return Outcome("Already reads that way — nothing changed", "rewrite")
+        if not sel.editable:  # the card shows the text anyway: no preview first
+            return self._rewrite_readonly(out, choose)
+        if verdict == "preview":  # an odd length: he sees it before it replaces his text
+            answer = choose(f"“{_cut(out, 90)}” — replace?", ("Replace", "Copy", "Cancel"))
+            if answer == 1:
+                keyboard.copy_text(out)
+                return Outcome("Copied — paste it with Ctrl+V", "rewrite")
+            if answer != 0:
+                return None
+        if not self._still_there(sel):
+            keyboard.copy_text(out)
+            return Outcome("Copied — you moved, so I didn't paste", "rewrite")
+        final = rewrite_.keep_edges(sel.text, out)
+        ok, _ = keyboard.paste(_crlf(final), sel.win, landed=self._landed_check(sel, final))
+        if ok is False:  # never pasted twice: it may still arrive in a busy app
+            keyboard.copy_text(out)
+            return Outcome("The paste didn't show up — the new text is on your clipboard", "rewrite", sel.win)
+        self._edited = sel.win.hwnd
+        self._rewritten = _Rewritten(sel.text, final, sel.win.hwnd, sel.where == "chrome")
+        return Outcome(rewrite_.done_text(sel.text), "rewrite", sel.win, hold=2.0)
+
+    def _selection(self, cap: int) -> _Selection:
+        """What he selected in the window in front, cheapest way first; never a password field's."""
+        front = self._front()
+        if self._chrome_front():
+            info = self._chrome.chrome.caret(300, selected=cap)
+            if info.get("secret"):
+                raise ActionError("That's a password field — I never read or type there.")
+            if not info or info.get("frame"):  # no answer / a frame the extension can't see into (Canvas's editor)
+                editable = True
+            else:
+                editable = bool(info.get("editable")) and not info.get("readonly")
+            text = info.get("selected")
+            checkable = isinstance(info.get("before"), str) and not info.get("docs")
+            if isinstance(text, str) and text.strip():
+                return _Selection(text, editable, front, "chrome", checkable=checkable)
+            if text == "":  # the page says nothing is selected (its fields, the page itself)
+                raise ActionError("Select the text first")
+            # Google Docs (a canvas), a frame the extension can't see into, no answer: Ctrl+C
+            return self._copied(front, editable, None, checkable=False)
+        sel = self._focus.selection(cap)
+        if sel is not None and sel.focus.control_type in _CONTAINERS:
+            time.sleep(0.15)  # Chromium / Electron answer "pane" until their accessibility tree is built
+            sel = self._focus.selection(cap)
+        if sel is not None and sel.focus.password:
+            raise ActionError("That's a password field — I never read or type there.")
+        if sel is None:
+            return self._copied(front, True, None, checkable=False)
+        focus = (sel.focus.control_type, sel.focus.hwnd, sel.focus.pid)
+        if sel.text and sel.text.strip():
+            return _Selection(sel.text, sel.editable is not False, front, "uia", focus, checkable=True)
+        if sel.text == "" and sel.focus.control_type not in _CONTAINERS:
+            raise ActionError("Select the text first")  # the field says only the caret: no Ctrl+C (VS Code copies the line)
+        return self._copied(front, sel.editable is not False, focus, checkable=False)
+
+    @staticmethod
+    def _copied(front: Win, editable: bool, focus: tuple[int, int, int] | None, *, checkable: bool) -> _Selection:
+        text = keyboard.copy_selection(front)
+        if not text or not text.strip():
+            raise ActionError("Select the text first")
+        return _Selection(text, editable, front, "copy", focus, checkable)
+
+    def _await(self, job: rewrite_.Job, stopped: Callable[[], bool]) -> str | None:
+        """The job's text; None = he stopped it. Raises if it failed or never came back."""
+        deadline = time.monotonic() + job.timeout + LOAD_TIMEOUT_S + 5.0
+        while not job.done:
+            if stopped() or self.stop.is_set():
+                job.cancel()
+                return None
+            if time.monotonic() > deadline:
+                job.cancel()
+                raise ActionError("The rewrite took too long — try again.")
+            job.wait(0.05)
+        out = job.wait(0)
+        if out is None:
+            if job.cancelled:
+                return None
+            raise ActionError("The rewrite didn't come back — try again.")
+        return out
+
+    def _still_there(self, sel: _Selection) -> bool:
+        """Same window, same field, the same text still selected (what can be told: Ctrl+C can't be asked twice)."""
+        if native.root(native.foreground()) != native.root(sel.win.hwnd):
+            return False
+        if sel.where == "chrome":
+            now = self._chrome.chrome.caret(300, selected=len(sel.text) + 1).get("selected")
+            return now is None or rewrite_.same_text(now, sel.text)
+        if sel.focus is None:
+            return True
+        now_sel = self._focus.selection(len(sel.text) + 1)
+        if now_sel is None:
+            return True  # UI Automation didn't answer: the window is the same, go on
+        if (now_sel.focus.control_type, now_sel.focus.hwnd, now_sel.focus.pid) != sel.focus:
+            return False
+        if sel.where == "uia" and now_sel.text is not None:
+            return rewrite_.same_text(now_sel.text, sel.text)
+        return True
+
+    def _landed_check(self, sel: _Selection, final: str) -> Callable[[], bool] | None:
+        """How the paste is seen to land: the text before the caret ends with the new text."""
+        if not sel.checkable:
+            return None
+        if sel.where == "chrome":
+            def read() -> str | None:
+                return self._chrome.chrome.caret().get("before")
+        else:
+            def read() -> str | None:
+                return getattr(self._focus.caret(0.2), "before", None)
+        before = read()
+        # nothing to read, or it ends that way already (a fix near the start): a check that passes before the paste
+        # lands would put his clipboard back too early, and the app would paste that instead — the usual wait then
+        if before is None or landed(before, final):
+            return None
+        return lambda: landed(read(), final)
+
+    def _rewrite_readonly(self, out: str, choose: Callable[[str, Sequence[str]], int | None]) -> Outcome:
+        """A page or a read-only field: the rewrite goes on the clipboard, and Notepad is one tap away."""
+        keyboard.copy_text(out)
+        answer = choose(f"“{_cut(out, 90)}” — copied", ("Copy", "Open in Notepad"))
+        if answer != 1:
+            return Outcome("Copied — paste it with Ctrl+V", "rewrite")
+        catalog = self._catalog()
+        app = catalog.app("Notepad")
+        if app is None:
+            return Outcome("Copied — Notepad isn't installed, paste it anywhere", "rewrite")
+        opened = apps.open_app(catalog, app)
+        win = opened.win
+        if win is None or not self._empty_field(win):
+            return Outcome("Copied — paste it into Notepad with Ctrl+V", "rewrite", win)
+        ok, _ = keyboard.paste(_crlf(out), win)
+        return Outcome("Opened it in Notepad" if ok is not False else "Copied — paste it with Ctrl+V", "rewrite", win)
+
+    def _empty_field(self, win: Win, wait_s: float = 1.5) -> bool:
+        """Is an empty text field focused in ``win`` (a fresh Notepad), so a paste can't land in his own text?"""
+        deadline = time.perf_counter() + wait_s
+        while time.perf_counter() < deadline:
+            focus = self._focus.focused(0.3)
+            if focus is not None and focus.control_type in _TEXT_FIELDS \
+                    and native.root(native.foreground()) == native.root(win.hwnd):
+                return self._focus.document_text(1) == ""
+            time.sleep(0.1)
+        return False
+
     def preview(self, s: Step, on: bool) -> None:
         if self._chrome is not None:
             self._chrome.preview(s, on)
@@ -296,6 +502,8 @@ class WindowsHands:
                 if a.get("mode") == "guide":
                     return f"Show me “{goal}”" if goal else "Show me"
                 return f"Do “{goal}”" if goal else "Do it"
+            case "rewrite":
+                return f"Rewrite “{_cut(a.get('instruction') or '', 24)}”"
         return s.action.replace("_", " ").capitalize()
 
     def scene(self, s: Step, ctx: object) -> Scene:
@@ -334,6 +542,7 @@ class WindowsHands:
         outcome = self._do(s, self._catalog())
         if s.action in _UNDOABLE:
             self._edited = outcome.win.hwnd if outcome.win is not None else native.foreground()
+            self._rewritten = None  # "undo that" now undoes this, not an older rewrite
         return outcome
 
     def _do(self, s: Step, catalog: Catalog) -> Outcome:
@@ -447,14 +656,39 @@ class WindowsHands:
         raise ActionError("Nothing to repeat yet.")  # "again" is the executor's (it remembers the last plan)
 
     def _undo(self, catalog: Catalog) -> Outcome:
-        """Ctrl+Z in the window the last typing / click / key happened in (brought back first), else the front one."""
+        """Ctrl+Z in the window the last typing / click / key happened in (brought back first), else the front one.
+        After a rewrite the field is read back: if his text isn't there again, it goes on the clipboard."""
         win = native.describe(self._edited) if native.is_window(self._edited) else None
         if win is None:
             win = self._front()
         method = native.activate(win.hwnd) if native.root(native.foreground()) != win.hwnd else "front"
         keyboard.press("ctrl+z", win)
         app = catalog.app_for(win.exe, win.aumids)
-        return Outcome(f"Undid the last change in {short_name(app.name) if app else 'that window'}", method, win)
+        where = short_name(app.name) if app else "that window"
+        last, self._rewritten = self._rewritten, None
+        if last is None or last.hwnd != win.hwnd:
+            return Outcome(f"Undid the last change in {where}", method, win)
+        outcome = self._undo_check(last)
+        _log.info("rewrite undo: %s", outcome)
+        if outcome == "not_back":
+            keyboard.copy_text(last.original)
+            return Outcome("Couldn't undo here — the original is on your clipboard", method, win)
+        return Outcome(f"Undid the rewrite in {where}", method, win)
+
+    def _undo_check(self, last: _Rewritten) -> str:
+        """Read the field after Ctrl+Z until his text is back (the app may take a moment): back / not_back / unknown."""
+        deadline = time.perf_counter() + 0.6
+        outcome = "unknown"
+        while time.perf_counter() < deadline:
+            time.sleep(0.1)
+            if last.chrome and self._chrome_front():
+                after = self._chrome.chrome.caret(0, whole=UNDO_READ).get("whole")
+            else:
+                after = self._focus.document_text(UNDO_READ)
+            outcome = rewrite_.undo_outcome(last.original, last.rewritten, after if isinstance(after, str) else None)
+            if outcome == "back":
+                break
+        return outcome
 
     def _nav(self, catalog: Catalog, op: str) -> Outcome:
         """Back / forward / up in File Explorer when it's in front; back / forward / reload in the browser otherwise."""
@@ -577,3 +811,8 @@ def _host(url: str) -> str:
 def _cut(text: str, limit: int = 28) -> str:
     text = " ".join(text.split())
     return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _crlf(text: str) -> str:
+    """Windows line breaks for a paste (a lone \\n is dropped by some Win32 edits)."""
+    return text.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\r\n")

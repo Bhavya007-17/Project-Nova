@@ -360,6 +360,75 @@ def paste(text: str, target: Win | None, landed: Callable[[], bool] | None = Non
             u32.DestroyWindow(owner)
 
 
+def wait_changed(read: Callable[[], int], before: int, timeout: float, pump: Callable[[float], None]) -> bool:
+    """Poll ``read()`` until it differs from ``before`` (True) or ``timeout`` passes (False)."""
+    deadline = time.perf_counter() + timeout
+    while True:
+        if read() != before:
+            return True
+        if time.perf_counter() >= deadline:
+            return False
+        pump(0.01)
+
+
+def _read_text() -> str | None:
+    """CF_UNICODETEXT of the open clipboard (None = no text on it)."""
+    handle = u32.GetClipboardData(_CF_UNICODETEXT)
+    if not handle:
+        return None
+    pointer = k32.GlobalLock(handle)
+    if not pointer:
+        return None
+    try:
+        raw = ctypes.string_at(pointer, k32.GlobalSize(handle))
+    finally:
+        k32.GlobalUnlock(handle)
+    return raw[: len(raw) // 2 * 2].decode("utf-16-le", errors="replace").split("\0", 1)[0]
+
+
+def copy_selection(target: Win | None, wait_s: float = 0.3) -> str | None:
+    """Ctrl+C in the window in front and read what it copied, then put his clipboard back (Stage 07e: the last way
+    to read a selection, for apps without UI Automation text). None = nothing was copied within ``wait_s`` (no
+    selection, or the app ignores Ctrl+C). The app's copy lands in Win+V history like any copy; Nova can't stop that.
+    Never call it on a terminal (Ctrl+C there is an interrupt) — ``nova.brain.risk`` refuses those first."""
+    _wait_for_hands_off()
+    _guard(target)
+    with _clipboard_lock:
+        owner = u32.CreateWindowExW(0, "STATIC", "Nova clipboard", 0, 0, 0, 0, 0, _HWND_MESSAGE, None, None, None)
+        if not owner:
+            raise ActionError("Couldn't reach the clipboard.")
+        try:
+            _open_clipboard(owner)
+            try:
+                saved = _snapshot()
+            finally:
+                u32.CloseClipboard()
+            sequence = int(u32.GetClipboardSequenceNumber())
+            _guard(target)
+            if native.send_keys(chord("ctrl+c")) != 4:
+                raise ActionError("Windows blocked the keys.")
+            if not wait_changed(lambda: int(u32.GetClipboardSequenceNumber()), sequence, wait_s, _pump):
+                return None
+            _open_clipboard(owner)  # waits for the app to close it
+            try:
+                text = _read_text()
+                u32.EmptyClipboard()
+                for fmt, data in saved:
+                    _put(fmt, data)
+            finally:
+                u32.CloseClipboard()
+            return text
+        finally:
+            u32.DestroyWindow(owner)
+
+
+def copy_text(text: str) -> None:
+    """Leave ``text`` on the clipboard for him to paste (kept in Win+V history, never uploaded to the cloud one)."""
+    zero = (0).to_bytes(4, "little")
+    put_clipboard([(_CF_UNICODETEXT, (text + "\0").encode("utf-16-le")),
+                   (clipboard_format("CanUploadToCloudClipboard"), zero)])
+
+
 def erase(count: int, target: Win | None) -> None:
     """Backspace ``count`` times ("scratch that", a period that cut a sentence in half)."""
     if count <= 0:

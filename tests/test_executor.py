@@ -352,3 +352,58 @@ def test_do_that_again_asks_again_when_the_task_kept_nothing():
     executor.run(act(step("task", goal="turn on word wrap")), ctx=None)
     executor.run(act(step("nova", op="again")), ctx=None)
     assert len(hands.tasks) == 2 and hands.ran == []
+
+
+# --- rewrite (Stage 07e): the hands do the work; the executor checks the risk, asks through the asker, stops ----------
+
+
+class RewriteHands(FakeHands):
+    def __init__(self, answer="card", scene=None, fail=False, cancelled=False):
+        super().__init__(scene=scene)
+        self.calls = []
+        self._answer = answer
+        self._fail = fail
+        self._cancelled = cancelled
+
+    def rewrite(self, instruction, *, choose, stopped, ctx=None):
+        self.calls.append((instruction, stopped()))
+        if self._fail:
+            raise ActionError("Select the text first")
+        if self._cancelled:
+            return None
+        if self._answer == "card" and choose("“Dear Sir” — replace?", ("Replace", "Copy", "Cancel")) != 0:
+            return None
+        return Outcome("Rewrote 4 words · undo", "rewrite", hold=2.0)
+
+
+def test_rewrite_runs_through_the_hands_and_keeps_the_result_up():
+    hands = RewriteHands()
+    result, _, asker = run(act(step("rewrite", instruction="more formal")), hands=hands)
+    assert result.ok and result.detail == "Rewrote 4 words · undo" and result.hold == 2.0
+    assert hands.calls == [("more formal", False)] and hands.ran == []
+    assert asker.questions == [("“Dear Sir” — replace?", ("Replace", "Copy", "Cancel"))] and result.asked == "clarify"
+    assert result.steps[0].method == "rewrite"
+
+
+def test_rewrite_cancelled_on_the_card_or_by_esc():
+    result, _, _ = run(act(step("rewrite", instruction="shorter")), hands=RewriteHands(), asker=FakeAsker(choose=2))
+    assert not result.ok and result.cancelled
+    result, _, _ = run(act(step("rewrite", instruction="shorter")), hands=RewriteHands(cancelled=True))
+    assert not result.ok and result.cancelled
+
+
+def test_rewrite_refused_in_a_password_field_never_reads_it():
+    hands = RewriteHands(scene=Scene(password=True))
+    result, _, _ = run(act(step("rewrite", instruction="shorter")), hands=hands)
+    assert not result.ok and "password" in result.detail and hands.calls == []
+
+
+def test_rewrite_failure_is_said():
+    result, _, _ = run(act(step("rewrite", instruction="shorter")), hands=RewriteHands(fail=True))
+    assert not result.ok and not result.cancelled and result.detail == "Select the text first"
+    assert result.steps[0].ok is False
+
+
+def test_rewrite_without_rewrite_hands():
+    result, _, _ = run(act(step("rewrite", instruction="shorter")))
+    assert not result.ok and "rewrite" in result.detail

@@ -42,8 +42,10 @@ from .brain.plan import (
     Plan,
     Step,
 )
+from .brain.rewrite import kind as rewrite_kind
 
 EVAL_FILE = paths.ROOT / "docs" / "eval" / "intents.yaml"
+REWRITE_KINDS = ("tone", "shorter", "expand", "grammar", "bullets", "translate")
 _SINGLE_AREA = {"left": "snap_left", "right": "snap_right", "top": "snap_top", "bottom": "snap_bottom",
                 "full": "maximize", "center": "center"}
 # Edge words a search engine doesn't care about ("videos about pid control" on YouTube = "pid control").
@@ -203,6 +205,8 @@ def _want_step(text: str, catalog: Catalog) -> tuple:
         return ("canvas_due", rest)
     if head == "task" and rest in ("", "do", "guide"):
         return ("task", rest or None)
+    if head == "rewrite" and rest in ("", *REWRITE_KINDS):
+        return ("rewrite", rest or None)
     raise ValueError(f"can't read want step {text!r}")
 
 
@@ -278,6 +282,8 @@ def _canon(s: Step) -> tuple:
             return ("open_path", _norm_path(str(a.get("name", ""))))
         case "task":
             return ("task", a.get("mode") or "do")
+        case "rewrite":
+            return ("rewrite", rewrite_kind(str(a.get("instruction") or "")))
     return (s.action, a.get("op"))
 
 
@@ -293,7 +299,7 @@ def _matches(pattern: tuple, got: tuple) -> bool:
         return got[1] in pattern[1] and (pattern[2] is None or pattern[2] == got[2])
     if kind in ("volume", "doc"):
         return got[1] in pattern[1] and (pattern[2] is None or pattern[2] == got[2])
-    if kind in ("screenshot", "task"):
+    if kind in ("screenshot", "task", "rewrite"):
         return pattern[1] is None or pattern[1] == got[1]
     return pattern == got
 

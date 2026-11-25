@@ -13,6 +13,7 @@
 #   pick N [VERB] [to M] · numbers OP · grid · autoscroll OP · doc OP [PAGE] · screenshot [TARGET] · camera
 #   system OP · open_path NAME · nova OP   (Stage 07c)
 #   task [do|guide]   (a job of several clicks, Stage 07d)
+#   rewrite [tone|shorter|expand|grammar|bullets|translate]   (selected text rewritten in place, Stage 07e)
 # Negatives: conversation that must not cause an action (asking is fine, acting is not).
 # Every item's screen: Chrome in front, these apps open (an item can set its own `front` / `open`).
 
@@ -674,6 +675,36 @@ positives:
   - say: let me do it
     want: task guide
 
+  # --- rewrite the selected text in place (Stage 07e) ---------------------------------------------------------------
+  - say: make this more formal
+    want: rewrite tone
+    front: Notepad
+  - say: can you make that sound friendlier
+    want: rewrite tone
+  - say: rewrite this so it sounds more professional
+    want: rewrite tone
+  - say: shorten this
+    want: rewrite shorter
+    front: Notepad
+  - say: make it more concise please
+    want: rewrite shorter
+  - say: fix the grammar
+    want: rewrite grammar
+    front: Notepad
+  - say: proofread this for me
+    want: rewrite grammar
+  - say: turn this into bullet points
+    want: rewrite bullets
+  - say: translate this to spanish
+    want: rewrite translate
+  - say: put that in french
+    want: rewrite translate
+  - say: expand on this a bit
+    want: rewrite expand
+  - say: um make this less casual
+    want: rewrite tone
+    front: Notepad
+
   # --- things Nova can't do yet: "show me?" ----------------------------------------------------------------------
   - say: switch fusion over to the dark theme
     want: task || teach || clarify || open Autodesk Fusion ; task
@@ -789,3 +820,8 @@ negatives:
   - page twelve of the textbook is so confusing
   - the numbers on this report don't add up
   - keep scrolling through tiktok is all he does
+  - my professor said my essay was too formal
+  - I need to rewrite my resume this weekend
+  - the translation in the subtitles was terrible
+  - her grammar is way better than mine
+  - he made it shorter than last year
