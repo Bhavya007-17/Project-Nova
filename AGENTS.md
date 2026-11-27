@@ -7,6 +7,8 @@ Nova is a local voice layer for a Windows laptop: a Dynamic-Island pill at the t
 computer does it about as fast as you would by hand. Big jobs get handed to the Claude or ChatGPT desktop apps, and
 Nova says when they're done. It started as Bhavya's personal project and is now built by a small team.
 
+Standing rules: @docs/prompts/next/RULES.md
+
 ## Read first
 - `docs/SPEC.md` — the design and source of truth. If a stage prompt and the spec disagree, ask.
 - `docs/prompts/NN-*.md` — the build, one stage per session (index: `docs/prompts/README.md`).
