@@ -21,7 +21,7 @@ Rectangle {
         text: button.text
         color: button.textColor
         textFormat: Text.PlainText
-        font.family: "Segoe UI Variable Text"
+        font.family: Qt.platform.os === "osx" ? Qt.application.font.family : "Segoe UI Variable Text"
         font.weight: Font.DemiBold
         font.pixelSize: 14
     }

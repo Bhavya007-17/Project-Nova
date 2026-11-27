@@ -13,7 +13,9 @@ from __future__ import annotations
 import itertools
 import json
 import logging
+import os
 import secrets
+import tempfile
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -22,9 +24,23 @@ from multiprocessing.connection import Client, Connection, Listener
 from pathlib import Path
 from typing import Any
 
+from ..platform import MAC
+
 _log = logging.getLogger(__name__)
 
 REQUEST_S = 3.0
+
+
+def family(address: str) -> str:
+    """Windows: a named pipe. macOS / Linux: a Unix socket in the per-user temp folder (no TCP port either way)."""
+    return "AF_PIPE" if address.startswith("\\\\") else "AF_UNIX"
+
+
+def _new_address() -> str:
+    token = secrets.token_hex(6)
+    if not MAC:
+        return rf"\\.\pipe\nova-chrome-{token}"
+    return os.path.join(tempfile.gettempdir(), f"nova-chrome-{token}.sock")
 
 
 class ChromeError(Exception):
@@ -48,9 +64,9 @@ class BridgeInfo:
     def ensure(cls, path: Path) -> BridgeInfo:
         """The pipe name and key, made once (a fresh random pipe name and 256-bit key)."""
         info = cls.load(path)
-        if info is not None:
+        if info is not None and (family(info.pipe) == "AF_PIPE") == (not MAC):
             return info
-        info = cls(rf"\\.\pipe\nova-chrome-{secrets.token_hex(6)}", secrets.token_hex(32))
+        info = cls(_new_address(), secrets.token_hex(32))
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"pipe": info.pipe, "key": info.key}, indent=2) + "\n", encoding="utf-8")
         return info
@@ -116,7 +132,14 @@ class Bridge:
     def start(self) -> bool:
         """Open the pipe and accept hosts in the background. False (and ``error``) if the pipe is taken."""
         try:
-            self._listener = Listener(self._info.pipe, family="AF_PIPE", authkey=bytes.fromhex(self._info.key))
+            kind = family(self._info.pipe)
+            if kind == "AF_UNIX" and os.path.exists(self._info.pipe):
+                try:  # a socket file left by a Nova that crashed (a live one answers: then the bind below fails)
+                    _close(Client(self._info.pipe, family=kind, authkey=bytes.fromhex(self._info.key)))
+                    raise OSError("another Nova is serving it")
+                except (ConnectionRefusedError, FileNotFoundError):
+                    os.unlink(self._info.pipe)
+            self._listener = Listener(self._info.pipe, family=kind, authkey=bytes.fromhex(self._info.key))
         except OSError as error:
             self.error = f"the Chrome pipe is in use ({error.strerror or error}) — is another Nova running?"
             _log.warning("chrome bridge: %s", self.error)
@@ -144,7 +167,7 @@ class Bridge:
 
     def _wake(self) -> None:
         try:
-            _close(Client(self._info.pipe, family="AF_PIPE", authkey=bytes.fromhex(self._info.key)))
+            _close(Client(self._info.pipe, family=family(self._info.pipe), authkey=bytes.fromhex(self._info.key)))
         except Exception:  # noqa: BLE001 - nothing listening any more: fine
             pass
 

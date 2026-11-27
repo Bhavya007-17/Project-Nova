@@ -29,7 +29,7 @@ Item {
         wrapMode: Text.Wrap
         maximumLineCount: 2
         elide: Text.ElideRight
-        font.family: "Segoe UI Variable Text"
+        font.family: Qt.platform.os === "osx" ? Qt.application.font.family : "Segoe UI Variable Text"
         font.weight: Font.DemiBold
         font.pixelSize: 15
     }
@@ -68,7 +68,7 @@ Item {
                         anchors.centerIn: parent
                         text: choice.index + 1
                         color: "#000000"
-                        font.family: "Segoe UI Variable Text"
+                        font.family: Qt.platform.os === "osx" ? Qt.application.font.family : "Segoe UI Variable Text"
                         font.weight: Font.Bold
                         font.pixelSize: 11
                     }
@@ -84,7 +84,7 @@ Item {
                     color: "#FFFFFF"
                     elide: Text.ElideRight
                     textFormat: Text.PlainText
-                    font.family: "Segoe UI Variable Text"
+                    font.family: Qt.platform.os === "osx" ? Qt.application.font.family : "Segoe UI Variable Text"
                     font.weight: Font.Medium
                     font.pixelSize: 14
                 }

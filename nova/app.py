@@ -32,15 +32,27 @@ _MB_ICONINFORMATION = 0x40
 
 _log = logging.getLogger(__name__)
 
-_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-_kernel32.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
-_kernel32.CreateMutexW.restype = wintypes.HANDLE
-_kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-_kernel32.CloseHandle.restype = wintypes.BOOL
+if sys.platform == "win32":
+    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _kernel32.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
+    _kernel32.CreateMutexW.restype = wintypes.HANDLE
+    _kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    _kernel32.CloseHandle.restype = wintypes.BOOL
 
 
 def _claim_single_instance() -> int | None:
-    """Named mutex: returns its handle, or None if another Nova already holds it."""
+    """Named mutex (a locked file off Windows): returns its handle, or None if another Nova already holds it."""
+    if sys.platform != "win32":
+        import fcntl
+
+        paths.DATA.mkdir(parents=True, exist_ok=True)
+        fd = os.open(paths.DATA / "nova.lock", os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            return None
+        return fd
     handle = _kernel32.CreateMutexW(None, False, MUTEX_NAME)
     if not handle:
         error = ctypes.get_last_error()
@@ -66,7 +78,7 @@ def run() -> int:
     mutex = _claim_single_instance()
     if mutex is None:
         message = "Nova is already running (look for its tray icon)."
-        if sys.stdout is None:  # pythonw / novaw: no console to print to
+        if sys.stdout is None and sys.platform == "win32":  # pythonw / novaw: no console to print to
             ctypes.windll.user32.MessageBoxW(None, message, "Nova", _MB_ICONINFORMATION)
         else:
             print(message)
@@ -81,10 +93,12 @@ def run() -> int:
     trace = TraceLog(paths.LOGS, transcripts=store.settings.logs.transcripts)
     # Ears (Stage 01): models load on the speech thread, so the tray shows up at once.
     vocab = VocabFile(paths.VOCAB)
-    speech = standard_worker(bus, vocab=vocab, trace=trace, device=store.settings.audio.device)
+    speech = standard_worker(bus, vocab=vocab, trace=trace, device=store.settings.audio.device,
+                             sensitivity=store.settings.audio.sensitivity)
 
     def on_config(event: ConfigChanged) -> None:
         speech.set_device(event.settings.audio.device)
+        speech.set_sensitivity(event.settings.audio.sensitivity)
         trace.transcripts = event.settings.logs.transcripts
 
     unsubscribe = [
@@ -138,4 +152,7 @@ def run() -> int:
         stop_watching()
         _log.info("Nova stopped")
         close_log()
-        _kernel32.CloseHandle(mutex)
+        if sys.platform == "win32":
+            _kernel32.CloseHandle(mutex)
+        else:
+            os.close(mutex)

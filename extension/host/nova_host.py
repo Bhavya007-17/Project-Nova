@@ -72,8 +72,9 @@ def _connect(info: dict):
     key = bytes.fromhex(info["key"])
     while True:
         try:
-            return Client(info["pipe"], family="AF_PIPE", authkey=key)
-        except FileNotFoundError:  # no pipe: Nova isn't running (yet)
+            family = "AF_PIPE" if info["pipe"].startswith("\\\\") else "AF_UNIX"
+            return Client(info["pipe"], family=family, authkey=key)
+        except (FileNotFoundError, ConnectionRefusedError):  # no pipe: Nova isn't running (yet)
             if time.monotonic() > deadline:
                 return None
             time.sleep(0.15)

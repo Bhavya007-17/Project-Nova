@@ -16,7 +16,7 @@ from PySide6.QtCore import QObject, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
-from . import paths
+from . import paths, startup
 from .bus import Bus
 from .config import ConfigError, ConfigStore
 from .events import AlwaysListeningChanged, ConfigChanged, ConfigInvalid, PowerChanged
@@ -52,6 +52,10 @@ def _open_in_background(path: Path) -> None:
     """Open a file or folder with its default app; .yaml has no default on a fresh Windows, so fall back to Notepad."""
 
     def work() -> None:
+        if sys.platform == "darwin":  # .yaml has no default app either: open it as text
+            command = ["/usr/bin/open", str(path)] if path.is_dir() else ["/usr/bin/open", "-t", str(path)]
+            subprocess.run(command, check=False)  # noqa: S603
+            return
         try:
             os.startfile(path)  # noqa: S606 - fixed local path
         except OSError:
@@ -63,6 +67,14 @@ def _open_in_background(path: Path) -> None:
     threading.Thread(target=work, name="nova-open", daemon=True).start()
 
 
+def _starts_with_windows() -> bool:
+    try:
+        return startup.enabled()
+    except Exception:  # noqa: BLE001 - a registry hiccup must not stop the tray
+        _log.debug("couldn't read the Run key", exc_info=True)
+        return False
+
+
 class _Bridge(QObject):
     """Bus handlers and console handlers run on other threads; these signals hop onto the GUI thread."""
 
@@ -71,8 +83,9 @@ class _Bridge(QObject):
     notice = Signal(str, str)  # title, text
 
 
-_HandlerRoutine = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)
+_HandlerRoutine = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD) if sys.platform == "win32" else None
 _CTRL_CLOSE_EVENT = 2
+_STARTUP_LABEL = "Start with Windows" if sys.platform == "win32" else "Start at login"
 
 
 def _quit_on_console_close(request_quit, closed: threading.Event):
@@ -112,8 +125,16 @@ class Tray(QObject):
         self._always.setToolTip("Plain commands like \"open Spotify\" without saying Nova")
         self._always.toggled.connect(self._set_always)
         self._menu.addAction(self._always)
+        self._hear = QAction("Hear me better (quiet voice / far mic)", self._menu, checkable=True,
+                             checked=store.settings.audio.sensitivity == "high")
+        self._hear.toggled.connect(self._set_sensitivity)
+        self._menu.addAction(self._hear)
+        self._startup = QAction(_STARTUP_LABEL, self._menu, checkable=True, checked=_starts_with_windows())
+        self._startup.toggled.connect(self._set_startup)
+        self._menu.addAction(self._startup)
         self._menu.addSeparator()
         self._add("Open settings", lambda: _open_in_background(self._store.path))
+        self._add("Open what Nova learned", self._open_skills)
         self._add("Open logs", self._open_logs)
         self._menu.addSeparator()
         self._add("Quit Nova", app.quit)
@@ -163,6 +184,30 @@ class Tray(QObject):
 
         threading.Thread(target=save, name="nova-save-setting", daemon=True).start()
 
+    def _set_sensitivity(self, on: bool) -> None:
+        """The settings watcher applies it within a second (the speech worker follows ConfigChanged)."""
+
+        def save() -> None:
+            try:
+                self._store.save_value("audio.sensitivity", "high" if on else "normal")
+            except ConfigError as error:
+                _log.warning("couldn't save audio.sensitivity: %s", error)
+                self._bridge.notice.emit("Nova settings", f"Couldn't save the mic sensitivity:\n{error}")
+
+        threading.Thread(target=save, name="nova-save-setting", daemon=True).start()
+
+    def _set_startup(self, on: bool) -> None:
+        try:
+            startup.set_enabled(on)
+            _log.info("start with Windows %s", "on" if on else "off")
+        except OSError as error:
+            _log.warning("couldn't change start with Windows: %s", error)
+            self._bridge.notice.emit("Nova", f"Couldn't change “Start with Windows”:\n{error}")
+
+    def _open_skills(self) -> None:
+        paths.SKILLS.mkdir(parents=True, exist_ok=True)
+        _open_in_background(paths.SKILLS)
+
     def notify(self, title: str, text: str) -> None:
         """Show a tray message from any thread."""
         self._bridge.notice.emit(title, text)
@@ -189,6 +234,11 @@ class Tray(QObject):
                 self._always.blockSignals(True)  # the file changed it: follow, without saving it back
                 self._always.setChecked(always)
                 self._always.blockSignals(False)
+            hear = event.settings.audio.sensitivity == "high"
+            if hear != self._hear.isChecked():
+                self._hear.blockSignals(True)
+                self._hear.setChecked(hear)
+                self._hear.blockSignals(False)
             _log.info("settings applied")
 
     def close(self) -> None:
@@ -213,6 +263,13 @@ def run_tray(bus: Bus, store: ConfigStore, notices: tuple[tuple[str, str], ...] 
     app = QApplication.instance() or QApplication(["nova"])
     app.setApplicationName("Nova")
     app.setQuitOnLastWindowClosed(False)
+    if sys.platform == "darwin":  # a menu-bar app: no Dock icon, never steals focus by being "the app"
+        try:
+            from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
+
+            NSApplication.sharedApplication().setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+        except Exception:  # noqa: BLE001
+            _log.debug("couldn't hide the Dock icon", exc_info=True)
     if not QSystemTrayIcon.isSystemTrayAvailable():
         _log.error("no system tray available")
         return 1
@@ -228,9 +285,10 @@ def run_tray(bus: Bus, store: ConfigStore, notices: tuple[tuple[str, str], ...] 
     if sys.stderr is not None:
         # Console run: Ctrl+C / Ctrl+Break / closing the window quit cleanly (no ghost icon).
         # Python only sees signals when it gets to run, so a light timer hands it control 4x a second.
-        for sig in (signal.SIGINT, signal.SIGBREAK):
+        for sig in (signal.SIGINT, getattr(signal, "SIGBREAK", signal.SIGTERM)):
             signal.signal(sig, lambda *_: app.quit())
-        _console_handler = _quit_on_console_close(stopper.quit.emit, closed)
+        if sys.platform == "win32":
+            _console_handler = _quit_on_console_close(stopper.quit.emit, closed)
         keepalive = QTimer()
         keepalive.timeout.connect(lambda: None)
         keepalive.start(250)

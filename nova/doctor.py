@@ -17,7 +17,9 @@ import sys
 import threading
 import time
 import urllib.request
-import winreg
+
+if sys.platform == "win32":
+    import winreg
 from collections.abc import Callable, Sequence
 from ctypes import wintypes
 from dataclasses import dataclass
@@ -29,6 +31,7 @@ from .brain.llm import is_cloud
 from .config import ConfigStore
 from .console import enable_vt
 from .keys import MOD_NOREPEAT, Chord, parse_chord
+from .platform import MAC
 
 
 @dataclass(frozen=True)
@@ -129,7 +132,7 @@ def check_uv() -> Check:
         return Check("uv", False, "not on PATH", "Install uv: winget install --id=astral-sh.uv -e")
     result = subprocess.run(
         [exe, "--version"], capture_output=True, text=True, timeout=10, check=True,
-        creationflags=subprocess.CREATE_NO_WINDOW,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     return Check("uv", True, result.stdout.strip())
 
@@ -279,6 +282,9 @@ def check_llm(url: str, gpu_model: str, cpu_model: str, fetch: Callable[[str, fl
         return Check("Local LLM", False, "can't ask Ollama which models are pulled", "Start Ollama first.")
     wanted = dict.fromkeys((gpu_model, cpu_model))
     missing = [m for m in wanted if m not in pulled]
+    if missing == [gpu_model] and MAC:
+        return Check("Local LLM", True, f"{cpu_model} on the Apple GPU ({gpu_model} not pulled: fine on 8 GB; "
+                                        f"`ollama pull {gpu_model}` with 16 GB+ for better plans)")
     if missing:
         return Check("Local LLM", False, "not pulled: " + ", ".join(missing),
                      "Run: " + " ; ".join(f"ollama pull {m}" for m in missing))
@@ -356,7 +362,7 @@ def start_apps() -> Any:
     result = subprocess.run(
         [str(powershell), "-NoProfile", "-NonInteractive", "-Command", _START_APPS],
         capture_output=True, encoding="utf-8-sig", timeout=30, check=True,
-        creationflags=subprocess.CREATE_NO_WINDOW,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     return json.loads(result.stdout or "[]")
 
@@ -386,11 +392,12 @@ def check_apps(fetch: Callable[[], Any] = start_apps) -> list[Check]:
     return match_apps(fetch())
 
 
-_user32 = ctypes.WinDLL("user32", use_last_error=True)
-_user32.RegisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.UINT, wintypes.UINT]
-_user32.RegisterHotKey.restype = wintypes.BOOL
-_user32.UnregisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int]
-_user32.UnregisterHotKey.restype = wintypes.BOOL
+if sys.platform == "win32":
+    _user32 = ctypes.WinDLL("user32", use_last_error=True)
+    _user32.RegisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.UINT, wintypes.UINT]
+    _user32.RegisterHotKey.restype = wintypes.BOOL
+    _user32.UnregisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int]
+    _user32.UnregisterHotKey.restype = wintypes.BOOL
 _PROBE_ID = 0x4E56
 
 
@@ -429,11 +436,11 @@ def try_keyboard_hook() -> str | None:
 def check_keyboard_hook(attempt: Callable[[], str | None] = try_keyboard_hook) -> Check:
     error = attempt()
     if error is None:
-        return Check("Keyboard hook", True, "Copilot key and chord can be caught (WH_KEYBOARD_LL)")
-    return Check(
-        "Keyboard hook", False, error,
-        'Something blocks low-level keyboard hooks (security software?). "Nova ..." still works without it.',
-    )
+        how = "WH_KEYBOARD_LL" if sys.platform == "win32" else "Quartz event tap"
+        return Check("Keyboard hook", True, f"Copilot key and chord can be caught ({how})")
+    fix = ('Something blocks low-level keyboard hooks (security software?). "Nova ..." still works without it.'
+           if sys.platform == "win32" else 'Allow Accessibility (row above). "Nova ..." still works without it.')
+    return Check("Keyboard hook", False, error, fix)
 
 
 REQUIRED_MODELS = (
@@ -442,6 +449,8 @@ REQUIRED_MODELS = (
     "parakeet/vocab.txt",
     "parakeet/config.json",
     "silero/silero_vad.onnx",
+    "embed/model_quantized.onnx",
+    "embed/vocab.txt",
 )
 
 
@@ -465,7 +474,7 @@ def check_models(models_dir: Path) -> Check:
     if missing:
         return Check(
             "Models", False, f"missing in {models_dir}: {', '.join(missing)}",
-            "Run scripts/setup.ps1, or just `uv run python scripts/get_models.py` (~670 MB, checked by SHA-256). "
+            "Run scripts/setup.ps1, or just `uv run python scripts/get_models.py` (~700 MB, checked by SHA-256). "
             "Doctor itself never downloads.",
         )
     folders = sorted(entry for entry in models_dir.iterdir() if entry.is_dir())
@@ -504,14 +513,93 @@ def check_vocab(path: Path) -> Check:
 # --- entry point -------------------------------------------------------------------
 
 
+# --- macOS -------------------------------------------------------------------------
+
+
+def check_accessibility() -> Check:
+    from .actions import native
+
+    if native.trusted():
+        return Check("Accessibility", True, "allowed: window moves, typing and the chord work")
+    native.trusted(prompt=True)
+    return Check(
+        "Accessibility", False, f"not allowed for {Path(sys.executable).name} (the app that runs Nova)",
+        "System Settings > Privacy & Security > Accessibility: turn on your terminal app (Terminal / iTerm / VS Code), "
+        "then restart Nova.",
+    )
+
+
+def check_mac_mic() -> Check:
+    import sounddevice as sd
+
+    try:
+        default = sd.query_devices(kind="input")
+    except Exception as error:  # noqa: BLE001
+        return Check("Microphone", False, f"no input device ({error})", "System Settings > Sound > Input.")
+    inputs = [d for d in sd.query_devices() if d["max_input_channels"] > 0]
+    return Check("Microphone", True, f"default: {default['name']}; {len(inputs)} inputs "
+                                     "(macOS asks for mic permission on first listen)")
+
+
+def check_mac_gpu() -> Check:
+    machine = os.uname().machine
+    if machine == "arm64":
+        return Check("GPU", True, "Apple Silicon: Ollama runs the LLM on the GPU (Metal) with unified memory")
+    return Check("GPU", True, f"{machine}: the LLM runs on CPU", optional=True)
+
+
+def check_mac_chrome() -> Check:
+    app = Path("/Applications/Google Chrome.app")
+    if not app.is_dir():
+        return Check("Chrome", False, "not installed", "Install Chrome for page clicks and Canvas.", optional=True)
+    import plistlib
+
+    version = plistlib.loads((app / "Contents" / "Info.plist").read_bytes()).get("CFBundleShortVersionString", "?")
+    return Check("Chrome", True, f"{version} at {app}")
+
+
+def check_mac_apps() -> list[Check]:
+    from .actions.catalog import query_mac_apps
+
+    names = {row["Name"].casefold(): row["AppID"] for row in query_mac_apps()}
+    checks = []
+    for label, name, needed in (("Claude app", "Claude", "handoff"), ("ChatGPT app", "ChatGPT", "handoff")):
+        if name.casefold() in names:
+            checks.append(Check(label, True, names[name.casefold()]))
+        else:
+            checks.append(Check(label, False, "not in /Applications", f"Install {name} if you want {needed}.",
+                                optional=True))
+    return checks
+
+
 def main() -> int:
     # Problems show up as table rows; keep library warnings from also printing raw to stderr.
     logging.getLogger("nova").addHandler(logging.NullHandler())
     store = ConfigStore(paths.SETTINGS)
     settings_check = check_settings(store)  # first, so the other probes see the real settings
     settings = store.settings
+    mac = sys.platform == "darwin"
+    if mac:
+        probes = [
+            ("Python", check_python),
+            ("uv", check_uv),
+            ("Accessibility", check_accessibility),
+            ("Settings", lambda: settings_check),
+            ("Microphone", check_mac_mic),
+            ("GPU", check_mac_gpu),
+            ("Ollama", lambda: check_ollama(settings.ollama.url)),
+            ("Local LLM", lambda: check_llm(settings.ollama.url, settings.llm.gpu_model, settings.llm.cpu_model)),
+            ("Chrome", check_mac_chrome),
+            ("Chrome extension", check_extension),
+            ("Desktop apps", check_mac_apps),
+            ("Fallback chord", lambda: check_chord(settings.chord, lambda _chord: True)),
+            ("Keyboard hook", check_keyboard_hook),
+            ("Models", lambda: check_models(paths.MODELS)),
+            ("Recordings", lambda: check_recordings(paths.RECORDINGS)),
+            ("Vocab", lambda: check_vocab(paths.VOCAB)),
+        ]
     checks = run_checks(
-        [
+        probes if mac else [
             ("Python", check_python),
             ("uv", check_uv),
             ("No-console run", check_windowed_launcher),

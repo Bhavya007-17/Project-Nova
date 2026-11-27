@@ -438,13 +438,58 @@ ConvertTo-Json -InputObject $rows -Depth 3 -Compress
 _BELOW_NORMAL = 0x00004000
 
 
+_MAC_APP_DIRS = ("/Applications", "/Applications/Utilities", "/System/Applications", "/System/Applications/Utilities",
+                 "~/Applications", "/System/Library/CoreServices/Finder.app")
+
+
+def query_mac_apps() -> list[dict[str, Any]]:
+    """macOS: the .app bundles in the usual folders (one level deep, plus folders like "Adobe Photoshop 2025/"),
+    as Start-menu-shaped rows: Name = what Finder shows, AppID = bundle id, Exe = bundle path."""
+    import plistlib
+
+    bundles: list[Path] = []
+    for raw in _MAC_APP_DIRS:
+        root = Path(raw).expanduser()
+        if root.suffix == ".app":
+            bundles.append(root)
+            continue
+        try:
+            entries = list(root.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.suffix == ".app":
+                bundles.append(entry)
+            elif entry.is_dir() and not entry.name.startswith("."):
+                try:
+                    bundles.extend(p for p in entry.iterdir() if p.suffix == ".app")
+                except OSError:
+                    pass
+    rows = []
+    for bundle in bundles:
+        try:
+            info = plistlib.loads((bundle / "Contents" / "Info.plist").read_bytes())
+        except (OSError, plistlib.InvalidFileException, ValueError):
+            continue
+        bundle_id = str(info.get("CFBundleIdentifier") or "")
+        if not bundle_id or info.get("LSBackgroundOnly") or info.get("LSUIElement") in (True, "1", 1):
+            continue
+        name = bundle.stem if bundle.stem != "Finder" else "Finder"
+        rows.append({"Name": name, "AppID": bundle_id, "Exe": str(bundle), "Args": ""})
+    return rows
+
+
 def query_start_menu() -> list[dict[str, Any]]:
     """Start-menu apps via a fixed PowerShell command (~1 s, below-normal priority). Never takes input."""
+    import sys
+
+    if sys.platform == "darwin":
+        return query_mac_apps()
     powershell = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe"
     result = subprocess.run(
         [str(powershell), "-NoProfile", "-NonInteractive", "-Command", _APPS_FOLDER],
         capture_output=True, encoding="utf-8-sig", errors="replace", timeout=60, check=True,
-        creationflags=subprocess.CREATE_NO_WINDOW | _BELOW_NORMAL,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) | _BELOW_NORMAL,
     )
     rows = json.loads(result.stdout or "[]")
     return [rows] if isinstance(rows, dict) else [row for row in rows if isinstance(row, dict)]

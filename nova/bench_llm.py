@@ -15,6 +15,7 @@ import math
 import os
 import shutil
 import subprocess
+import sys
 import time
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
@@ -77,6 +78,10 @@ def _ollama_exe() -> str | None:
     found = shutil.which("ollama")
     if found:
         return found
+    if sys.platform == "darwin":
+        for mac in ("/opt/homebrew/bin/ollama", "/usr/local/bin/ollama", "/Applications/Ollama.app/Contents/Resources/ollama"):
+            if Path(mac).is_file():
+                return mac
     candidate = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Ollama" / "ollama.exe"
     return str(candidate) if candidate.is_file() else None
 
@@ -98,7 +103,7 @@ class ArcServer:
         self.log.parent.mkdir(parents=True, exist_ok=True)
         out = self.log.open("w", encoding="utf-8")
         self.proc = subprocess.Popen([exe, "serve"], env=env, stdout=out, stderr=subprocess.STDOUT,
-                                     creationflags=subprocess.CREATE_NO_WINDOW)
+                                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         client = Ollama(ARC_URL)
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
@@ -118,7 +123,7 @@ class ArcServer:
     def __exit__(self, *exc: object) -> None:
         if self.proc is not None:
             subprocess.run(["taskkill", "/PID", str(self.proc.pid), "/T", "/F"], capture_output=True,
-                           creationflags=subprocess.CREATE_NO_WINDOW)
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             self.proc.wait(timeout=10)
 
 

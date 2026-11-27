@@ -26,6 +26,7 @@ from urllib.parse import urlsplit
 from ..actions.catalog import Catalog
 from ..config import Llm
 from ..governor import Choice, Governor
+from ..platform import MAC
 from . import prompt
 from .llm import LLMCancelled, LLMError, Ollama, Reply
 
@@ -33,6 +34,7 @@ _log = logging.getLogger(__name__)
 
 NUM_CTX = 4096
 MAX_TOKENS = 200  # the longest plan (4 steps / a 4-slot layout) is ~120 tokens; a rambling answer stops here
+CPU_SHOTS = 2  # recalled examples shown to the CPU model (~40 tokens each)
 CPU_PAGE_ROWS = 12  # page elements shown to the CPU model (the GPU one gets up to 40)
 PRELOAD_REASONS = frozenset({"key", "wake", "speech", "follow-up"})  # not "always": chatter never needs the LLM
 WARM_AGAIN_S = 60.0
@@ -88,6 +90,12 @@ def dialect_for(info: Mapping[str, Any]) -> Dialect:
 def chatml(messages: Sequence[Mapping[str, str]]) -> str:
     """The static part: every message, then the start of his turn (each request appends its own part)."""
     return "".join(f"<|im_start|>{m['role']}\n{m['content']}<|im_end|>\n" for m in messages) + "<|im_start|>user\n"
+
+
+def chatml_shots(shots: Sequence[tuple[Mapping[str, Any], Mapping[str, Any]]]) -> str:
+    """Worked examples as finished turns, after the static part (which ends where a user turn starts)."""
+    return "".join(f"{prompt.dumps(request)}<|im_end|>\n<|im_start|>assistant\n{prompt.dumps(plan)}<|im_end|>\n"
+                   "<|im_start|>user\n" for request, plan in shots)
 
 
 def chatml_turn(content: str, think_block: bool) -> str:
@@ -173,28 +181,37 @@ class Tier1:
 
     def think(self, text: str, seen: Seen, catalog: Catalog | None = None, *, asked: str | None = None,
               answer: str | None = None, choice: Choice | None = None,
-              page: Sequence[str] | None = None) -> Thought:
+              page: Sequence[str] | None = None,
+              shots: Sequence[tuple[Mapping[str, Any], Mapping[str, Any]]] = ()) -> Thought:
         """``page``: the ranked page elements, one line each (``nova.chrome.pagemap.llm_rows``), when he points at
-        the page."""
+        the page. ``shots``: (request, plan) examples like this sentence (``recall``), most alike last; they go
+        after the static prefix as earlier turns, so the cached prefix is still reused."""
         began = time.perf_counter()
         catalog = catalog or self._catalog()
         llm = self._settings()
         try:
             choice = choice or self._pinned or self._governor.choose()
             dialect = self._dialect(choice.model)
+            if MAC and dialect.raw and choice not in self._warmed:
+                # Apple's GPU reads the ~3k-token prefix in ~11 s cold (vs ~0.1 s cached): over llm.timeout_s. Read it
+                # once with the warm-up's long timeout, then plan from the cache (~2 s on an M3).
+                self.warm(choice)
             messages, static = self._static(catalog)
             listed = [name for name in prompt.relevant_apps(text, catalog, seen.open_apps) if name not in seen.open_apps]
             if page and choice.device == "cpu":
                 page = page[:CPU_PAGE_ROWS]  # every row is ~20 tokens: the CPU reads them ~10x slower
             request = prompt.request(text, front=seen.front, open_apps=seen.open_apps, tab=seen.tab, apps=listed,
                                      asked=asked, answer=answer, page=page)
+            if shots and choice.device == "cpu":
+                shots = shots[-CPU_SHOTS:]
             if dialect.raw:
                 reply = self._client.generate(
-                    choice.model, static + chatml_turn(prompt.dumps(request), dialect.think_block), schema=prompt.SCHEMA,
+                    choice.model, static + chatml_shots(shots) + chatml_turn(prompt.dumps(request), dialect.think_block),
+                    schema=prompt.SCHEMA,
                     options=self._options(choice), keep_alive=llm.keep_alive, timeout=llm.timeout_s,
                     num_predict=MAX_TOKENS)
             else:
-                reply = self._client.chat(choice.model, prompt.messages(messages, request), schema=prompt.SCHEMA,
+                reply = self._client.chat(choice.model, prompt.messages(messages, request, shots), schema=prompt.SCHEMA,
                                           options=self._options(choice), keep_alive=llm.keep_alive,
                                           timeout=llm.timeout_s, num_predict=MAX_TOKENS)
             self._governor.used()

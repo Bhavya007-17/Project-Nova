@@ -54,7 +54,7 @@ Column {
                     opacity: chip.status === "working" ? 0.85 : 1
                     elide: Text.ElideMiddle
                     textFormat: Text.PlainText
-                    font.family: "Segoe UI Variable Small"
+                    font.family: Qt.platform.os === "osx" ? Qt.application.font.family : "Segoe UI Variable Small"
                     font.weight: Font.DemiBold
                     font.pixelSize: 13
                 }
@@ -62,9 +62,9 @@ Column {
                 Text {
                     anchors.verticalCenter: parent.verticalCenter
                     visible: chip.status !== "working"
-                    text: chip.status === "done" ? "\uE73E" : "\uE711"
+                    text: chip.status === "done" ? (Qt.platform.os === "osx" ? "✓" : "\uE73E") : (Qt.platform.os === "osx" ? "✕" : "\uE711")
                     color: chip.tint
-                    font.family: "Segoe Fluent Icons"
+                    font.family: Qt.platform.os === "osx" ? Qt.application.font.family : "Segoe Fluent Icons"
                     font.pixelSize: 12
                     font.bold: true
                 }

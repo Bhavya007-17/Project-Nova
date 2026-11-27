@@ -31,6 +31,7 @@ from __future__ import annotations
 import ctypes
 import logging
 import os
+import sys
 import time
 from ctypes import wintypes
 from pathlib import Path
@@ -74,12 +75,40 @@ _EVENTS = (
 _WDA_EXCLUDEFROMCAPTURE = 0x11
 _DWMWA_TRANSITIONS_FORCEDISABLED = 3
 
-_user32 = ctypes.WinDLL("user32", use_last_error=True)
-_user32.SetWindowDisplayAffinity.argtypes = [wintypes.HWND, wintypes.DWORD]
-_user32.SetWindowDisplayAffinity.restype = wintypes.BOOL
-_dwmapi = ctypes.WinDLL("dwmapi")
-_dwmapi.DwmSetWindowAttribute.argtypes = [wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]
-_dwmapi.DwmSetWindowAttribute.restype = ctypes.c_long
+if sys.platform == "win32":
+    _user32 = ctypes.WinDLL("user32", use_last_error=True)
+    _user32.SetWindowDisplayAffinity.argtypes = [wintypes.HWND, wintypes.DWORD]
+    _user32.SetWindowDisplayAffinity.restype = wintypes.BOOL
+    _dwmapi = ctypes.WinDLL("dwmapi")
+    _dwmapi.DwmSetWindowAttribute.argtypes = [wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]
+    _dwmapi.DwmSetWindowAttribute.restype = ctypes.c_long
+
+
+def _mac_window_setup(win_id: int, capture: bool) -> None:
+    """macOS: float above full-screen apps on every Space, never activate, and stay out of screenshots."""
+    try:
+        import objc
+        from AppKit import (
+            NSScreenSaverWindowLevel,
+            NSWindowCollectionBehaviorCanJoinAllSpaces,
+            NSWindowCollectionBehaviorFullScreenAuxiliary,
+            NSWindowCollectionBehaviorStationary,
+            NSWindowSharingNone,
+        )
+
+        window = objc.objc_object(c_void_p=win_id).window()
+        if window is None:
+            return
+        window.setLevel_(NSScreenSaverWindowLevel)
+        window.setCollectionBehavior_(NSWindowCollectionBehaviorCanJoinAllSpaces
+                                      | NSWindowCollectionBehaviorFullScreenAuxiliary
+                                      | NSWindowCollectionBehaviorStationary)
+        window.setHidesOnDeactivate_(False)
+        window.setHasShadow_(False)
+        if not capture:
+            window.setSharingType_(NSWindowSharingNone)
+    except Exception:  # noqa: BLE001 - cosmetic: the island still works without it
+        _log.warning("island: couldn't set the macOS window options", exc_info=True)
 
 
 def top_center(area: tuple[int, int, int, int], size: tuple[int, int]) -> tuple[int, int, int, int]:
@@ -141,10 +170,16 @@ class Island(QObject):
         self._place(self._screen_under_mouse())
         view.create()
         self._hwnd = int(view.winId())
-        off = wintypes.BOOL(True)  # Windows' own show / hide fade would fight the island's drop-down
-        _dwmapi.DwmSetWindowAttribute(self._hwnd, _DWMWA_TRANSITIONS_FORCEDISABLED, ctypes.byref(off), ctypes.sizeof(off))
+        if sys.platform == "darwin":
+            _mac_window_setup(self._hwnd, capturable())
+        else:
+            off = wintypes.BOOL(True)  # Windows' own show / hide fade would fight the island's drop-down
+            _dwmapi.DwmSetWindowAttribute(self._hwnd, _DWMWA_TRANSITIONS_FORCEDISABLED, ctypes.byref(off),
+                                          ctypes.sizeof(off))
         if capturable():
             _log.info("island: NOVA_CAPTURABLE=1, screenshots will see it")
+        elif sys.platform == "darwin":
+            pass
         elif not _user32.SetWindowDisplayAffinity(self._hwnd, _WDA_EXCLUDEFROMCAPTURE):
             _log.warning("island: couldn't exclude it from screen capture (error %d)", ctypes.get_last_error())
 

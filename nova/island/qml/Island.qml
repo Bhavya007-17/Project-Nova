@@ -131,7 +131,7 @@ Item {
                     text: "Nova"
                     color: "#FFFFFF"
                     opacity: 0.85
-                    font.family: "Segoe UI Variable Text"
+                    font.family: Qt.platform.os === "osx" ? Qt.application.font.family : "Segoe UI Variable Text"
                     font.weight: Font.DemiBold
                     font.pixelSize: 14
                 }
@@ -181,10 +181,10 @@ Item {
                 }
                 Text {  // passthrough: another app's voice mode has the mic
                     anchors.centerIn: parent
-                    text: "\uE720"
+                    text: (Qt.platform.os === "osx" ? "🎙" : "\uE720")
                     color: liveFace.accent
                     opacity: root.lastMode === "passthrough" ? 1 : 0
-                    font.family: "Segoe Fluent Icons"
+                    font.family: Qt.platform.os === "osx" ? Qt.application.font.family : "Segoe Fluent Icons"
                     font.pixelSize: 16
                     Behavior on opacity { OpacityAnimator { duration: 160 } }
                 }

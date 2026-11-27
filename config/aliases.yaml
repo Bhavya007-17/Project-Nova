@@ -18,3 +18,6 @@ teams: Microsoft Teams
 edge: Microsoft Edge
 explorer: File Explorer
 files: File Explorer
+# macOS names
+finder: Finder
+settings: System Settings

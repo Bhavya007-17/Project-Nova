@@ -34,6 +34,8 @@ _AI_APPS = re.compile(r"\b(claude|chatgpt|openai|codex)\b", re.IGNORECASE)  # hi
 _TERMINALS = frozenset({
     "windowsterminal.exe", "openconsole.exe", "conhost.exe", "cmd.exe", "powershell.exe", "pwsh.exe", "wsl.exe",
     "bash.exe", "mintty.exe", "wt.exe",
+    # macOS (nova.macos.native names them after the app bundle)
+    "terminal", "iterm", "iterm2", "warp", "ghostty", "alacritty", "kitty", "wezterm", "hyper", "tabby",
 })
 _TERMINAL_CLASSES = frozenset({"CASCADIA_HOSTING_WINDOW_CLASS", "ConsoleWindowClass", "mintty"})
 _FILE_MANAGERS = re.compile(r"^(explorer\.exe)$", re.IGNORECASE)
@@ -109,7 +111,8 @@ def messaging(scene: Scene) -> bool:
 
 
 def terminal(scene: Scene) -> bool:
-    return scene.exe.lower() in _TERMINALS or scene.window_class in _TERMINAL_CLASSES
+    exe = scene.exe.lower()
+    return exe in _TERMINALS or exe.removesuffix(".app") in _TERMINALS or scene.window_class in _TERMINAL_CLASSES
 
 
 def _luhn(digits: str) -> bool:

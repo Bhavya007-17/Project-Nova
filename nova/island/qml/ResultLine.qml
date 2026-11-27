@@ -24,9 +24,9 @@ Item {
 
         Text {
             anchors.centerIn: parent
-            text: line.icon === "skill" ? "\uE945" : line.icon === "fail" ? "\uE711" : "\uE73E"
+            text: line.icon === "skill" ? (Qt.platform.os === "osx" ? "⚡" : "\uE945") : line.icon === "fail" ? (Qt.platform.os === "osx" ? "✕" : "\uE711") : (Qt.platform.os === "osx" ? "✓" : "\uE73E")
             color: "#000000"
-            font.family: "Segoe Fluent Icons"
+            font.family: Qt.platform.os === "osx" ? Qt.application.font.family : "Segoe Fluent Icons"
             font.pixelSize: line.icon === "skill" ? 13 : 11
             font.bold: true
         }
@@ -46,7 +46,7 @@ Item {
         wrapMode: line.maximumLineCount > 1 ? Text.Wrap : Text.NoWrap
         maximumLineCount: line.maximumLineCount
         elide: Text.ElideRight
-        font.family: "Segoe UI Variable Text"
+        font.family: Qt.platform.os === "osx" ? Qt.application.font.family : "Segoe UI Variable Text"
         font.weight: Font.DemiBold
         font.pixelSize: 15
     }

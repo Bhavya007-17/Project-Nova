@@ -38,7 +38,7 @@ Item {
                     text: "→"
                     color: "#FFFFFF"
                     opacity: 0.35
-                    font.family: "Segoe UI Variable Text"
+                    font.family: Qt.platform.os === "osx" ? Qt.application.font.family : "Segoe UI Variable Text"
                     font.pixelSize: 14
                 }
 
@@ -49,7 +49,7 @@ Item {
                     color: "#FFFFFF"
                     opacity: item.index < line.active ? 0.55 : item.current ? 1 : 0.32
                     textFormat: Text.PlainText
-                    font.family: "Segoe UI Variable Text"
+                    font.family: Qt.platform.os === "osx" ? Qt.application.font.family : "Segoe UI Variable Text"
                     font.weight: item.current ? Font.DemiBold : Font.Medium
                     font.pixelSize: 15
 

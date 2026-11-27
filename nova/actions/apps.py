@@ -87,7 +87,7 @@ def launch(app: App) -> str:
             _log.info("packaged activation of %s failed (%s); using the Start-menu entry", app.name, error)
     native.grant_foreground()
     subprocess.Popen([_explorer(), f"shell:AppsFolder\\{app.aumid}"], close_fds=True,  # noqa: S603 - fixed program
-                     creationflags=subprocess.CREATE_NO_WINDOW)
+                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     return "shell"
 
 

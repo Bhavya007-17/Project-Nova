@@ -1,4 +1,4 @@
-"""Download Nova's speech models into models/ (one time, ~670 MB), each checked by size and SHA-256.
+"""Download Nova's models into models/ (one time, ~700 MB), each checked by size and SHA-256.
 
 Nova itself never downloads anything at runtime; this setup script is the one place that does.
 Files that are already there and match are skipped; an interrupted download resumes.
@@ -10,6 +10,8 @@ Sources (pinned):
 - Parakeet TDT 0.6B v3, int8 ONNX for onnx-asr (speech-to-text, CC-BY-4.0):
   huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx at commit 8f23f0c
 - Silero VAD v6.2 (speech start / end, MIT): github.com/snakers4/silero-vad, tag v6.2
+- all-MiniLM-L6-v2, int8 ONNX (sentence meaning for nova/brain/recall.py, Apache-2.0):
+  huggingface.co/Xenova/all-MiniLM-L6-v2 at commit 751bff3
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 _HF = "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce/"
+_MINILM = "https://huggingface.co/Xenova/all-MiniLM-L6-v2/resolve/751bff37182d3f1213fa05d7196b954e230abad9/"
 _SILERO = "https://github.com/snakers4/silero-vad/raw/v6.2/src/silero_vad/data/silero_vad.onnx"
 
 
@@ -46,6 +49,10 @@ MODELS = (
           "666903c76b9798caf2c210afd4f6cd60b08a8dbf9800ec8d7a3bc0d2148ac466"),
     Model("silero/silero_vad.onnx", _SILERO, 2_327_524,
           "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3"),
+    Model("embed/model_quantized.onnx", _MINILM + "onnx/model_quantized.onnx", 22_972_370,
+          "afdb6f1a0e45b715d0bb9b11772f032c399babd23bfc31fed1c170afc848bdb1"),
+    Model("embed/vocab.txt", _MINILM + "vocab.txt", 231_508,
+          "07eced375cec144d27c900241f3e339478dec958f92fddbc551f295c992038a3"),
 )
 
 _CHUNK = 1 << 20
@@ -65,6 +72,21 @@ def matches(path: Path, model: Model) -> bool:
 
 def missing(root: Path, models: Sequence[Model] = MODELS) -> list[Model]:
     return [model for model in models if not matches(root / model.path, model)]
+
+
+def _mac_trust() -> None:
+    """python.org's macOS Python has no CA certificates until "Install Certificates.command" runs; use the system's
+    bundle instead (the downloads are still checked by SHA-256)."""
+    import os
+    import ssl
+    import sys
+
+    if sys.platform == "darwin" and not os.environ.get("SSL_CERT_FILE") and Path("/etc/ssl/cert.pem").is_file():
+        if not ssl.create_default_context().get_ca_certs():
+            os.environ["SSL_CERT_FILE"] = "/etc/ssl/cert.pem"
+
+
+_mac_trust()
 
 
 def download(model: Model, dest: Path, *, opener: Callable = urllib.request.urlopen,

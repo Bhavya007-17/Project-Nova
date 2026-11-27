@@ -23,9 +23,9 @@ Item {
             id: mark
             anchors.top: parent.top
             anchors.topMargin: 3
-            text: "\uE7BA"  // warning
+            text: (Qt.platform.os === "osx" ? "⚠" : "\uE7BA")  // warning
             color: confirm.accent
-            font.family: "Segoe Fluent Icons"
+            font.family: Qt.platform.os === "osx" ? Qt.application.font.family : "Segoe Fluent Icons"
             font.pixelSize: 15
         }
 
@@ -40,7 +40,7 @@ Item {
             wrapMode: Text.Wrap
             maximumLineCount: 2
             elide: Text.ElideRight
-            font.family: "Segoe UI Variable Text"
+            font.family: Qt.platform.os === "osx" ? Qt.application.font.family : "Segoe UI Variable Text"
             font.weight: Font.DemiBold
             font.pixelSize: 15
         }

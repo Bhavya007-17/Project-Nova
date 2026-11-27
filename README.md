@@ -145,6 +145,20 @@ No Copilot key? Use the chord **Ctrl + Alt + N** (hold to talk, tap to talk unti
 No mic handy? `uv run nova say "fusion on the left, claude on the right"` runs the whole brain on typed text
 (`--dry` shows the plan without doing it).
 
+### On a Mac (Apple Silicon)
+
+Nova also runs on macOS through a native backend (`nova/macos/`: Quartz, Accessibility, AppKit).
+
+```sh
+git clone https://github.com/Bhavya007-17/Project-Nova.git && cd Project-Nova
+sh scripts/setup_mac.sh      # uv, Ollama, models, the local LLM, Chrome bridge, doctor
+uv run nova                  # menu-bar app
+```
+
+Then allow **Accessibility** for your terminal app (System Settings > Privacy & Security) and load the Chrome
+extension once. Hold **Control + Option + N** to talk (tap to talk until you stop), or say "Nova, …".
+"Close Spotify" quits the app; Windows shortcuts in plans become Mac ones (Ctrl+T → Cmd+T).
+
 ## Commands
 
 | Command | What it does |
@@ -154,12 +168,13 @@ No mic handy? `uv run nova say "fusion on the left, claude on the right"` runs t
 | `uv run nova listen` | live transcription with timings (`--wav file` replays audio, `--gate` shows trigger verdicts) |
 | `uv run nova island --demo [scene]` | every island state with fake data |
 | `uv run nova say "<text>"` | run a command from text (`--dry`: plan only) |
+| `uv run nova skills list` | what Nova has learned (`show <id>`, `delete <id>`) |
 | `uv run nova eval` | intent accuracy, false actions and Tier 1 latency on `docs/eval/intents.yaml` |
 | `uv run nova latency` | p50 / p95 per command type from your own logs |
 | `uv run nova bench-stt` / `bench-llm` | speech-to-text WER; candidate local LLMs × GPU / CPU / Arc |
 | `uv run nova keys --probe` | what the Copilot key sends |
 | `uv run nova chrome --install` | registers the extension's native-messaging host |
-| `uv run pytest` | unit tests (1,360+) |
+| `uv run pytest` | unit tests (1,400+) |
 
 ## Configuration
 
@@ -200,9 +215,9 @@ Island: key press → first frame 10–19 ms. Idle: ~2 % of one core.
 | 05 | Local brain (Tier 1 LLM, asks when unsure) | ✅ |
 | 06 | Chrome extension + Canvas | ✅ |
 | 07 | Dictation | ✅ — *except the AI misheard-word fix* |
-| 08 | Teach + learn: "Show me?", auto-learned shortcuts ⚡ | ⏳ |
-| 09 | Handoff to the Claude / ChatGPT apps, voice mode, done notifications | ⏳ |
-| 10 | Safety + polish: central risk audit, settings panel, start with Windows, crash watchdog | ⏳ |
+| 08 | Teach + learn: "Show me?", auto-learned shortcuts ⚡ | 🟡 learns, replays, "when I say X, open Y", "forget that" — *"Show me?" recording not built; not yet run live* |
+| 09 | Handoff to the Claude / ChatGPT apps, voice mode, done notifications | 🟡 types your prompt into the app and sends it — *no done notifications yet; not yet run live* |
+| 10 | Safety + polish: central risk audit, settings panel, start with Windows, crash watchdog | 🟡 start with Windows + tray switches — *rest not built* |
 | 11 | Speed + soak: every latency budget met, stable all day | ⏳ |
 | 12 | Optional: Todoist / Notion / Calendar hooks, Nova as an MCP server | ⏳ |
 

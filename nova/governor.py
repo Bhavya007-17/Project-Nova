@@ -23,6 +23,17 @@ from .config import Llm
 _log = logging.getLogger(__name__)
 
 GB = 1024**3
+
+
+def _apple_gpu() -> bool:
+    import os
+
+    from .platform import MAC
+
+    return MAC and os.uname().machine == "arm64"
+
+
+_APPLE_GPU = _apple_gpu()
 REUSE_S = 120.0  # a choice this fresh is reused as-is
 _OVERHEAD_GB = 0.4  # KV cache (num_ctx 4096) + compute buffers on top of the weights
 
@@ -35,7 +46,8 @@ class Choice:
 
     @property
     def options(self) -> dict[str, Any]:
-        """Ollama runner options: CPU = no layers on the GPU."""
+        """Ollama runner options: CPU = no layers on the GPU. "metal" = the small model on Apple's GPU (shared RAM:
+        offloading to the CPU frees nothing there, it only makes the model slower)."""
         return {"num_gpu": 0} if self.device == "cpu" else {}
 
 
@@ -55,6 +67,8 @@ def decide(llm: Llm, *, free_gb: float | None, need_gb: float, resident: bool = 
     note = " (simulated)" if simulated else ""
     if free >= need:
         return Choice(llm.gpu_model, "gpu", f"{free:.1f} GB free ≥ {need:.1f} GB{note}")
+    if _APPLE_GPU:
+        return Choice(llm.cpu_model, "metal", f"{free:.1f} GB free < {need:.1f} GB{note}: small model, Apple GPU")
     return Choice(llm.cpu_model, "cpu", f"{free:.1f} GB free < {need:.1f} GB{note}")
 
 
@@ -68,9 +82,38 @@ _nvml_lock = threading.Lock()
 _nvml_ready: bool | None = None
 
 
+def mac_free_gb() -> float | None:
+    """Apple Silicon: the GPU shares RAM, so "free VRAM" = free + inactive + purgeable memory (vm_stat)."""
+    import os
+    import subprocess
+
+    if os.uname().machine != "arm64":
+        return None
+    try:
+        out = subprocess.run(["/usr/bin/vm_stat"], capture_output=True, text=True, timeout=2, check=True).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    page = 16384
+    counts: dict[str, int] = {}
+    for line in out.splitlines():
+        if "page size of" in line:
+            page = int("".join(ch for ch in line.split("page size of")[1] if ch.isdigit()) or page)
+        elif ":" in line:
+            key, value = line.split(":", 1)
+            digits = value.strip().rstrip(".")
+            if digits.isdigit():
+                counts[key.strip()] = int(digits)
+    pages = sum(counts.get(k, 0) for k in ("Pages free", "Pages inactive", "Pages purgeable", "Pages speculative"))
+    return pages * page / GB
+
+
 def nvml_free_gb() -> float | None:
     """Free VRAM on the NVIDIA GPU, or None if there's no driver answering."""
     global _nvml_ready
+    import sys
+
+    if sys.platform == "darwin":
+        return mac_free_gb()
     try:
         import pynvml
 
@@ -149,6 +192,10 @@ class Governor:
                 return current
             resident = self._resident(llm.gpu_model) if llm.device == "auto" else False
             choice = decide(llm, free_gb=self._vram(), need_gb=self.need_gb(llm.gpu_model), resident=resident)
+            if (_APPLE_GPU and llm.device == "auto" and choice.model == llm.gpu_model and self._sizes
+                    and llm.gpu_model not in self._sizes and llm.cpu_model in self._sizes):
+                # An 8 GB Mac usually has only the small model pulled: use it on the GPU rather than fail.
+                choice = Choice(llm.cpu_model, "metal", f"{llm.gpu_model} isn't pulled")
             if current is not None and current.model != choice.model:
                 self._unload(current.model)
             if choice != current:

@@ -33,6 +33,8 @@ from .dictation.target import Target
 from .events import BrainProgress, CommandFinished
 from .governor import Governor
 from .log import TraceLog
+from .skills.book import Book
+from .brain import recall
 from .vocab import VocabFile
 
 
@@ -84,7 +86,7 @@ def brain_parts(catalogs: CatalogStore) -> tuple[Router, Tier1]:
     client = Ollama(config.settings.ollama.url)
     governor = Governor(client, lambda: config.settings.llm)
     tier1 = Tier1(client, governor, lambda: config.settings.llm, catalogs.current)
-    return Router(tier1), tier1
+    return Router(tier1, recall=recall.standard(lambda: config.settings.recall)), tier1
 
 
 def _bridge(wait: float) -> Bridge | None:
@@ -128,11 +130,12 @@ def main(text: str, *, dry: bool = False, chrome_wait: float = 0.0) -> int:
         return 0
     bridge = _bridge(chrome_wait)
     chrome = ChromeHands(Chrome(bridge, store.current)) if bridge is not None else None
-    if chrome is not None:
-        router = Router(_tier1, page=chrome.page_rows)
-    trace = TraceLog(paths.LOGS)
+    skills = Book(paths.SKILLS)  # typed commands learn and replay like spoken ones
     config = ConfigStore(paths.SETTINGS)
     config.load()
+    router = Router(_tier1, skills, page=chrome.page_rows if chrome is not None else None,
+                    recall=recall.standard(lambda: config.settings.recall, skills))
+    trace = TraceLog(paths.LOGS)
     vocab = VocabFile(paths.VOCAB)
     cleaner = Cleaner(_tier1.governor, lambda: config.settings.llm, lambda: vocab.current().terms,
                       client=lambda: Ollama(config.settings.ollama.url),
@@ -174,7 +177,7 @@ def main(text: str, *, dry: bool = False, chrome_wait: float = 0.0) -> int:
             shown.append(f"({event.state})")
 
     try:
-        _, record = handle(Command(text, via="say", at=started), catalog, executor, router=router, asker=asker,
+        _, record = handle(Command(text, via="say", at=started), catalog, executor, router=router, asker=asker, skills=skills,
                            publish=publish, trace=trace, snap=lambda c: snapshot(c, bridge),
                            prepare=lambda plan: planned.update(new_doc=any(s.action == "docs_new" for s in plan.steps)))
     finally:

@@ -34,7 +34,7 @@ Item {
             text: live.older
             color: live.color
             textFormat: Text.PlainText
-            font.family: "Segoe UI Variable Text"
+            font.family: Qt.platform.os === "osx" ? Qt.application.font.family : "Segoe UI Variable Text"
             font.weight: Font.Medium
             font.pixelSize: live.pixelSize
         }

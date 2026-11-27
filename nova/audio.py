@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import sys
 import threading
 import time
 import wave
@@ -131,15 +132,20 @@ class _WAVEINCAPSW(ctypes.Structure):
     ]
 
 
-_winmm = ctypes.WinDLL("winmm")
-_winmm.waveInMessage.argtypes = [wintypes.HANDLE, wintypes.UINT, ctypes.c_void_p, ctypes.c_void_p]
-_winmm.waveInMessage.restype = wintypes.UINT
-_winmm.waveInGetDevCapsW.argtypes = [ctypes.c_size_t, ctypes.POINTER(_WAVEINCAPSW), wintypes.UINT]
-_winmm.waveInGetDevCapsW.restype = wintypes.UINT
+from .platform import MAC as _MAC
+if not _MAC:
+    _winmm = ctypes.WinDLL("winmm")
+    _winmm.waveInMessage.argtypes = [wintypes.HANDLE, wintypes.UINT, ctypes.c_void_p, ctypes.c_void_p]
+    _winmm.waveInMessage.restype = wintypes.UINT
+    _winmm.waveInGetDevCapsW.argtypes = [ctypes.c_size_t, ctypes.POINTER(_WAVEINCAPSW), wintypes.UINT]
+    _winmm.waveInGetDevCapsW.restype = wintypes.UINT
 
 
 def preferred_input_name() -> str | None:
-    """MME name (max 31 chars) of the input the Windows default currently points at."""
+    """MME name (max 31 chars) of the input the Windows default currently points at (None on a Mac: PortAudio's
+    Core Audio default is read when the stream opens)."""
+    if _MAC:
+        return None
     device, flags = wintypes.DWORD(), wintypes.DWORD()
     if _winmm.waveInMessage(wintypes.HANDLE(_WAVE_MAPPER), _DRVM_MAPPER_PREFERRED_GET, ctypes.byref(device), ctypes.byref(flags)):
         return None
@@ -257,7 +263,26 @@ class Mic:
         if status:
             self.overflows += 1
 
+    def _resolve_mac(self, sd) -> tuple[int, str]:
+        devices = sd.query_devices()
+        inputs = {int(d["index"]): d["name"] for d in devices if d["max_input_channels"] > 0}
+        if not inputs:
+            self._refresh = True
+            raise MicError("no microphone found")
+        if self.setting.casefold() != "default":
+            wanted = _ascii(self.setting)
+            for index, name in inputs.items():
+                if wanted and wanted in _ascii(name):
+                    return index, name
+            _log.warning("no mic matches %r; using the macOS default", self.setting)
+        default = sd.default.device[0]
+        if default is None or int(default) < 0 or int(default) not in inputs:
+            default = next(iter(inputs))
+        return int(default), inputs[int(default)]
+
     def _resolve(self, sd) -> tuple[int, str]:
+        if _MAC:
+            return self._resolve_mac(sd)
         apis = sd.query_hostapis()
         mme = next((i for i, api in enumerate(apis) if api["name"] == "MME"), None)
         if mme is None:
