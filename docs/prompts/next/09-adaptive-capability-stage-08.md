@@ -2,6 +2,8 @@
 
 > Builds on: stage 03 learned aliases, stage 05 gate, stage 06 postcondition checks (the only proof a skill succeeded), stage 02b budget for retrieval (~10-20 ms, skip on miss).
 
+> Earlier WIP exists on branch mac_shaashwat_test (b7a1391 skills/recall, 2139d18 Mac port); reuse what fits.
+
 
 ```
 Goal: Nova gets better from my use, on-device, without retraining every time.

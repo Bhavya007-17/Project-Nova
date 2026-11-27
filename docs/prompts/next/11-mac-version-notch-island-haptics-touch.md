@@ -2,6 +2,8 @@
 
 > Builds on: the shared Python core from all earlier stages; reuse RULES.md, eval and latency tooling. Can run in parallel on its own branch.
 
+> Earlier WIP exists on branch mac_shaashwat_test (b7a1391 skills/recall, 2139d18 Mac port); reuse what fits.
+
 
 ```
 Goal: Nova on macOS with a Dynamic Island / NotchNook-style island in the notch.
