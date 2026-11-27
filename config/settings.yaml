@@ -20,6 +20,7 @@ triggers:
 # name to always use that one, e.g. "USB" or "Jabra".
 audio:
   device: default
+  sensitivity: normal      # high = Nova misses you (quiet voice, far or weak mic); costs a little idle CPU
 
 # Local LLM runtime. Must be on this laptop.
 ollama:
@@ -34,6 +35,14 @@ llm:
   headroom_gb: 1.0         # GPU only if the model + this much VRAM is free
   timeout_s: 8.0
   # simulate_free_vram_gb: 0.5   # testing: pretend only this much VRAM is free
+
+# Understanding by meaning: a 23 MB sentence model finds the nearest examples in config/examples.yaml.
+# When they clearly agree, Nova acts at once (no LLM); otherwise the LLM is shown them.
+recall:
+  enabled: true
+  threshold: 0.75          # how alike the nearest example must be (0-1). Higher = the LLM is asked more often
+  margin: 0.05             # how much closer than the nearest example that means something else
+  shots: 3                 # nearest examples shown to the LLM
 
 logs:
   transcripts: true        # false = logs keep timings but not what you said

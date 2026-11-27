@@ -5,6 +5,9 @@ Rules, in order:
 2. A key session (Copilot key / chord) or a wake session ("Nova" alone, then this) -> accepted;
    the name is stripped if he said it anyway.
 3. Starts with the wake name ("Nova, ..." / "hey Nova ...", spellings from settings) -> accepted, name stripped.
+   Speech-to-text often mishears a short name ("Noah, open Chrome", "No va open Chrome"), so a word that
+   sounds like the name also counts, and so does the name at the end ("open Chrome, Nova") - but both only
+   when the rest starts like a command, so ordinary talk about Noah never wakes Nova.
 4. Nova busy (thinking / acting), in Passthrough or asleep -> nothing else counts.
 5. Another app is using the mic (a call) or the speakers are playing -> name or key required.
 6. Follow-up window (8 s after a command ran) -> anything that starts like a command.
@@ -18,6 +21,10 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from functools import lru_cache
+
+import jellyfish
+from rapidfuzz import fuzz
 
 _TOKEN = re.compile(r"[^\W_]+(?:['’][^\W_]+)*")
 _SEPARATORS = " \t\r\n,.:;!?-–—…\"'“”"
@@ -39,12 +46,32 @@ def _words(text: str) -> list[str]:
 # --- wake name -------------------------------------------------------------------------------------
 
 
+# What Parakeet writes when it mishears "Nova" (the default name). Other names get the sound rule only.
+_HEARD_AS = {
+    "nova": ("nover", "novo", "nava", "nove", "novia", "noba", "nofa", "nopa", "mova", "innova", "knova", "nufa",
+             "nuva", "nober", "nolva"),
+}
+_HEARD_AS_PERSON = {"nova": ("noah", "noa", "nora", "nola")}  # also people: the command must resolve too
+_ALIKE_MIN_LETTERS = 4
+_ALIKE_MIN_SCORE = 75.0
+
+
+@lru_cache(maxsize=2048)
+def _sounds_like(word: str, name: str) -> bool:
+    """Same consonant sound and a close spelling: "nava" / "novah" for "nova", not "knife"."""
+    if len(word) < _ALIKE_MIN_LETTERS or len(name) < _ALIKE_MIN_LETTERS or not word.isalpha() or not name.isalpha():
+        return False
+    return jellyfish.metaphone(word) == jellyfish.metaphone(name) and fuzz.ratio(word, name) >= _ALIKE_MIN_SCORE
+
+
 @dataclass(frozen=True)
 class WakeName:
     name: str
     words: frozenset[str]  # one-word spellings, normalized
     phrases: tuple[tuple[str, ...], ...] = ()  # several-word spellings ("no va")
     enabled: bool = True
+    alikes: frozenset[str] = frozenset()  # known mishearings: count only in front of a command
+    people: frozenset[str] = frozenset()  # mishearings that are first names: ...of a command Nova knows
 
     @classmethod
     def of(cls, name: str, spellings: Iterable[str] = (), enabled: bool = True) -> WakeName:
@@ -56,11 +83,23 @@ class WakeName:
                 words.add(tokens[0])
             elif tokens:
                 phrases.append(tokens)
-        return cls(name, frozenset(words), tuple(sorted(phrases, key=len, reverse=True)), enabled)
+        own = _words(name)
+        key = own[0] if len(own) == 1 else ""
+        alikes = frozenset(_HEARD_AS.get(key, ())) - words
+        people = frozenset(_HEARD_AS_PERSON.get(key, ())) - words
+        return cls(name, frozenset(words), tuple(sorted(phrases, key=len, reverse=True)), enabled, alikes, people)
 
     def _is_word(self, word: str) -> bool:
         # "Novas" / "Novah": speech-to-text often hangs an s or h on a name.
         return word in self.words or (len(word) > 2 and word[-1] in "sh" and word[:-1] in self.words)
+
+    def _is_alike(self, word: str) -> bool:
+        if word in self.alikes or (len(word) > 2 and word[-1] in "sh" and word[:-1] in self.alikes):
+            return True
+        return word not in self.people and any(_sounds_like(word, own) for own in self.words)
+
+    def _is_person(self, word: str) -> bool:
+        return word in self.people
 
 
 def strip_wake(text: str, wake: WakeName) -> str | None:
@@ -86,6 +125,40 @@ def strip_wake(text: str, wake: WakeName) -> str | None:
     if end is None:
         return None
     return text[end:].lstrip(_SEPARATORS).strip()
+
+
+def loose_wake(text: str, wake: WakeName) -> tuple[str, bool] | None:
+    """The name misheard or said last: (the command, must it resolve to something known?), else None.
+
+    "Nover, open Chrome" / "No va, open Chrome" (one name cut in two) / "open Chrome, Nova" count when the
+    rest starts like a command. A real first name ("Noah, ...") counts only if the command also resolves,
+    so "Noah, open the door" stays his business. Finals only: live words use the strict ``strip_wake``.
+    """
+    tokens = list(_TOKEN.finditer(text))
+    i = 0
+    while i < min(2, len(tokens)) and _norm(tokens[i].group()) in _GREETINGS:
+        i += 1
+    if i >= len(tokens):
+        return None
+    first = _norm(tokens[i].group())
+    spans: list[tuple[int, bool]] = []
+    if i + 1 < len(tokens) and not text[tokens[i].end() : tokens[i + 1].start()].strip(" -"):
+        joined = first + _norm(tokens[i + 1].group())
+        if wake._is_word(joined) or wake._is_alike(joined):
+            spans.append((2, False))
+    if wake._is_alike(first):
+        spans.append((1, False))
+    elif wake._is_person(first):
+        spans.append((1, True))
+    for span, strict in spans:
+        rest = text[tokens[i + span - 1].end() :].lstrip(_SEPARATORS).strip()
+        if command_words(rest) is not None:
+            return rest, strict
+    if len(tokens) - i >= 2 and wake._is_word(_norm(tokens[-1].group())):  # the name last
+        rest = text[tokens[i].start() : tokens[-1].start()].rstrip(_SEPARATORS).strip()
+        if command_words(rest) is not None:
+            return rest, False
+    return None
 
 
 # --- does it start like a command? ------------------------------------------------------------------
@@ -337,6 +410,12 @@ def decide(text: str, addressing: Addressing, env: Env) -> Decision:
         return Decision(True, via, rest if rest is not None else heard, heard, why)
     if rest is not None:
         return Decision(True, "wake", rest, heard, f"starts with {name}")
+    loose = loose_wake(heard, env.wake) if env.wake.enabled else None
+    if loose is not None:
+        command, must_resolve = loose
+        words = command_words(command)
+        if not must_resolve or (words is not None and env.resolver.resolve(words) is not None):
+            return Decision(True, "wake", command, heard, f"sounds like {name} + a command")
     if addressing.busy:
         return ignored("busy", f"busy with the last command: say {name} or use the key")
     if addressing.passthrough:

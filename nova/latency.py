@@ -85,7 +85,8 @@ def summarize(records: Iterable[dict]) -> list[Row]:
             name = f"(typed) {name}"
         overall = "all typed" if record.get("via") == "say" else "all commands"
         tier = record.get("tier")
-        path = "tier 0" if tier == "0" else (f"tier 1 {str(record.get('device') or '?').upper()}" if tier == "1" else "")
+        path = {"0": "tier 0", "skill": "tier 0.5 (learned)", "recall": "tier 0.7 (recall)"}.get(tier) or \
+            (f"tier 1 {str(record.get('device') or '?').upper()}" if tier == "1" else "")
         if path and record.get("via") == "say":
             path = f"(typed) {path}"
         for key in (name,) if record.get("asked") else tuple(k for k in (name, overall, path) if k):

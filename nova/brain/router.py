@@ -1,4 +1,5 @@
-"""The router (SPEC §7): Tier 0 -> learned skills (Stage 08: a stub) -> Tier 1 -> checked plan.
+"""The router (SPEC §7): Tier 0 -> learned skills (``nova.skills``) -> recall (``recall``: nearest examples by
+meaning) -> Tier 1 -> checked plan.
 
 ``route`` never asks anything: it returns a plan (act / clarify / handoff) or plain words for
 the island. ``settle`` asks the questions a plan carries until there's something to run:
@@ -16,7 +17,7 @@ from typing import Any, Protocol
 
 from ..actions.catalog import Catalog
 from . import tier0
-from .plan import Plan
+from .plan import Plan, step
 from .tier1 import Seen, Thought, Tier1
 from .validate import check_llm
 
@@ -29,10 +30,14 @@ class Skills(Protocol):
 
 
 class NoSkills:
-    """Stage 08 learns skills; until then nothing matches."""
+    """No skill book (tests, the bench): nothing matches."""
 
     def match(self, text: str, ctx: Any) -> Plan | None:
         return None
+
+
+class Recaller(Protocol):
+    def look(self, text: str, catalog: Catalog) -> Any: ...  # recall.Recalled | None
 
 
 class Asker(Protocol):
@@ -51,7 +56,7 @@ class PageSource(Protocol):
 @dataclass(frozen=True)
 class Routed:
     plan: Plan | None
-    tier: str  # "0" | "skill" | "1" | "none"
+    tier: str  # "0" | "skill" | "recall" | "page" | "1" | "none"
     note: str = ""  # island text when there's no plan
     kind: str = ""  # Tier 1: what the model said (act / clarify / handoff / dictate / teach / ignore)
     thought: Thought | None = None
@@ -59,6 +64,7 @@ class Routed:
     quiet: bool = False  # not a command and he didn't address Nova: no island message
     cancelled: bool = False
     page_ms: float | None = None  # the page map Tier 1 was shown (None = none fetched)
+    recalled: Any = None  # recall.Recalled: the nearest examples (None = recall not asked)
 
 
 @dataclass(frozen=True)
@@ -77,16 +83,18 @@ def didnt_get(text: str) -> str:
 
 
 _KIND_NOTES = {
-    "teach": "I don't know how to do that yet — show me?",
+    "teach": "I don't know how to do that yet — show me? Say “when I say …, open …”",
     "ignore": "That didn't sound like a command for me.",
 }
 
 
 class Router:
-    def __init__(self, tier1: Tier1 | None = None, skills: Skills | None = None, page: PageSource | None = None) -> None:
+    def __init__(self, tier1: Tier1 | None = None, skills: Skills | None = None, page: PageSource | None = None,
+                 recall: Recaller | None = None) -> None:
         self._tier1 = tier1
         self._skills = skills or NoSkills()
         self._page = page
+        self._recall = recall
         self._shown: Any = None  # the page rows the model saw last (its answer's element numbers point into them)
 
     def abort(self) -> None:
@@ -114,7 +122,7 @@ class Router:
             return Routed(plan, "0", thought=routed.thought, parse_ms=parse_ms, page_ms=routed.page_ms)
         if plan is not None:
             return Routed(plan, "0", parse_ms=parse_ms)
-        skill = None if tier1_only else self._skills.match(text, ctx)
+        skill = None if tier1_only or strict else self._skills.match(text, ctx)  # strict: Tier 0 only
         if skill is not None:
             return Routed(skill, "skill", parse_ms=parse_ms)
         if strict or not text.strip():
@@ -124,21 +132,33 @@ class Router:
         direct = getattr(self._shown, "direct", None)
         if direct is not None:  # his words name one element on the page plainly: no LLM needed
             return Routed(Plan("act", (direct,), confidence=0.9), "page", parse_ms=parse_ms, page_ms=page_ms)
+        recalled = self._recall.look(text, catalog) if self._recall is not None and not tier1_only else None
+        if recalled is not None and recalled.data is not None and self._shown is None:
+            # the nearest examples agree on what this means: no LLM. Checked like a model's answer (apps resolved,
+            # sites opened as URLs); anything the check doesn't turn into a plain plan still goes to the model.
+            checked = check_llm(recalled.data, text, catalog, running=running)
+            if checked.plan is not None and checked.plan.kind in ("act", "handoff"):
+                return Routed(checked.plan, "recall", kind=checked.kind, parse_ms=parse_ms, page_ms=page_ms,
+                              recalled=recalled)
         if self._tier1 is None:
-            return Routed(None, "none", didnt_get(text), parse_ms=parse_ms, page_ms=page_ms)
-        routed = self._ask_model(text, ctx, catalog, running, via, page_ready=True)
+            return Routed(None, "none", didnt_get(text), parse_ms=parse_ms, page_ms=page_ms, recalled=recalled)
+        shots = recalled.shots if recalled is not None else ()
+        routed = self._ask_model(text, ctx, catalog, running, via, page_ready=True, shots=shots)
         return Routed(routed.plan, routed.tier, routed.note, routed.kind, routed.thought, parse_ms, routed.quiet,
-                      routed.cancelled, page_ms)
+                      routed.cancelled, page_ms, recalled)
 
     def _ask_model(self, text: str, ctx: Any, catalog: Catalog, running: frozenset[str], via: str,
-                   asked: str | None = None, answer: str | None = None, page_ready: bool = False) -> Routed:
+                   asked: str | None = None, answer: str | None = None, page_ready: bool = False,
+                   shots: Sequence[Any] = ()) -> Routed:
         assert self._tier1 is not None
         page_ms = None
         if asked is None and not page_ready:  # a re-plan with his answer keeps the page it was shown
             self._shown = self._page(text, ctx) if self._page is not None else None
             page_ms = round(self._shown.ms, 1) if self._shown is not None else None
         shown = self._shown
-        extra = {"page": shown.rows()} if shown is not None else {}
+        extra: dict[str, Any] = {"page": shown.rows()} if shown is not None else {}
+        if shots:
+            extra["shots"] = shots  # worked examples like this sentence (recall)
         thought = self._tier1.think(text, Seen.of(ctx), catalog, asked=asked, answer=answer, **extra)
         if thought.cancelled:
             return Routed(None, "1", "Cancelled", thought=thought, cancelled=True, page_ms=page_ms)
@@ -197,7 +217,7 @@ class Router:
 
 
 def describe_handoff(plan: Plan) -> str:
-    """Stage 09 hands off for real; until then the island says what it would do."""
+    """What a handoff would do, in words (`nova say --dry`)."""
     handoff = plan.handoff or {}
     who = "ChatGPT" if handoff.get("to") == "chatgpt" else "Claude"
     prompt = " ".join(str(handoff.get("prompt", "")).split())
@@ -205,6 +225,29 @@ def describe_handoff(plan: Plan) -> str:
         prompt = prompt[:59] + "…"
     voice = " (voice)" if handoff.get("mode") == "voice" else ""
     return f"Would hand off to {who}{voice}: “{prompt}”"
+
+
+def handoff_steps(plan: Plan) -> Plan:
+    """A handoff as steps the executor already knows (SPEC §13, the keyboard path): bring the app forward, type
+    his words into its message box and press Enter. The risk check runs on the typing like on any other (never
+    a password field; an unreadable focus asks first). Voice mode only opens the app: its voice button isn't
+    wired yet."""
+    handoff = plan.handoff or {}
+    app = "ChatGPT" if handoff.get("to") == "chatgpt" else "Claude"
+    steps = [step("open_app", app=app)]
+    prompt = " ".join(str(handoff.get("prompt", "")).split())
+    if handoff.get("mode") != "voice" and prompt:
+        steps.append(step("type_text", text=prompt, submit=True))
+    return Plan("act", tuple(steps), confidence=plan.confidence)
+
+
+def handed_off(plan: Plan) -> str:
+    handoff = plan.handoff or {}
+    who = "ChatGPT" if handoff.get("to") == "chatgpt" else "Claude"
+    if handoff.get("mode") == "voice":
+        return f"Opened {who} — press its voice button to talk"
+    prompt = " ".join(str(handoff.get("prompt", "")).split())
+    return f"Sent to {who}: “{prompt[:59] + '…' if len(prompt) > 60 else prompt}”"
 
 
 def running_apps(ctx: Any) -> frozenset[str]:

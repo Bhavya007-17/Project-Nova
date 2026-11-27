@@ -380,3 +380,16 @@ def test_save_value_refuses_a_broken_file(tmp_path):
     with pytest.raises(ConfigError):
         store.save_value("triggers.always_listening", False)
     assert path.read_text(encoding="utf-8") == "triggers: [oops\n"
+
+
+def test_audio_sensitivity_is_normal_or_high():
+    from nova.config import ConfigError, load_text
+
+    assert load_text("").audio.sensitivity == "normal"
+    assert load_text("audio:\n  sensitivity: high\n").audio.sensitivity == "high"
+    try:
+        load_text("audio:\n  sensitivity: loud\n")
+    except ConfigError as error:
+        assert "sensitivity" in str(error)
+    else:
+        raise AssertionError("an unknown sensitivity must be refused")

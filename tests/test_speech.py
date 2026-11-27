@@ -224,7 +224,9 @@ def test_back_to_back_utterances_each_get_a_final(make):
     h = make(stt)
     h.source.feed(silence_ms=300)
     for _ in range(3):
-        h.source.feed(speech_ms=500, silence_ms=350)
+        # 750 ms: frames arrive faster than real time here, so the pause's decode isn't back before the
+        # next words; without its verdict the endpoint waits for the long silence.
+        h.source.feed(speech_ms=500, silence_ms=750)
     finals = [h.next(FinalTranscript) for _ in range(3)]
     assert [f.utterance for f in finals] == [1, 2, 3]
 
@@ -304,3 +306,44 @@ def test_no_pause_candidates_for_commands(make):
     events = [*h.collect(0.5)]
     assert any(isinstance(e, FinalTranscript) for e in events)
     assert not any(isinstance(e, PauseCandidate) for e in events)
+
+
+class ScriptedStt(FakeStt):
+    """Returns the next scripted text for each final-lane decode."""
+
+    def __init__(self, texts):
+        super().__init__()
+        self.texts = list(texts)
+
+    def transcribe(self, pcm):
+        lane = threading.current_thread().name
+        self.calls.append((lane, len(pcm)))
+        if lane == "nova-stt-final" and self.texts:
+            return self.texts.pop(0)
+        return "words"
+
+
+def feed_slowly(h, *, speech_ms=0, silence_ms=0, step_ms=96):
+    """Near real time, so the decode of a pause is back before the endpoint has to decide."""
+    for kind, total in (("speech_ms", speech_ms), ("silence_ms", silence_ms)):
+        for _ in range(0, total, step_ms):
+            h.source.feed(**{kind: step_ms})
+            time.sleep(step_ms / 1000)
+
+
+def test_unfinished_words_wait_for_the_rest(make):
+    h = make(ScriptedStt(["Open the", "Open the Chrome settings."]))
+    h.source.feed(silence_ms=300)
+    feed_slowly(h, speech_ms=480, silence_ms=576)  # "open the" ... a breath twice the 300 ms endpoint
+    feed_slowly(h, speech_ms=480, silence_ms=960)
+    finals = [e for e in h.collect(0.5) if isinstance(e, FinalTranscript)]
+    assert [f.text for f in finals] == ["Open the Chrome settings."]
+
+
+def test_finished_words_end_at_the_short_silence(make):
+    h = make(ScriptedStt(["Open Chrome.", "Close it."]))
+    h.source.feed(silence_ms=300)
+    feed_slowly(h, speech_ms=480, silence_ms=576)
+    feed_slowly(h, speech_ms=480, silence_ms=576)
+    finals = [e for e in h.collect(0.5) if isinstance(e, FinalTranscript)]
+    assert [f.text for f in finals] == ["Open Chrome.", "Close it."]

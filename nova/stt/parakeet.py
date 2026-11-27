@@ -74,7 +74,15 @@ class ParakeetTranscriber:
         return str(self._model.recognize(audio, sample_rate=SAMPLE_RATE)).strip()
 
 
-def load(models: Path, threads: int = 4) -> ParakeetTranscriber:
-    stt = ParakeetTranscriber(Path(models) / "parakeet", threads)
+def default_threads(cores: int | None) -> int:
+    """4 on the reference laptop (16 cores); fewer on small CPUs, where 4 threads plus the second lane
+    fight each other and every decode gets slower."""
+    return max(2, min(4, (cores or 4) // 2))
+
+
+def load(models: Path, threads: int | None = None) -> ParakeetTranscriber:
+    import os
+
+    stt = ParakeetTranscriber(Path(models) / "parakeet", threads or default_threads(os.cpu_count()))
     stt.warm_up()
     return stt

@@ -50,6 +50,9 @@ def _parser() -> argparse.ArgumentParser:
     bench_llm.add_argument("--cpu-cases", type=int, default=40, metavar="N", help="cases timed on CPU / Arc (default 40)")
     bench_llm.add_argument("--save", action="store_true", help="write the recommended models to settings.yaml")
     sub.add_parser("latency", help="p50/p95 per command type from the logs")
+    skills = sub.add_parser("skills", help="what Nova has learned: list | show <id> | delete <id>")
+    skills.add_argument("action", nargs="?", default="list", choices=("list", "show", "delete"))
+    skills.add_argument("id", nargs="?", help="the skill's id (from `nova skills list`)")
     chrome = sub.add_parser("chrome", help="Chrome extension: --install registers its native host (then load it once)")
     what = chrome.add_mutually_exclusive_group(required=True)
     what.add_argument("--install", action="store_true", help="write the host manifest + registry key, print the manual step")
@@ -103,6 +106,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         from . import latency
 
         return latency.main()
+    if command == "skills":
+        from .skills import cli as skills_cli
+
+        return skills_cli.main(args.action, args.id)
     if command == "eval":
         from . import evals
 

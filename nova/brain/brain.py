@@ -3,8 +3,8 @@
 One thread ("nova-brain") takes accepted commands from the gate in order. For each: the
 context snapshot, the router (Tier 0 -> skills -> Tier 1, ``nova.brain.router``), the questions
 the plan carries, then the executor with the island as the asker (Confirm / Clarify answered by
-voice, a click, Enter / 1-4 from the hook, or Esc / No / timeout). Handoff plans show what they
-would do (Stage 09 hands off). Every command writes one trace line with its hop timings
+voice, a click, Enter / 1-4 from the hook, or Esc / No / timeout). Handoff plans open Claude / ChatGPT and
+type his words there (``router.handoff_steps``). Every command writes one trace line with its hop timings
 (SPEC §16); ``nova latency`` reads them. Preload hints warm the LLM while he's still talking.
 """
 
@@ -46,13 +46,15 @@ from ..events import (
 )
 from ..governor import Governor
 from ..log import TraceLog
+from ..skills.book import Book, teaching
 from ..state import CLARIFY_S, CONFIRM_S
 from .answers import pick, yes_no
 from .executor import Executor, RunResult
 from .llm import Ollama
 from .plan import Plan
-from .router import Router, Settled, describe_handoff, running_apps
+from .router import Routed, Router, Settled, handed_off, handoff_steps, running_apps
 from .tier1 import Tier1
+from . import recall
 
 _log = logging.getLogger(__name__)
 
@@ -202,6 +204,7 @@ def handle(
     trace: TraceLog | None = None,
     snap: Callable[[Catalog], Context] = snapshot,
     prepare: Callable[[Plan], None] | None = None,
+    skills: Book | None = None,
 ) -> tuple[RunResult | None, dict]:
     """One command, start to finish. Returns the result and the trace record. ``prepare``: called with the plan
     right before it runs (a plan that starts dictation opens it first, so what he says meanwhile is kept)."""
@@ -209,10 +212,21 @@ def handle(
     ctx: Context = snap(catalog)  # first: which apps are open helps Tier 0 with misheard names
     running = running_apps(ctx)
     router = router or Router()  # Tier 0 only
+    if skills is not None and not command.strict:
+        said = _skill_talk(command, ctx, catalog, router, asker or executor.asker, skills, running, publish)
+        if said is not None:
+            record = {"kind": "command", "utterance": command.utterance, "via": command.via, "text": command.text,
+                      "tier": "skill", "plan_kind": "teach", "type": "skills", "plan": [], "ok": said[0],
+                      "cancelled": False, "asked": "", "detail": said[1], "ctx_ms": round(ctx.ms, 1),
+                      "start_ms": None, "total_ms": round((time.perf_counter() - began) * 1000, 1), "steps": []}
+            if trace is not None:
+                trace.write(**record)
+            return None, record
     routed = router.route(command.text, ctx, catalog, strict=command.strict, via=command.via, running=running)
     settled: Settled = router.settle(routed, command.text, ctx, catalog, asker or executor.asker, via=command.via,
                                      running=running, progress=lambda state: publish(BrainProgress(state)))
     result: RunResult | None = None
+    learned = False
     plan = settled.plan
     if plan is None:
         detail = settled.note
@@ -220,9 +234,12 @@ def handle(
             publish(BrainProgress("idle", "not a command"))
         elif not settled.cancelled:
             publish(CommandFinished(False, detail))
-    elif plan.kind == "handoff":
-        detail = describe_handoff(plan)  # Stage 09 hands off for real
-        publish(CommandFinished(True, detail))
+    elif plan.kind == "handoff":  # open the app, type his words, Enter (the watcher / toast: not built)
+        publish(BrainProgress("acting"))
+        result = executor.run(handoff_steps(plan), ctx)
+        detail = handed_off(plan) if result.ok else result.detail
+        if not result.cancelled:
+            publish(CommandFinished(result.ok, detail))
     else:
         publish(BrainProgress("acting"))
         if prepare is not None:
@@ -230,9 +247,11 @@ def handle(
         result = executor.run(plan, ctx)
         detail = result.detail
         if not result.cancelled:
-            publish(CommandFinished(result.ok, detail, hold=result.hold))
+            publish(CommandFinished(result.ok, detail, skill=result.ok and routed.tier == "skill", hold=result.hold))
+        learned = _remember(skills, command, routed, settled, result)
     done = time.perf_counter()
-    ran = result.plan if result and result.plan else plan
+    handoff = plan is not None and plan.kind == "handoff"
+    ran = plan if handoff else (result.plan if result and result.plan else plan)
     thought = next((r.thought for r in settled.rounds if r.thought is not None), None)
     origin = command.speech_end_at if command.speech_end_at is not None else command.at or began
     record = {
@@ -244,14 +263,16 @@ def handle(
         "plan_kind": ran.kind if ran else (routed.kind or "none"),
         "type": command_type(ran),
         "plan": [s.to_dict() for s in ran.steps] if ran else [],
-        "ok": bool(result and result.ok) or bool(plan is not None and plan.kind == "handoff"),
+        "ok": bool(result and result.ok),
         "cancelled": bool(settled.cancelled or (result and result.cancelled)),
         "asked": settled.asked or (result.asked if result else ""),
         "detail": detail,
+        "learned": bool(plan is not None and plan.kind == "act" and learned),
         "parse_ms": routed.parse_ms,
         "ctx_ms": round(ctx.ms, 1),
         "page_ms": routed.page_ms,  # the page map shown to Tier 1 (None: not fetched)
         **(thought.trace() if thought is not None else {}),
+        **(routed.recalled.trace() if routed.recalled is not None else {}),
         "rounds": len(settled.rounds),
         "wait_ms": round((began - origin) * 1000, 1),
         "start_ms": round((result.started_at - origin) * 1000, 1) if result and result.started_at else None,
@@ -263,6 +284,49 @@ def handle(
     if trace is not None:
         trace.write(**record)
     return result, record
+
+
+def _remember(skills: Book | None, command: Command, routed: Routed, settled: Settled, result: RunResult) -> bool:
+    """After a run: a skill that worked counts a use, one that broke goes stale, and a Tier-1 plan that worked
+    with nothing asked becomes a skill (SPEC §12). True when something new was learned."""
+    if skills is None or command.strict or result.cancelled:
+        return False
+    if routed.tier == "skill":
+        if result.ok:
+            skills.worked(command.text)
+        else:
+            skills.failed(command.text)
+        return False
+    if routed.tier != "1" or not result.ok or settled.asked or result.asked or settled.plan is None:
+        return False
+    return skills.learn(command.text, settled.plan) is not None
+
+
+def _skill_talk(command: Command, ctx: Context, catalog: Catalog, router: Router, asker: object, skills: Book,
+                running: frozenset[str], publish: Callable[[object], None]) -> tuple[bool, str] | None:
+    """ "When I say study mode, open Canvas and Notion", "forget that", "what have you learned": (ok, the
+    island's words), or None when he's talking about something else. Teaching saves the plan; it doesn't run it."""
+    taught = teaching(command.text)
+    if taught is None:
+        note = skills.manage(command.text)
+        if note is None:
+            return None
+        publish(CommandFinished(True, note, skill=True, hold=4.0))
+        return True, note
+    phrase, what = taught
+    routed = router.route(what, ctx, catalog, via=command.via, running=running)
+    settled = router.settle(routed, what, ctx, catalog, asker, via=command.via, running=running,
+                            progress=lambda state: publish(BrainProgress(state)))
+    if settled.cancelled:
+        return False, "Cancelled"
+    skill = skills.learn(phrase, settled.plan, taught=True) if settled.plan is not None else None
+    if skill is None:
+        note = f"I can't learn “{what}” yet — try something I can repeat exactly, like opening apps or sites"
+        publish(CommandFinished(False, note))
+        return False, note
+    note = f"Learned “{phrase}” — say it any time"
+    publish(CommandFinished(True, note, skill=True, hold=3.0))
+    return True, note
 
 
 class Brain:
@@ -283,7 +347,10 @@ class Brain:
         client = Ollama(settings().ollama.url)
         self._governor = Governor(client, lambda: settings().llm)
         self._tier1 = Tier1(client, self._governor, lambda: settings().llm, catalogs.current)
-        self._router = Router(self._tier1, page=chrome.page_rows if chrome is not None else None)
+        self._skills = Book(paths.SKILLS)
+        self._recall = recall.standard(lambda: settings().recall, self._skills)
+        self._router = Router(self._tier1, self._skills, page=chrome.page_rows if chrome is not None else None,
+                              recall=self._recall)
         # Dictation (Stage 07): the same model as Tier 1 cleans it up, through the same governor.
         self._cleaner = Cleaner(self._governor, lambda: settings().llm, terms,
                                 client=lambda: Ollama(settings().ollama.url),
@@ -306,6 +373,8 @@ class Brain:
 
     def start(self) -> None:
         self._thread.start()
+        # the sentence model + example vectors load off the command path (~0.2 s; ~1.5 s the first time ever)
+        threading.Thread(target=self._recall.warm, name="nova-recall-warm", daemon=True).start()
         self.dictation.start()
 
     def close(self, timeout: float = 3.0) -> None:
@@ -361,7 +430,7 @@ class Brain:
             try:
                 _, record = handle(item, self._catalogs.current(), self._executor, router=self._router,
                                    publish=self._bus.publish, trace=self._trace, snap=self._snap,
-                                   prepare=lambda plan, item=item: self._prepare(plan, item))
+                                   prepare=lambda plan, item=item: self._prepare(plan, item), skills=self._skills)
                 _log.info("command %r -> %s (tier %s, %s) llm %s ms, start %s ms, total %s ms", item.text,
                           record["detail"], record["tier"], record["type"], record.get("llm_ms"), record["start_ms"],
                           record["total_ms"])

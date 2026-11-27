@@ -15,7 +15,7 @@ from __future__ import annotations
 import math
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -42,6 +42,8 @@ class EndpointRules:
     long_silence_ms: int = 700
     long_after_ms: int = 2500  # speech at least this long uses the long silence
     tail_ms: int = 160  # audio kept after the last speech frame (a multiple of 32 ms)
+    unfinished_silence_ms: int = 1000  # the words so far plainly aren't done ("open the"): wait this long
+    finished_silence_ms: int = 450  # words that end like a sentence: this is enough (long speech, dictation)
     max_ms: int | None = 30_000  # cap for commands; None = no cap (dictation is segmented instead)
 
     def __post_init__(self) -> None:
@@ -63,6 +65,11 @@ class EndpointRules:
     @property
     def tail_samples(self) -> int:
         return _samples(self.tail_ms)
+
+
+def sensitive(rules: EndpointRules) -> EndpointRules:
+    """The same rules for `audio.sensitivity: high`: softer speech starts and keeps an utterance."""
+    return replace(rules, start_threshold=min(rules.start_threshold, 0.35), stop_threshold=min(rules.stop_threshold, 0.25))
 
 
 DICTATION_RULES = EndpointRules(short_silence_ms=600, long_silence_ms=600, max_ms=None)  # SPEC §11: segments on
@@ -124,6 +131,9 @@ class Endpointer:
         self._next_id = 1
         self._draining = 0  # after a cap: samples of silence still needed before a new start (0 = not draining)
         self.held = False  # push-to-talk key down: pauses never end the utterance (release does)
+        # What the worker knows about the pause in progress (nova.pause); back to None when speech resumes.
+        # "wait" = its words are being decoded · "more" = they aren't finished · "done" = they are.
+        self.verdict: str | None = None
 
     def set_rules(self, rules: EndpointRules) -> None:
         """Switch rules (commands <-> dictation); the utterance in progress ends by the new ones."""
@@ -131,6 +141,8 @@ class Endpointer:
         self._short = _samples(rules.short_silence_ms)
         self._long = _samples(rules.long_silence_ms)
         self._long_after = _samples(rules.long_after_ms)
+        self._unfinished = max(self._long, _samples(rules.unfinished_silence_ms))
+        self._finished = _samples(rules.finished_silence_ms)
         self._max = _samples(rules.max_ms) if rules.max_ms is not None else None
         size = rules.pre_roll_frames + rules.start_frames
         if self._history.maxlen != size:
@@ -173,14 +185,31 @@ class Endpointer:
         if p >= r.stop_threshold:
             utt.speech_end = end
             utt.silence = 0
+            self.verdict = None
         else:
             utt.silence += len(frame)
-        needed = self._short if utt.speech_end - utt.speech_start < self._long_after else self._long
-        if utt.silence >= needed and not self.held:
+        if utt.silence >= self._needed(utt) and not self.held:
             return self._finish("silence")
         if self._max is not None and end - utt.start >= self._max:
             return self._finish("cap")
         return None
+
+    def _needed(self, utt: Utterance) -> int:
+        """Samples of silence that end this utterance, given what is known about the pause."""
+        long_speech = utt.speech_end - utt.speech_start >= self._long_after
+        if self.verdict == "more":
+            return self._unfinished
+        if self.verdict == "wait":
+            return self._long  # the decode is on its way; never wait for it longer than the long silence
+        usual = self._long if long_speech else self._short
+        return min(usual, self._finished) if self.verdict == "done" else usual
+
+    def poll(self) -> SpeechEnded | None:
+        """The verdict changed: end the utterance now if the silence so far is already enough."""
+        utt = self._utt
+        if utt is None or self.held or utt.silence < self._needed(utt):
+            return None
+        return self._finish("silence")
 
     def final_range(self) -> tuple[int, int] | None:
         """(start, end) of the final audio if this pause turns into the endpoint; None while talking.
@@ -242,6 +271,7 @@ class Endpointer:
         self._pcm = None
         self._probs = []
         self._streak = 0
+        self.verdict = None
         self._draining = self._short if reason == "cap" else 0
         return ended
 
@@ -251,24 +281,26 @@ class EnergyGate:
 
     Background = the 80th percentile of the last 3 s of frame energies (while nobody
     is talking). A frame more than ``margin_db`` above it runs Silero and keeps it
-    running for ``hold_ms``. The threshold is clamped to [-75, -45] dBFS: anything
-    louder than -45 dB always gets Silero (soft speech over a loud fan), and a
+    running for ``hold_ms``. The threshold is clamped to [-75, -48] dBFS: anything
+    louder than -48 dB always gets Silero (soft speech over a loud fan), and a
     near-silent room doesn't make every tiny sound count. Busy (talking, or a start
     being confirmed) always runs Silero; exact digital silence never does.
 
     Measured on this laptop's Intel mic array, whose noise suppression swings "quiet"
     between about -96 and -58 dB: a floor tracking the minimum ran Silero on 81 % of
-    frames outside speech in a talkative room; this runs it on 36 %, with every speech
-    start and end unchanged.
+    frames outside speech in a talkative room; this ran it on 36 % at +15 dB / -45 dB, with
+    every speech start and end unchanged. The margin is now 12 dB and the cap -48 dB: on other
+    laptops (weaker mics, people further away) soft speech sat under the old cap and Nova
+    never heard it. `audio.sensitivity: high` skips the gate altogether.
     """
 
     def __init__(
         self,
-        margin_db: float = 15.0,
+        margin_db: float = 12.0,
         hold_ms: float = 200.0,
         window_s: float = 3.0,
         percentile: float = 80.0,
-        clamp_db: tuple[float, float] = (-75.0, -45.0),
+        clamp_db: tuple[float, float] = (-75.0, -48.0),
         silence_energy: float = 1e-10,
     ) -> None:
         frame_s = FRAME / SAMPLE_RATE

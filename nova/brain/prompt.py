@@ -279,5 +279,10 @@ def request(text: str, *, front: str | None, open_apps: Sequence[str], tab: str 
     return data
 
 
-def messages(prefix_messages: Sequence[Mapping[str, str]], request_data: Mapping[str, Any]) -> list[dict[str, str]]:
-    return [*map(dict, prefix_messages), {"role": "user", "content": dumps(request_data)}]
+def messages(prefix_messages: Sequence[Mapping[str, str]], request_data: Mapping[str, Any],
+             shots: Sequence[tuple[Mapping[str, Any], Mapping[str, Any]]] = ()) -> list[dict[str, str]]:
+    """``shots``: (request, plan) examples like this request, as earlier turns right before it."""
+    turns: list[dict[str, str]] = []
+    for shot, plan in shots:
+        turns += [{"role": "user", "content": dumps(shot)}, {"role": "assistant", "content": dumps(plan)}]
+    return [*map(dict, prefix_messages), *turns, {"role": "user", "content": dumps(request_data)}]

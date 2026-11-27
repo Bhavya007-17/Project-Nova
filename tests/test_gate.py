@@ -5,7 +5,7 @@ import pytest
 from catalog_fixture import CATALOG
 
 from nova.brain.tier0 import Tier0Resolver
-from nova.gate import Addressing, Env, StubResolver, WakeName, command_words, decide, strip_wake
+from nova.gate import Addressing, Env, StubResolver, WakeName, command_words, decide, loose_wake, strip_wake
 
 APPS = ["Google Chrome", "Spotify", "Notepad", "Calculator", "Autodesk Fusion", "Claude", "Word", "Excel",
         "Visual Studio Code", "Microsoft Teams", "Camera", "Web Server for Chrome", "Outlook (classic)"]
@@ -255,3 +255,40 @@ def test_command_words():
     assert command_words("and then snap it left") == ("snap", "it", "left")
     assert command_words("I'm gonna open a restaurant") is None
     assert command_words("") is None
+
+
+# --- misheard names ---------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(("heard", "rest"), [
+    ("Nover open Chrome.", "open Chrome."),
+    ("No va, switch to Notion", "switch to Notion"),
+    ("Hey Nava, can you close this tab", "can you close this tab"),
+    ("Know va scroll down", "scroll down"),
+    ("Open Chrome, Nova.", "Open Chrome"),
+    ("okay scroll down Nova", "scroll down"),
+])
+def test_misheard_name_counts_in_front_of_a_command(heard, rest):
+    assert loose_wake(heard, WakeName.of("Nova")) == (rest, False)
+
+
+@pytest.mark.parametrize("heard", [
+    "Noah", "Noah is coming over later", "Nora said the meeting moved", "no way", "No, open Chrome",
+    "I watched Nova", "knife open Chrome", "over there", "Novak won the match", "Nover is a word",
+])
+def test_talk_that_only_sounds_like_the_name_is_not_a_wake(heard):
+    assert loose_wake(heard, WakeName.of("Nova")) is None
+
+
+def test_a_first_name_needs_a_command_nova_knows():
+    env = Env(WakeName.of("Nova"), always_listening=False, resolver=RESOLVER)
+    known = decide("Noah, close Spotify", Addressing(), env)
+    assert known.accepted and known.via == "wake" and known.text == "close Spotify"
+    assert not decide("Noah, open the door", Addressing(), env).accepted
+    assert decide("Nover, type hello world", Addressing(), env).text == "type hello world"
+
+
+def test_other_names_get_the_sound_rule():
+    wake = WakeName.of("Jarvis")
+    assert loose_wake("Jarvus, open Chrome", wake) == ("open Chrome", False)
+    assert loose_wake("Noah, open Chrome", wake) is None

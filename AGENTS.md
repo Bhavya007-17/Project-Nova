@@ -18,9 +18,9 @@ Nova says when they're done. It started as Bhavya's personal project and is now 
 |---|---|---|
 | 00–06 | skeleton + doctor, ears (STT), triggers, island, Windows hands + Tier 0, local brain (Tier 1), Chrome + Canvas | done |
 | 07 | dictation | done, except the LLM misheard-word fix (`nova/dictation/cleanup.py`): built and unit-tested, not working live yet |
-| 08 | teach + learn ("Show me?", learned skills ⚡) | not started — island UI states exist |
-| 09 | handoff to Claude / ChatGPT + done notifications | not started — island chips exist; router has a stub |
-| 10 | safety + polish (risk audit, settings panel, start with Windows) | not started |
+| 08 | teach + learn ("Show me?", learned skills ⚡) | partly: skills are learned, replayed, taught by voice ("when I say X, open Y"), forgotten (`nova/skills/`, `nova skills`). "Show me?" recording not built. Unit-tested only, not run live |
+| 09 | handoff to Claude / ChatGPT + done notifications | partly: opens the app, types the prompt, sends it. No done-watcher, chips, attachments or voice-mode button. Not run live |
+| 10 | safety + polish (risk audit, settings panel, start with Windows) | partly: start with Windows + tray toggles (`nova/startup.py`, `nova/tray.py`). No settings panel, risk audit or crash watchdog |
 | 11 | speed + soak | not started |
 | 12 | optional: Todoist / Notion / Calendar, MCP server | only on request |
 
@@ -47,6 +47,8 @@ Nova says when they're done. It started as Bhavya's personal project and is now 
 | `nova/brain/` | `tier0.py` fast patterns, `tier1.py` + `llm.py` local LLM, `plan.py` schema, `validate.py`, `risk.py`, `router.py`, `executor.py` |
 | `nova/actions/` | Windows hands: apps / Start-menu catalog, windows, input, UIA, Chrome API |
 | `nova/chrome/` + `extension/` | MV3 extension + native-messaging bridge (page map, click, fill, Canvas) |
+| `nova/pause.py` | is the sentence finished? decides how long to wait after he stops talking |
+| `nova/skills/` | learned skills: match, learn, teach by voice, forget (`data/skills/*.json`) |
 | `nova/dictation/` | dictation session, rules, target, LLM cleanup, history |
 | `nova/governor.py` | GPU vs CPU model choice from free VRAM |
 | `config/` | `settings.yaml`, `aliases.yaml` (short names → apps/sites), `vocab.yaml` (names to spell right) |
@@ -80,7 +82,7 @@ Nova says when they're done. It started as Bhavya's personal project and is now 
 
 ## Commands
 `uv run nova` (tray app) · `nova doctor` · `nova listen [--wav f]` · `nova keys --probe` · `nova island --demo [scene]` ·
-`nova say "<text>" [--dry]` · `nova eval` · `nova bench-stt` · `nova bench-llm` · `nova latency` ·
+`nova say "<text>" [--dry]` · `nova skills list|show|delete` · `nova eval` · `nova bench-stt` · `nova bench-llm` · `nova latency` ·
 `nova chrome --install | --status` · `uv run pytest`
 Chrome self-test (Chrome for Testing, throwaway profile): `uv run python extension/test/selftest.py [--llm]`
 Setup on a fresh clone: `powershell -ExecutionPolicy Bypass -File scripts\setup.ps1`

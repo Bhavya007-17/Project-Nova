@@ -40,13 +40,15 @@ from .events import (
     SpeechStarted,
 )
 from .log import TraceLog
+from .pause import looks_finished, looks_unfinished
 from .stt.base import Transcriber
-from .vad import DICTATION_RULES, FRAME, EndpointRules, Endpointer, EnergyGate, Silero
+from .vad import DICTATION_RULES, FRAME, EndpointRules, Endpointer, EnergyGate, Silero, sensitive
 from .vocab import VocabFile
 
 _log = logging.getLogger(__name__)
 
-PARTIAL_EVERY = int(0.4 * SAMPLE_RATE)
+PARTIAL_EVERY = int(0.3 * SAMPLE_RATE)
+FIRST_PARTIAL = int(0.2 * SAMPLE_RATE)  # the first live words come sooner: the island shows he is heard
 PARTIAL_WINDOW = 5 * SAMPLE_RATE  # long utterances: partials decode only the last 5 s (display only)
 PARTIAL_SNAP_FRAMES = 20  # ...cut at the quietest frame in the window's first 640 ms
 RETRY_S = (1.0, 2.0, 5.0, 10.0)  # reopen back-off after a failed open
@@ -197,6 +199,7 @@ class SpeechWorker:
         device: str = "default",
         rules: EndpointRules | None = None,
         source: Callable[[Ring, threading.Event], Source] | None = None,
+        sensitivity: str = "normal",
     ) -> None:
         self._bus = bus
         self._load_stt = load_stt
@@ -228,6 +231,8 @@ class SpeechWorker:
         self._attentive = False
         self._dictating = False  # requested (any thread)
         self._dictation_rules = False  # in effect (worker thread)
+        self._sensitive = sensitivity == "high"  # requested (any thread)
+        self._rules_key: tuple[bool, bool] | None = None  # (dictating, sensitive) the endpointer runs with
         self._idle = True
         self._stopping = threading.Event()
         self._thread = threading.Thread(target=self._run, name="nova-speech", daemon=True)
@@ -269,6 +274,11 @@ class SpeechWorker:
             self._device = device
             self._device_changed = True
             self._wake.set()
+
+    def set_sensitivity(self, level: str) -> None:
+        """`audio.sensitivity`: "high" checks every frame for speech and lets softer speech start an utterance."""
+        self._sensitive = level == "high"
+        self._wake.set()
 
     def end_now(self) -> None:
         """Key release: finish the current utterance now (no-op if nobody is talking)."""
@@ -337,9 +347,12 @@ class SpeechWorker:
 
     def _step(self) -> None:
         self._sync_source(time.perf_counter())
-        if self._dictating != self._dictation_rules:
-            self._dictation_rules = self._dictating
-            self._ep.set_rules(DICTATION_RULES if self._dictating else self._rules)
+        key = (self._dictating, self._sensitive)
+        if key != self._rules_key:
+            self._rules_key = key
+            self._dictation_rules = key[0]
+            rules = DICTATION_RULES if key[0] else self._rules
+            self._ep.set_rules(sensitive(rules) if key[1] else rules)
         if self._held:
             self._ep.held = True  # a press takes effect before this audio is read...
         if self._source.is_open:
@@ -474,7 +487,7 @@ class SpeechWorker:
             if energy > 0.0:
                 self._heard_sound = True
             self.frames += 1
-            if self._gate.check(energy, busy=self._ep.listening or self._attentive):
+            if self._gate.check(energy, busy=self._ep.listening or self._attentive or self._sensitive):
                 self.vad_frames += 1
                 p = vad.probability(frame)
             else:
@@ -493,7 +506,7 @@ class SpeechWorker:
         if isinstance(event, SpeechStarted):
             utt = self._ep.active
             assert utt is not None
-            self._talks[event.utterance] = _Talk(event, next_partial=utt.speech_start + PARTIAL_EVERY)
+            self._talks[event.utterance] = _Talk(event, next_partial=utt.speech_start + FIRST_PARTIAL)
             self._bus.publish(event)
             return
         self._bus.publish(event)
@@ -535,6 +548,7 @@ class SpeechWorker:
                 self._finals[key] = _Final(key)
                 assert self._final_lane is not None
                 self._final_lane.put(_Job("final", *key, pcm=self._ep.audio(*pause)), self._wanted)
+                self._ep.verdict = "wait"  # the endpoint reads these words first (nova.pause)
             self._candidate(self._finals[key])
             return  # nothing new to show during a pause
         talk = self._talks.get(utt.id)
@@ -584,6 +598,23 @@ class SpeechWorker:
             else:
                 self._show(job, result.text)  # an early decode in a pause: refresh the live words
                 self._candidate(final)
+                self._judge_pause(final, result.text)
+
+    def _judge_pause(self, final: _Final, text: str) -> None:
+        """The words of this pause are back: unfinished ones wait for the rest, finished ones end now."""
+        utt = self._ep.active
+        if self._ep.verdict != "wait" or utt is None or utt.id != final.key[0]:
+            return
+        # Dictation segments are joined again when typed, so a segment never waits for more words: it only
+        # ends a little sooner (450 ms instead of 600) when the sentence is plainly over.
+        unfinished = not self._dictation_rules and looks_unfinished(text)
+        self._ep.verdict = "more" if unfinished else ("done" if looks_finished(text) else None)
+        talk = self._talks.get(utt.id)
+        if unfinished and talk is not None:
+            talk.extra["waited_for_more"] = talk.extra.get("waited_for_more", 0) + 1
+        ended = self._ep.poll()
+        if ended is not None:
+            self._on_vad_event(ended)
 
     def _candidate(self, final: _Final) -> None:
         """Dictating and the pause is long enough: say what this segment will be if he stays quiet."""
@@ -655,6 +686,8 @@ class SpeechWorker:
         }
         if result.error:
             record["error"] = result.error
+        if talk is not None:
+            record.update(talk.extra)
         self._trace.write(**record)
 
 
@@ -665,6 +698,7 @@ def standard_worker(
     trace: TraceLog | None,
     device: str = "default",
     source: Callable[[Ring, threading.Event], Source] | None = None,
+    sensitivity: str = "normal",
 ) -> SpeechWorker:
     """The worker with Nova's own models (Parakeet + Silero from models/)."""
 
@@ -681,4 +715,5 @@ def standard_worker(
         trace=trace,
         device=device,
         source=source,
+        sensitivity=sensitivity,
     )

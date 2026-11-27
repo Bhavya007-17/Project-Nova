@@ -53,6 +53,7 @@ class Ollama:
 @dataclass(frozen=True)
 class Audio:
     device: str = "default"
+    sensitivity: str = "normal"  # normal | high (quiet voice, far mic, noisy room: check every frame for speech)
 
 
 @dataclass(frozen=True)
@@ -81,6 +82,16 @@ class Llm:
 
 
 @dataclass(frozen=True)
+class Recall:
+    """Understanding by meaning (``nova.brain.recall``): nearest examples from config/examples.yaml."""
+
+    enabled: bool = True
+    threshold: float = 0.75  # how alike (0-1) the nearest example must be to act without the LLM
+    margin: float = 0.05  # ...and how much closer than the nearest example that means something else
+    shots: int = 3  # nearest examples shown to the LLM when it does get asked
+
+
+@dataclass(frozen=True)
 class Settings:
     wake_name: str = "Nova"
     wake_spellings: tuple[str, ...] = ()  # other ways speech-to-text writes the name
@@ -89,6 +100,7 @@ class Settings:
     audio: Audio = field(default_factory=Audio)
     ollama: Ollama = field(default_factory=Ollama)
     llm: Llm = field(default_factory=Llm)
+    recall: Recall = field(default_factory=Recall)
     logs: Logs = field(default_factory=Logs)
     dictation: Dictation = field(default_factory=Dictation)
 
@@ -116,6 +128,7 @@ triggers:
 # name to always use that one, e.g. "USB" or "Jabra".
 audio:
   device: default
+  sensitivity: normal      # high = Nova misses you (quiet voice, far or weak mic); costs a little idle CPU
 
 # Local LLM runtime. Must be on this laptop.
 ollama:
@@ -130,6 +143,14 @@ llm:
   headroom_gb: 1.0         # GPU only if the model + this much VRAM is free
   timeout_s: 8.0
   # simulate_free_vram_gb: 0.5   # testing: pretend only this much VRAM is free
+
+# Understanding by meaning: a 23 MB sentence model finds the nearest examples in config/examples.yaml.
+# When they clearly agree, Nova acts at once (no LLM); otherwise the LLM is shown them.
+recall:
+  enabled: true
+  threshold: 0.75          # how alike the nearest example must be (0-1). Higher = the LLM is asked more often
+  margin: 0.05             # how much closer than the nearest example that means something else
+  shots: 3                 # nearest examples shown to the LLM
 
 logs:
   transcripts: true        # false = logs keep timings but not what you said
@@ -278,12 +299,21 @@ def _check(settings: Settings) -> None:
         raise ConfigError("wake_name must not be empty")
     if not settings.audio.device.strip():
         raise ConfigError('audio.device must not be empty (use "default" for the Windows default mic)')
+    if settings.audio.sensitivity not in ("normal", "high"):
+        raise ConfigError(f"audio.sensitivity must be normal or high, not {settings.audio.sensitivity!r}")
     try:
         parse_chord(settings.chord)
     except ValueError as error:
         raise ConfigError(f"chord: {error}") from error
     _check_local_url(settings.ollama.url, "ollama.url")
     _check_llm(settings.llm)
+    recall = settings.recall
+    if not 0 < recall.threshold <= 1:
+        raise ConfigError(f"recall.threshold must be above 0 and at most 1, not {recall.threshold}")
+    if not 0 <= recall.margin <= 1:
+        raise ConfigError(f"recall.margin must be between 0 and 1, not {recall.margin}")
+    if not 0 <= recall.shots <= 6:
+        raise ConfigError(f"recall.shots must be between 0 and 6, not {recall.shots}")
 
 
 _DURATION = re.compile(r"-1|0|(\d+h)?(\d+m)?(\d+s)?")

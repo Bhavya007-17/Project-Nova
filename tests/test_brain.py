@@ -127,13 +127,24 @@ def test_tier_1_plans_run_and_are_traced():
     assert record["tier"] == "1" and record["llm_ms"] == 500.0 and record["plan_kind"] == "act"
 
 
-def test_handoff_shows_what_it_would_do():
+def test_handoff_opens_the_app_and_types_his_words():
     _, record, events, hands = run_with(
         "write a cover letter for bosch",
         {"kind": "handoff", "steps": [], "confidence": 0.9,
          "handoff": {"to": "claude", "mode": "text", "prompt": "write a cover letter for bosch"}})
-    assert hands.ran == [] and record["type"] == "handoff" and record["ok"]
-    assert events == [CommandFinished(True, "Would hand off to Claude: “write a cover letter for bosch”")]
+    assert hands.ran == [step("open_app", app="Claude"),
+                         step("type_text", text="write a cover letter for bosch", submit=True)]
+    assert record["type"] == "handoff" and record["ok"] and record["plan_kind"] == "handoff"
+    assert events[-1] == CommandFinished(True, "Sent to Claude: “write a cover letter for bosch”")
+
+
+def test_voice_handoff_only_opens_the_app():
+    _, _, events, hands = run_with(
+        "on chatgpt turn on voice",
+        {"kind": "handoff", "steps": [], "confidence": 0.9,
+         "handoff": {"to": "chatgpt", "mode": "voice", "prompt": "turn on voice"}})
+    assert hands.ran == [step("open_app", app="ChatGPT")]
+    assert events[-1] == CommandFinished(True, "Opened ChatGPT — press its voice button to talk")
 
 
 def test_not_a_command_in_the_follow_up_window_stays_quiet():

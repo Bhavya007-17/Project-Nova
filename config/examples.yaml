@@ -1,0 +1,786 @@
+# What people say -> what Nova does. General knowledge, shipped with Nova; add your own freely.
+#
+# Nova does not match these word for word. A small sentence model (models/embed, local, CPU) turns what
+# you said into a vector and finds the nearest sentences here by meaning. When they clearly agree on one
+# plan, Nova runs it at once (no LLM); otherwise the nearest ones are shown to the local LLM as worked
+# examples. So a new phrasing works without being listed: these only need to cover the *ideas*.
+#
+#   do:    one step, or a list of steps (the actions of docs/SPEC.md §7.5)
+#   kind:  handoff (to: claude | chatgpt; the prompt is what was said) | dictate | ignore (chat, not a command)
+#   {app}  stands for whichever installed app the sentence names
+#
+# Rules: no sentence from docs/eval/intents.yaml (that file is the exam); nothing personal (your own
+# short names live in aliases.yaml, and Nova learns your own phrasings into data/skills/).
+
+examples:
+  # --- apps ---------------------------------------------------------------------------------------------
+  - do: {action: open_app, app: "{app}"}
+    say:
+      - open {app}
+      - can you open {app}
+      - launch {app} for me
+      - start up {app}
+      - fire {app} up
+      - I need {app}
+      - get {app} going
+      - bring up {app} please
+      - pull {app} up real quick
+      - could you get {app} running
+      - let's get {app} open
+      - I want to use {app}
+      - throw {app} on
+      - pop {app} open
+      - load up {app}
+      - hey get me {app}
+      - I gotta do some work, open {app}
+      - time to work, start {app}
+      - open up the {app} app
+      - get me into {app}
+      - boot up {app}
+      - can I get {app} up
+      - put {app} on the screen
+      - I wanna open {app}
+      - run {app}
+  - do: {action: switch_app, app: "{app}"}
+    say:
+      - switch to {app}
+      - go to {app}
+      - go back to {app}
+      - jump over to {app}
+      - take me back to {app}
+      - flip to {app}
+      - focus on {app}
+      - show me {app}
+      - let me see {app}
+      - I wanna be in {app}
+      - head over to {app}
+      - bring {app} to the front
+      - back to {app}
+      - swap over to {app}
+      - change to {app}
+      - move over to {app} now
+  - do: {action: close_app, app: "{app}"}
+    say:
+      - close {app}
+      - quit {app}
+      - exit {app}
+      - shut {app} down
+      - kill {app}
+      - I'm done with {app}, close it
+      - get rid of {app}
+      - can you close {app} for me
+      - turn off {app}
+      - close out of {app}
+      - end {app}
+      - I don't need {app} anymore, shut it
+      - stop {app} and close it
+      - please exit out of {app}
+
+  # --- one window ---------------------------------------------------------------------------------------
+  - do: {action: window, op: maximize, target: active}
+    say:
+      - maximize this
+      - make this full size
+      - blow this up
+      - make this window as big as it goes
+      - make it bigger
+      - make this take up the whole screen
+      - expand this window
+      - fill the screen with this
+      - I want this one big
+      - enlarge the window
+      - stretch this across the whole screen
+      - make it huge
+  - do: {action: window, op: maximize, target: "{app}"}
+    say:
+      - maximize {app}
+      - make {app} full size
+      - blow {app} up to fill the screen
+      - make {app} as big as possible
+      - fill the screen with {app}
+      - expand {app} to the whole screen
+      - make {app} bigger
+      - I want {app} big
+  - do: {action: window, op: fullscreen, target: active}
+    say:
+      - go full screen
+      - full screen this
+      - put this in full screen mode
+      - make it fullscreen
+      - enter full screen
+  - do: {action: window, op: minimize, target: active}
+    say:
+      - minimize this
+      - hide this window
+      - get this out of the way
+      - get this out of my face
+      - put this away for now
+      - shrink this down to the taskbar
+      - tuck this away
+      - I don't want to see this right now
+      - send this to the taskbar
+      - hide it
+      - move this out of my way
+  - do: {action: window, op: minimize, target: "{app}"}
+    say:
+      - minimize {app}
+      - hide {app}
+      - get {app} out of the way
+      - put {app} away for now
+      - shrink {app} down
+      - tuck {app} away
+      - send {app} to the taskbar
+  - do: {action: window, op: restore, target: active}
+    say:
+      - restore this window
+      - make this window smaller
+      - shrink the window back down
+      - unmaximize this
+      - take it out of full size
+      - put the window back to normal size
+      - make it a normal window again
+      - can you make this smaller
+  - do: {action: window, op: close, target: active}
+    say:
+      - close this window
+      - close this
+      - shut this window
+      - get rid of this window
+      - I'm done with this window, close it
+      - x out of this
+  - do: {action: window, op: snap_left, target: active}
+    say:
+      - snap this to the left
+      - put this on the left side
+      - move this to the left half
+      - throw this over to the left
+      - stick this on the left
+      - dock it left
+      - left half of the screen for this one
+  - do: {action: window, op: snap_right, target: active}
+    say:
+      - snap this to the right
+      - put this on the right side
+      - move this to the right half
+      - shove this over to the right
+      - stick this on the right
+      - dock it right
+      - right half of the screen for this one
+  - do: {action: window, op: snap_left, target: "{app}"}
+    say:
+      - snap {app} to the left
+      - put {app} on the left side
+      - move {app} to the left half of the screen
+      - stick {app} over on the left
+      - dock {app} left
+      - I want {app} on the left
+  - do: {action: window, op: snap_right, target: "{app}"}
+    say:
+      - snap {app} to the right
+      - put {app} on the right side
+      - move {app} to the right half of the screen
+      - stick {app} over on the right
+      - dock {app} right
+      - I want {app} on the right
+  - do: {action: window, op: snap_top, target: active}
+    say:
+      - snap this to the top
+      - put this on the top half
+      - move this to the upper half of the screen
+  - do: {action: window, op: snap_bottom, target: active}
+    say:
+      - snap this to the bottom
+      - put this on the bottom half
+      - move this to the lower half of the screen
+  - do: {action: window, op: center, target: active}
+    say:
+      - center this window
+      - put this in the middle of the screen
+      - move this to the center
+      - center it
+  - do: {action: window, op: center, target: "{app}"}
+    say:
+      - center {app}
+      - put {app} in the middle of the screen
+      - move {app} to the center
+  - do: {action: window, op: move_monitor, target: active}
+    say:
+      - move this to the other monitor
+      - send this to my other screen
+      - put this on the second monitor
+      - throw this onto the other display
+      - move it to my second screen
+      - this should go on the other monitor
+  - do: {action: window, op: move_monitor, target: "{app}"}
+    say:
+      - move {app} to the other monitor
+      - send {app} to my other screen
+      - put {app} on the second monitor
+      - throw {app} onto the other display
+
+  # --- browser ------------------------------------------------------------------------------------------
+  - do: {action: tab, op: new}
+    say:
+      - new tab
+      - open a new tab
+      - give me a fresh tab
+      - I need another tab
+      - start a blank tab
+      - open up a new tab for me
+      - can I get a new tab
+      - make a new tab
+  - do: {action: tab, op: close}
+    say:
+      - close this tab
+      - get rid of this tab
+      - shut this tab
+      - I'm done with this tab
+      - kill the tab
+      - close the tab I'm on
+      - x out of this tab
+      - drop this tab
+  - do: {action: tab, op: next}
+    say:
+      - next tab
+      - go to the next tab
+      - move one tab over to the right
+      - switch to the tab after this one
+      - tab over
+      - the tab to the right
+      - go forward a tab
+  - do: {action: tab, op: prev}
+    say:
+      - previous tab
+      - go to the last tab I was on
+      - the tab before this one
+      - move one tab to the left
+      - go back a tab
+      - the tab to the left
+      - switch to the tab before this
+  - do: {action: tab, op: reopen}
+    say:
+      - reopen that tab
+      - bring back the tab I just closed
+      - I closed that tab by accident, get it back
+      - undo closing that tab
+      - reopen the closed tab
+      - oops I didn't mean to close that tab
+      - restore the tab I closed
+      - get my last tab back
+  - do: {action: nav, op: back}
+    say:
+      - go back
+      - go back a page
+      - back to the previous page
+      - take me back to the page before
+      - previous page
+      - go back to where I just was
+      - back up one page
+      - return to the last page
+  - do: {action: nav, op: forward}
+    say:
+      - go forward
+      - forward a page
+      - go forward again
+      - next page in my history
+      - take me forward one page
+  - do: {action: nav, op: reload}
+    say:
+      - reload
+      - refresh the page
+      - reload this page
+      - refresh this
+      - load this page again
+      - the page is stuck, refresh it
+      - hit refresh
+      - can you reload that
+      - this didn't load right, try again
+  - do: {action: scroll, dir: down, amount: page}
+    say:
+      - scroll down
+      - go down the page
+      - keep scrolling
+      - scroll down some
+      - move down
+      - show me more below
+      - page down
+      - scroll further down
+      - keep going down
+  - do: {action: scroll, dir: up, amount: page}
+    say:
+      - scroll up
+      - go up the page
+      - scroll back up
+      - move up
+      - page up
+      - go up a bit
+      - scroll up some
+  - do: {action: scroll, dir: down, amount: small}
+    say:
+      - scroll down a little
+      - down just a bit
+      - scroll down a tiny bit
+      - nudge it down
+  - do: {action: scroll, dir: up, amount: small}
+    say:
+      - scroll up a little
+      - up just a bit
+      - scroll up a tiny bit
+      - nudge it up
+  - do: {action: scroll, dir: down, amount: large}
+    say:
+      - scroll way down
+      - scroll down a lot
+      - go a long way down the page
+  - do: {action: scroll, dir: up, amount: large}
+    say:
+      - scroll way up
+      - scroll up a lot
+      - go a long way back up the page
+  - do: {action: scroll, dir: top}
+    say:
+      - scroll to the top
+      - go to the top of the page
+      - take me all the way up
+      - back to the top
+      - jump to the top
+      - all the way to the top
+      - go to the very beginning of the page
+  - do: {action: scroll, dir: bottom}
+    say:
+      - scroll to the bottom
+      - go to the bottom of the page
+      - take me all the way down
+      - jump to the end of the page
+      - all the way to the bottom
+      - go to the very end of the page
+
+  # --- keys ---------------------------------------------------------------------------------------------
+  - do: {action: press, keys: ctrl+c}
+    say:
+      - copy that
+      - copy this
+      - copy it
+      - copy the selection
+      - copy what I selected
+      - grab a copy of this
+  - do: {action: press, keys: ctrl+v}
+    say:
+      - paste
+      - paste it
+      - paste that here
+      - paste what I copied
+      - drop it in here
+      - paste it in
+  - do: {action: press, keys: ctrl+x}
+    say:
+      - cut that
+      - cut this
+      - cut the selection
+      - cut it out
+  - do: {action: press, keys: ctrl+z}
+    say:
+      - undo
+      - undo that
+      - take that back
+      - oops undo
+      - I didn't mean to do that, undo it
+      - reverse that last thing
+      - go back one step, undo
+  - do: {action: press, keys: ctrl+y}
+    say:
+      - redo
+      - redo that
+      - put that back, redo
+      - do that again, redo
+  - do: {action: press, keys: ctrl+s}
+    say:
+      - save
+      - save this
+      - save the file
+      - save my work
+      - hit save
+      - save it
+      - save what I have
+      - make sure this is saved
+  - do: {action: press, keys: ctrl+a}
+    say:
+      - select all
+      - select everything
+      - highlight everything
+      - select the whole thing
+      - highlight all of it
+  - do: {action: press, keys: ctrl+=}
+    say:
+      - zoom in
+      - make the text bigger
+      - I can't read this, zoom in
+      - zoom in a bit
+      - make everything on the page larger
+      - bump up the zoom
+  - do: {action: press, keys: ctrl+-}
+    say:
+      - zoom out
+      - make the text smaller
+      - zoom out a bit
+      - make everything on the page smaller
+      - this is too zoomed in
+      - bring the zoom down
+  - do: {action: press, keys: win+d}
+    say:
+      - show the desktop
+      - show me my desktop
+      - go to the desktop
+      - hide all the windows
+      - clear everything off the screen
+      - minimize everything
+      - get all of this out of the way
+  - do: {action: press, keys: enter}
+    say:
+      - press enter
+      - hit enter
+      - hit return
+      - press the enter key
+  - do: {action: press, keys: esc}
+    say:
+      - press escape
+      - hit escape
+      - press the escape key
+      - escape out of this
+
+  # --- sound --------------------------------------------------------------------------------------------
+  - do: {action: volume, op: up}
+    say:
+      - turn it up
+      - volume up
+      - louder
+      - make it louder
+      - I can't hear anything, turn it up
+      - crank it up
+      - raise the volume
+      - bump up the volume
+      - it's too quiet
+      - turn the sound up
+      - a little louder please
+      - I can barely hear this
+      - more volume
+  - do: {action: volume, op: down}
+    say:
+      - turn it down
+      - volume down
+      - quieter
+      - make it quieter
+      - that's too loud
+      - lower the volume
+      - bring the volume down
+      - turn the sound down
+      - a little quieter please
+      - not so loud
+      - my ears hurt, turn that down
+      - less volume
+      - it's way too loud
+  - do: {action: volume, op: mute}
+    say:
+      - mute
+      - mute it
+      - mute the sound
+      - silence the computer
+      - kill the sound
+      - turn the sound off
+      - mute my laptop
+      - shut the audio off
+      - no sound please
+      - go silent
+  - do: {action: volume, op: unmute}
+    say:
+      - unmute
+      - unmute it
+      - turn the sound back on
+      - bring the sound back
+      - sound back on
+      - unmute my laptop
+      - I want audio again
+      - turn the audio back on
+  - do: {action: media, op: pause}
+    say:
+      - pause
+      - pause it
+      - pause the music
+      - pause the video
+      - pause that
+      - hold the music for a second
+      - stop the song for a sec
+      - pause what's playing
+      - hold on, pause
+  - do: {action: media, op: play}
+    say:
+      - play
+      - resume
+      - keep playing
+      - resume the music
+      - unpause
+      - start it playing again
+      - play the music again
+      - continue the video
+      - carry on playing
+      - hit play
+  - do: {action: media, op: next}
+    say:
+      - next song
+      - skip this song
+      - skip
+      - next track
+      - I don't like this one, skip it
+      - play the next one
+      - skip to the next song
+      - change the song
+      - skip this track
+  - do: {action: media, op: prev}
+    say:
+      - previous song
+      - go back a song
+      - last song
+      - play the one before this
+      - previous track
+      - play that last song again
+      - back one track
+  - do: {action: media, op: stop}
+    say:
+      - stop the music
+      - stop playing
+      - stop the playback
+      - stop that song completely
+
+  # --- dictation, listening, docs -----------------------------------------------------------------------
+  - do: {action: dictation, op: start}
+    say:
+      - start dictating
+      - start dictation
+      - take dictation
+      - let me dictate
+      - I want to dictate something
+      - type what I say
+      - write down what I say
+      - take a note
+      - start typing for me
+      - I'm going to talk, you type
+      - begin dictation
+      - listen and type this out
+  - do: {action: dictation, op: stop}
+    say:
+      - stop dictating
+      - stop dictation
+      - end dictation
+      - I'm done dictating
+      - that's all, stop typing
+      - stop typing what I say
+      - finish dictation
+      - dictation off
+  - do: {action: dictation, op: paste}
+    say:
+      - paste my last dictation
+      - type my last dictation again
+      - put what I just dictated here
+      - paste what I just said again
+  - do: {action: docs_new}
+    say:
+      - new google doc
+      - make a new google doc
+      - start a blank google doc
+      - create a google doc for me
+      - open a fresh google doc
+      - I need a new document in google docs
+  - do: {action: listening, op: sleep}
+    say:
+      - stop listening
+      - go to sleep
+      - stop listening for now
+      - take a break from listening
+      - quit listening to me
+      - you can stop listening
+      - sleep now
+      - mic off for a while
+  - do: {action: listening, op: wake}
+    say:
+      - start listening
+      - wake up
+      - start listening again
+      - you can listen again
+      - I'm back, listen up
+      - resume listening
+
+  # --- Canvas (school) ----------------------------------------------------------------------------------
+  - do: {action: canvas_due, range: today}
+    say:
+      - what's due today
+      - do I have anything due today
+      - what do I have to turn in today
+      - anything due tonight
+      - what's due on canvas today
+  - do: {action: canvas_due, range: tomorrow}
+    say:
+      - what's due tomorrow
+      - do I have anything due tomorrow
+      - what do I need to turn in tomorrow
+      - anything on canvas for tomorrow
+  - do: {action: canvas_due, range: week}
+    say:
+      - what's due this week
+      - what do I have due this week
+      - what assignments are due this week
+      - show me this week's deadlines
+      - what's on my plate for school this week
+  - do: {action: canvas_due, range: next_week}
+    say:
+      - what's due next week
+      - what do I have due next week
+      - show me next week's assignments
+  - do: {action: canvas_due, range: weekend}
+    say:
+      - what's due this weekend
+      - anything due over the weekend
+      - what do I have to turn in this weekend
+  - do: {action: canvas_due, range: upcoming}
+    say:
+      - what's due soon
+      - what assignments do I have coming up
+      - what's coming up on canvas
+      - show me my upcoming assignments
+      - what homework do I have
+      - what do I need to work on for school
+  - do: {action: canvas_due, range: overdue}
+    say:
+      - what's overdue
+      - what am I late on
+      - do I have any missing assignments
+      - what did I forget to turn in
+      - show me my late work
+
+  # --- big jobs go to Claude / ChatGPT (the prompt is what was said) ------------------------------------
+  - kind: handoff
+    to: claude
+    say:
+      - write an essay about the causes of the first world war
+      - draft an email to my professor asking for an extension
+      - explain how a transformer neural network works
+      - help me study for my thermodynamics exam
+      - write a python script that renames all my photos by date
+      - summarize the plot of the great gatsby
+      - give me a workout plan for the next four weeks
+      - write a cover letter for a mechanical engineering internship
+      - solve this integral for me step by step
+      - come up with ten names for my robotics club
+      - plan a three day trip to chicago
+      - what's the difference between torque and horsepower, explain it simply
+      - proofread my lab report and fix the grammar
+      - make me a study schedule for finals week
+      - research the best budget 3d printers and compare them
+      - write a poem about autumn in virginia
+      - debug why my arduino code won't compile
+      - outline a presentation on renewable energy
+      - help me write a resume bullet about my robotics project
+      - brainstorm ideas for my senior design project
+      - derive the equation for a damped harmonic oscillator
+      - ask claude to explain recursion
+      - ask claude how to prepare for a technical interview
+      - have claude write a thank you note to my recruiter
+      - get claude to rewrite this paragraph so it sounds professional
+      - on claude, write me a haiku about coffee
+      - put this question to claude, why is the sky blue
+      - tell claude to make a grocery list for meal prep
+  - kind: handoff
+    to: chatgpt
+    say:
+      - ask chatgpt to explain recursion
+      - ask chatgpt how to prepare for a technical interview
+      - have chatgpt write a thank you note to my recruiter
+      - get chatgpt to rewrite this paragraph so it sounds professional
+      - on chatgpt, write me a haiku about coffee
+      - tell chatgpt to make a grocery list for meal prep
+      - chatgpt, plan a birthday party for my roommate
+      - use chatgpt to summarize the french revolution
+      - let chatgpt draft a text to my landlord about the broken heater
+
+  # --- chat, not commands: Nova stays out of it ---------------------------------------------------------
+  - kind: ignore
+    say:
+      - I opened the fridge and there was nothing in it
+      - they're opening a new coffee place on main street
+      - we closed on the house last week
+      - the store closes at nine on sundays
+      - he always plays his music too loud next door
+      - I used to play piano when I was a kid
+      - she said the next chapter is way harder
+      - I'll be back in ten minutes
+      - go back to bed, it's early
+      - the volume of a sphere is four thirds pi r cubed
+      - my professor paused the lecture to take questions
+      - we need to stop by the bank later
+      - I was searching for my keys all morning
+      - he scrolled past it without even noticing
+      - can you save me a seat at lunch
+      - copy that, see you at five
+      - I need to cut my hair soon
+      - she typed the whole thing with one hand
+      - that tab at the bar was huge
+      - the windows in this building are filthy
+      - I think the left one looks better honestly
+      - you should maximize your savings while you're young
+      - don't minimize how hard that was for her
+      - the new update refreshed the whole look of the app
+      - I'm gonna switch my major to computer science
+      - they moved the meeting to the other room
+      - my phone screen is cracked again
+      - what time does the game start tonight
+      - yeah that makes sense
+      - no way, are you serious
+      - I don't know, maybe tomorrow
+      - how was your weekend
+      - I'm so tired today
+      - did you eat yet
+      - that exam was brutal
+      - let me think about it
+      - hold on, somebody's at the door
+      - I told you that already
+      - my roommate never does the dishes
+      - it's supposed to rain all week
+      - the wifi in the library is terrible
+      - I forgot my charger at home
+      - turn right after the gas station
+      - shut the door on your way out
+      - pause for a second and think about what you're saying
+      - skip the line if you have a pass
+      - mute your phone during the movie
+      - I zoomed past the exit by accident
+      - he undid all my hard work
+      - the note she left was really sweet
+      - my email is full of spam lately
+      - that video was hilarious
+      - the song they played at the wedding was perfect
+      - I listened to that podcast you sent me
+      - chrome is such a memory hog
+      - notepad is all you really need for notes
+      - spotify keeps raising its prices
+      - claude gave me a pretty good answer yesterday
+      - chatgpt got that one totally wrong
+      - canvas was down all morning
+      - my assignment got a ninety two
+      - the homework took me four hours
+      - I already turned that in
+      - that's due next month I think
+      - we should write that down somewhere
+      - I should really start exercising again
+      - stop it, I'm trying to focus
+      - wake me up when it's over
+      - she went to sleep really early
+      - he said he'd call me back
+      - can you hand me that pen
+      - pass the salt please
+      - what do you want for dinner
+      - I need to buy groceries
+      - let's meet up after class
+      - you look tired
+      - thanks, I appreciate it
+      - okay sounds good
+      - I'm just talking to myself
+      - nevermind, forget it
