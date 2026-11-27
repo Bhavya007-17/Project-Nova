@@ -1,15 +1,17 @@
 # Next stage
 
-Current: **Stage 04, dictation misheard-word fix (#18)**. Stages 00-03 and 02b are done.
+Current: **Stage 01, eval harness and fuzzy-bug protocol**. Nothing from stages 01-11 is built yet (checked
+2026-11-27: `main`, every branch and `mac_shaashwat_test` have no eval splits, `nova eval --compare`, per-word
+confidence, latency budgets or G2P).
 
 Kickoff (paste in plan mode after /clear):
 
 ```
-Read docs/prompts/next/04-dictation-misheard-word-fix-18.md and the code it touches (nova/dictation/cleanup.py, the Parakeet confidence work from stage 02, the phonetic matcher from stage 03). Reuse stage 03's G2P and phoneme matching instead of building a second one. The corrector must run after text lands and stay inside the dictation budget in config/latency_budgets.yaml from stage 02b. Start with the diagnosis step. Make a plan; don't edit yet.
+Read docs/prompts/next/01-eval-harness-and-fuzzy-bug-protocol.md and the code it touches (nova/evals.py, nova/session_eval.py, nova/task_eval.py, nova/stt/bench.py, nova/stt/wer.py, nova/latency.py, nova/log.py, nova/gate.py, docs/eval/). Freeze the splits before anything else and dedupe them against every prompt's few-shot examples. Make a plan; don't edit yet.
 ```
 
-Check before approving: the plan reuses stage 03's phonetic code and adds a dictation-fix timing span with its own budget.
+Check before approving: the splits are frozen and hashed, `nova eval --compare <ref>` runs both refs on the same split, and the plan says what runs on CI (Windows runner, no models) vs on the laptop.
 
-Evidence before commit: repairs vs breaks (break rate), p95 time-to-fix, whether live attempts land.
+Evidence before commit: `docs/eval/BASELINE.md` filled from real runs on the reference laptop, `nova eval --compare main` output, the fuzzy-bug protocol section in `docs/GOTCHAS.md`.
 
-After this stage, replace this file's contents with the kickoff for stage 05.
+After this stage, replace this file's contents with the kickoff for stage 02.

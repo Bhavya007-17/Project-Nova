@@ -75,10 +75,10 @@ Order matters: stage 1 first, because stages 2 to 10 are each judged on its numb
 ## Progress
 
 - [x] 00 shared context
-- [x] 01 eval harness and fuzzy bugs
-- [x] 02 speech recognition fixes
-- [x] 02b latency budgets and guard
-- [x] 03 names and fuzzy matching
+- [ ] 01 eval harness and fuzzy bugs
+- [ ] 02 speech recognition fixes
+- [ ] 02b latency budgets and guard
+- [ ] 03 names and fuzzy matching
 - [ ] 04 dictation fix (#18)
 - [ ] 05 planner schema and #19
 - [ ] 06 GUI task loop
